@@ -112,6 +112,18 @@ class FakeHA:
         print(f"[fake HA] {domain}.{service} {data or ''}")
         if service == "get_dampening":
             return {"service_response": {"data": [{"site": "all", "damp_factor": ",".join(["1.0"] * 24)}]}}
+        if service == "query_forecast_data":
+            # Solcast's forecast history: 30-minute entries in kW, like detailedForecast
+            start = datetime.fromisoformat(data["start_date_time"])
+            end = datetime.fromisoformat(data["end_date_time"])
+            out, t = [], start
+            while t < end:
+                f, clear, _ = synthetic_sun(t)
+                for half in (0, 30):
+                    out.append({"period_start": (t + timedelta(minutes=half)).isoformat(),
+                                "pv_estimate": f, "pv_estimate10": f * 0.6, "pv_estimate90": clear})
+                t += timedelta(hours=1)
+            return {"changed_states": [], "service_response": {"data": out}}
         return {}
 
     def set_state(self, e, state, attributes=None):
@@ -213,16 +225,7 @@ def main():
     from planner import Planner
 
     synthetic_log(os.path.join(data, "decisions.jsonl"))
-    history = {}
-    start = (datetime.now(UTC) - timedelta(days=14)).replace(minute=0, second=0, microsecond=0)
-    t = start
-    while t < datetime.now(UTC) - timedelta(hours=1):
-        f, clear, _ = synthetic_sun(t)
-        if clear > 0:
-            history[t.isoformat()] = {"p50": f, "p10": f * 0.6, "p90": clear, "applied": 1.0, "limited": False}
-        t += timedelta(hours=1)
-    with open(os.path.join(data, "pv_history.json"), "w") as fh:
-        json.dump(history, fh)
+    # No pv_history.json: the planner fetches Solcast's forecast history (query_forecast_data) itself.
     fake = FakeHA(car=not args.no_car)
     app_main.planner = Planner(fake, tz=TZ, log_path=os.path.join(data, "decisions.jsonl"),
                                car_log_path=os.path.join(data, "car_decisions.jsonl"))

@@ -14,7 +14,11 @@ WS_URL = "ws://supervisor/core/websocket"
 
 # The only services this add-on may call. Inverter and charger stay dry-run: anything else is
 # refused here, whatever the caller asks for.
-ALLOWED_SERVICES = {("solcast_solar", "set_dampening"), ("solcast_solar", "get_dampening")}
+ALLOWED_SERVICES = {
+    ("solcast_solar", "set_dampening"),
+    ("solcast_solar", "get_dampening"),
+    ("solcast_solar", "query_forecast_data"),   # read-only: Solcast's forecast history
+}
 
 
 class ServiceNotAllowed(Exception):

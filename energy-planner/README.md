@@ -7,8 +7,9 @@ Node-RED flow (forecast ≥ 10 / 7 / 4 kWh → SoC 10 / 30 / 45 %) with one opti
 
 **This version is dry-run.** It reads Home Assistant, computes a plan, publishes it as sensors and
 logs it next to what Node-RED and the car automation actually did. It does not write to the
-inverter or the charger. The only services the code can call are Solcast's `set_dampening` /
-`get_dampening` (an allowlist in `homeassistant.py`); `set_dampening` only with `solcast_push: true`.
+inverter or the charger. The only services the code can call are Solcast's `get_dampening`,
+`query_forecast_data` (both read-only) and `set_dampening` (only with `solcast_push: true`), enforced
+by an allowlist in `homeassistant.py`.
 
 ## How it decides
 
@@ -113,6 +114,8 @@ power, the grid part of the charging (`battery charge - solar`) is subtracted fr
 Solcast does not know about the trees. The add-on learns, per hour of the day, how much of the
 forecast actually arrives, from Solcast's forecast (recorded every cycle in `/data/pv_history.json`)
 and the actual production (`pv_power_entity` statistics), over the last `pv_dampening_days` (14).
+At start it also fetches Solcast's own 14 days of undampened forecast history
+(`solcast_solar.query_forecast_data`), so it can learn right away; its own recordings take precedence.
 
 Shading only takes the direct sun, so the correction depends on the clouds:
 

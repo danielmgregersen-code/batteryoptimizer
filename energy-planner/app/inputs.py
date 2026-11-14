@@ -42,6 +42,44 @@ def parse_prices(attrs: dict) -> dict:
     return {h: sum(v) / len(v) for h, v in buckets.items()}
 
 
+def forecast_entries_to_hourly(entries, default_minutes: int = 30) -> dict:
+    """Solcast entries (period_start + pv_estimate / 10 / 90 in average kW over the period) ->
+    {utc_hour: (p50, p10, p90)} in kWh per hour.
+
+    The period length is read from the spacing of period_start (30 or 60 min); with a single entry
+    `default_minutes` is assumed. Entries without a usable period_start or pv_estimate are skipped;
+    a missing p10 / p90 falls back to p50.
+    """
+    rows = []
+    for e in entries or []:
+        if not isinstance(e, dict):
+            continue
+        try:
+            t = parse_ts(e["period_start"])
+            v50 = float(e["pv_estimate"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        v10, v90 = e.get("pv_estimate10"), e.get("pv_estimate90")
+        try:
+            v10 = float(v10) if v10 is not None else v50
+            v90 = float(v90) if v90 is not None else v50
+        except (TypeError, ValueError):
+            v10 = v90 = v50
+        rows.append((t, v50, v10, v90))
+    rows.sort(key=lambda r: r[0])
+    gaps = [(b[0] - a[0]).total_seconds() / 60.0 for a, b in zip(rows, rows[1:])]
+    gaps = [g for g in gaps if g > 0]
+    minutes = min(gaps) if gaps else float(default_minutes)
+    minutes = min(max(minutes, 5.0), 60.0)
+    share = minutes / 60.0
+    out: dict = {}
+    for t, v50, v10, v90 in rows:
+        h = hour_floor(t)
+        a = out.get(h, (0.0, 0.0, 0.0))
+        out[h] = (a[0] + v50 * share, a[1] + v10 * share, a[2] + v90 * share)
+    return out
+
+
 def parse_solcast(attrs_list: list, p10_weight: float = 0.0, with_p90: bool = False) -> tuple:
     """Solcast forecast sensors -> ({hour: kWh blended}, {hour: kWh p50}, {hour: kWh p10}[, {hour: p90}]).
 
@@ -65,17 +103,8 @@ def parse_solcast(attrs_list: list, p10_weight: float = 0.0, with_p90: bool = Fa
             continue
         half = attrs.get("detailedForecast")
         if half:
-            a50: dict = {}
-            a10: dict = {}
-            a90: dict = {}
-            for e in half:
-                h = hour_floor(parse_ts(e["period_start"]))
-                a50[h] = a50.get(h, 0.0) + float(e.get("pv_estimate", 0.0)) * 0.5
-                a10[h] = a10.get(h, 0.0) + float(e.get("pv_estimate10", e.get("pv_estimate", 0.0))) * 0.5
-                a90[h] = a90.get(h, 0.0) + float(e.get("pv_estimate90", e.get("pv_estimate", 0.0))) * 0.5
-            p50.update(a50)
-            p10.update(a10)
-            p90.update(a90)
+            for h, (v50, v10, v90) in forecast_entries_to_hourly(half, default_minutes=30).items():
+                p50[h], p10[h], p90[h] = v50, v10, v90
     w = min(max(p10_weight, 0.0), 1.0)
     blended = {h: (1 - w) * p50[h] + w * p10.get(h, p50[h]) for h in p50}
     if with_p90:
