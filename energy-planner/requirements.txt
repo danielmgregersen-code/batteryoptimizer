@@ -1,0 +1,8 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+requests==2.32.3
+websockets>=12.0,<16
+# Pinned: both ship musllinux_1_2 cp312 wheels (aarch64 + x86_64), checked against
+# the Alpine base in build.yaml. A floating pin is how a working add-on breaks on rebuild.
+numpy==2.3.5
+scipy==1.16.3

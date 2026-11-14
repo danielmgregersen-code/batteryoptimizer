@@ -1,0 +1,5 @@
+# Same pinned Python 3.12 / Alpine base as training-coach: numpy and scipy ship
+# musllinux cp312 wheels for both architectures, so nothing is compiled at build time.
+build_from:
+  aarch64: ghcr.io/home-assistant/aarch64-base-python:3.12-alpine3.23
+  amd64: ghcr.io/home-assistant/amd64-base-python:3.12-alpine3.23

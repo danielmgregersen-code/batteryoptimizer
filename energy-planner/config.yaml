@@ -1,0 +1,74 @@
+name: "Energy Planner"
+description: "Hour-by-hour battery and grid planning for a Growatt hybrid inverter (dry-run)."
+version: "0.1.0"
+slug: "energy_planner"
+init: false
+arch:
+  - aarch64
+  - amd64
+
+ingress: true
+ingress_port: 8010
+ingress_stream: false
+
+panel_icon: "mdi:solar-power-variant"
+panel_title: "Energy Planner"
+
+options:
+  price_buy_entity: "sensor.kob_af_el"
+  price_sell_entity: "sensor.salg_af_el"
+  solcast_entities: "sensor.solcast_pv_forecast_forecast_today,sensor.solcast_pv_forecast_forecast_tomorrow,sensor.solcast_pv_forecast_forecast_day_3"
+  battery_soc_entity: "sensor.growatt_battery_soc"
+  house_load_entity: "sensor.growatt_total_house_load"
+  car_power_entity: "sensor.garage_growatt_thor_ev_charger_charging_power"
+  reg_battery_first: "select.growatt_battery_first_time_2"
+  reg_max_soc: "number.growatt_battery_first_maximum_soc"
+  reg_min_soc: "number.growatt_load_first_battery_minimum_soc"
+  reg_charge_rate: "number.growatt_battery_first_charge_rate"
+  reg_grid_charge: "select.growatt_battery_first_charge_from_grid"
+  reg_export_limit: "number.growatt_grid_export_limit"
+  battery_capacity_kwh: 7.75
+  battery_max_power_kw: 4.0
+  inverter_kw: 10.0
+  soc_floor_pct: 10
+  soc_ceiling_pct: 100
+  eta_pv_to_battery: 0.97
+  eta_grid_to_battery: 0.94
+  eta_battery_to_load: 0.95
+  wear_cost_dkk_per_kwh: 0.25
+  pv_p10_weight: 0.3
+  profile_days: 28
+  default_load_kw: 0.8
+  interval_minutes: 15
+
+schema:
+  price_buy_entity: str
+  price_sell_entity: str
+  solcast_entities: str
+  battery_soc_entity: str
+  house_load_entity: str
+  car_power_entity: str
+  reg_battery_first: str
+  reg_max_soc: str
+  reg_min_soc: str
+  reg_charge_rate: str
+  reg_grid_charge: str
+  reg_export_limit: str
+  battery_capacity_kwh: float(1,100)
+  battery_max_power_kw: float(0.5,50)
+  inverter_kw: float(1,50)
+  soc_floor_pct: int(0,50)
+  soc_ceiling_pct: int(50,100)
+  eta_pv_to_battery: float(0.5,1)
+  eta_grid_to_battery: float(0.5,1)
+  eta_battery_to_load: float(0.5,1)
+  wear_cost_dkk_per_kwh: float(0,5)
+  pv_p10_weight: float(0,1)
+  profile_days: int(7,120)
+  default_load_kw: float(0.1,10)
+  interval_minutes: int(5,60)
+
+homeassistant_api: true
+
+startup: application
+boot: auto

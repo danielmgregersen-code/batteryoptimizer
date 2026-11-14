@@ -1,0 +1,116 @@
+"""Pure parsing of HA sensor attributes into hourly series (all keys are UTC hour starts).
+
+Everything is normalised to UTC so DST changes never produce duplicate or missing
+hours; conversion to local time happens only where a local hour-of-day is needed.
+"""
+from datetime import datetime, timedelta, timezone
+
+UTC = timezone.utc
+
+
+def parse_ts(value) -> datetime:
+    """ISO string / epoch (s or ms) / datetime -> aware datetime in UTC."""
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, (int, float)):
+        seconds = value / 1000.0 if value > 1e11 else float(value)
+        return datetime.fromtimestamp(seconds, tz=UTC)
+    else:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.astimezone()  # naive -> assume local time
+    return dt.astimezone(UTC)
+
+
+def hour_floor(dt: datetime) -> datetime:
+    return dt.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+
+
+def parse_prices(attrs: dict) -> dict:
+    """Energi Data Service attributes (raw_today / raw_tomorrow) -> {hour_utc: DKK/kWh}.
+
+    Works for hourly entries and for finer ones (15 min): entries are averaged per hour.
+    """
+    buckets: dict = {}
+    for key in ("raw_today", "raw_tomorrow"):
+        for entry in attrs.get(key) or []:
+            ts = entry.get("hour") or entry.get("start")
+            price = entry.get("price")
+            if ts is None or price is None:
+                continue
+            buckets.setdefault(hour_floor(parse_ts(ts)), []).append(float(price))
+    return {h: sum(v) / len(v) for h, v in buckets.items()}
+
+
+def parse_solcast(attrs_list: list, p10_weight: float = 0.0) -> tuple:
+    """Solcast forecast sensors -> ({hour: kWh blended}, {hour: kWh p50}, {hour: kWh p10}).
+
+    `detailedHourly` values are average kW over the hour, i.e. numerically kWh per
+    hour (the 24 values sum to the sensor's daily kWh total). `detailedForecast` is
+    30-minute data in kW, so each entry counts for half an hour.
+    """
+    p50: dict = {}
+    p10: dict = {}
+    for attrs in attrs_list:
+        if not attrs:
+            continue
+        hourly = attrs.get("detailedHourly")
+        if hourly:
+            for e in hourly:
+                h = hour_floor(parse_ts(e["period_start"]))
+                p50[h] = float(e.get("pv_estimate", 0.0))
+                p10[h] = float(e.get("pv_estimate10", e.get("pv_estimate", 0.0)))
+            continue
+        half = attrs.get("detailedForecast")
+        if half:
+            a50: dict = {}
+            a10: dict = {}
+            for e in half:
+                h = hour_floor(parse_ts(e["period_start"]))
+                a50[h] = a50.get(h, 0.0) + float(e.get("pv_estimate", 0.0)) * 0.5
+                a10[h] = a10.get(h, 0.0) + float(e.get("pv_estimate10", e.get("pv_estimate", 0.0))) * 0.5
+            p50.update(a50)
+            p10.update(a10)
+    w = min(max(p10_weight, 0.0), 1.0)
+    blended = {h: (1 - w) * p50[h] + w * p10.get(h, p50[h]) for h in p50}
+    return blended, p50, p10
+
+
+class Horizon:
+    """Aligned per-step inputs for the optimiser. Step 0 is the (partial) current hour."""
+
+    def __init__(self, starts, buy, sell, pv, load, dt):
+        self.starts = starts
+        self.buy = buy
+        self.sell = sell
+        self.pv = pv
+        self.load = load
+        self.dt = dt
+
+    def __len__(self):
+        return len(self.starts)
+
+
+def build_horizon(now: datetime, buy: dict, sell: dict, pv: dict, load_fn, max_hours: int = 48) -> Horizon:
+    """Hours from the current one to the last hour with both a buy and a sell price.
+
+    pv: {hour: kWh}; load_fn(hour_utc) -> kWh for a full hour. The current hour is scaled
+    by its remaining fraction so the plan does not count energy that has already passed.
+    """
+    now = now.astimezone(UTC)
+    start = hour_floor(now)
+    elapsed = (now - start).total_seconds() / 3600.0
+    frac0 = max(0.1, 1.0 - elapsed)
+
+    starts, b, s, p, l, dts = [], [], [], [], [], []
+    t = start
+    while len(starts) < max_hours and t in buy and t in sell:
+        f = frac0 if not starts else 1.0
+        starts.append(t)
+        b.append(buy[t])
+        s.append(sell[t])
+        p.append(pv.get(t, 0.0) * f)
+        l.append(load_fn(t) * f)
+        dts.append(f)
+        t = t + timedelta(hours=1)
+    return Horizon(starts, b, s, p, l, dts)
