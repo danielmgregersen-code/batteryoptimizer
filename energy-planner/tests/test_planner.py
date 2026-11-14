@@ -237,3 +237,13 @@ def test_cost_today_sensor(tmp_path):
     state, attrs = ha.published["sensor.energy_planner_cost_today"]
     assert state == pytest.approx(2 * 1.873, abs=0.01) and attrs["unit_of_measurement"] == "DKK"
     assert attrs["import_kwh"] == 2.0 and attrs["yesterday_dkk"] is None
+
+
+def test_missing_car_statistics_is_a_visible_warning(tmp_path):
+    start = datetime(2026, 10, 17, tzinfo=UTC)
+    rows = [{"start": (start + timedelta(hours=i)).timestamp() * 1000, "mean": 1500.0} for i in range(24 * 20)]
+    stats = {DEFAULTS["house_load_entity"]: rows}                       # no car statistics
+    snap = Planner(make_ha(stats=stats), tz=TZ, log_path=str(tmp_path / "d.jsonl")).run_once(
+        datetime(2026, 11, 14, 11, 30, tzinfo=UTC))
+    assert any("no long-term statistics" in w for w in snap["warnings"])
+    assert snap["profile"]["diagnostics"]["battery_mode"] == "no"

@@ -34,9 +34,9 @@ DEFAULTS = {
     "pv_p10_weight": 0.3,
     "profile_days": 28,
     "default_load_kw": 0.8,
-    # Does sensor.growatt_total_house_load count the battery's charging as house load?
-    # auto = detect from the statistics (night hours with and without charging), yes / no = override.
-    "load_includes_battery_charging": "auto",
+    # Does sensor.growatt_total_house_load count the battery's charging as house load? On the
+    # SPH10000TL3 it does not. auto = detect from the statistics, yes = always subtract.
+    "load_includes_battery_charging": "no",
     "interval_minutes": 15,
     "min_horizon_hours": 30,
     # Cumulative energy counters (kWh) logged with every decision, so the realised cost of what

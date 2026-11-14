@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning of a Growatt hybrid inverter, home battery and EV charging (dry-run)."
-version: "0.3.2"
+version: "0.3.3"
 slug: "energy_planner"
 init: false
 arch:
@@ -39,7 +39,7 @@ options:
   pv_p10_weight: 0.3
   profile_days: 28
   default_load_kw: 0.8
-  load_includes_battery_charging: "auto"
+  load_includes_battery_charging: "no"
   interval_minutes: 15
   min_horizon_hours: 30
   counter_entities: "sensor.growatt_total_grid_import,sensor.growatt_total_grid_export,sensor.growatt_total_battery_input_energy,sensor.growatt_total_battery_output_energy,sensor.growatt_total_solar_energy"

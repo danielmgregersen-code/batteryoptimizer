@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.3
+
+- `load_includes_battery_charging` defaults to `no`: on the SPH10000TL3 the house load does not
+  include the battery's charging (it has its own sensor). `auto` remains available for other setups.
+- The `auto` detection only runs when the car charger has long-term statistics. Without them the
+  car's night charging (same cheapest hours as the battery) looked like battery charging in the
+  house load and could be subtracted by mistake.
+- Missing car-charger statistics is now a warning at the top of the panel: it is the likely reason
+  for a night-time base load of 3-4 kW (the car is then counted as house load).
+
 ## 0.3.2
 
 - **Night-time house load too high.** Some Growatt integrations count the battery's charging as

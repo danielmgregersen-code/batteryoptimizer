@@ -161,6 +161,9 @@ class Planner:
                                 forecast_hours=forecast_hours)
         if len(horizon) == 0:
             raise PlannerError("no prices for the current hour")
+        diag = profile.get("diagnostics") or {}
+        if profile["hours_of_data"] and opts.get("car_power_entity") and not diag.get("car_rows"):
+            warnings.append("the car charger power has no long-term statistics - car charging is counted as house load")
         n_fc = sum(horizon.forecast)
         if n_fc:
             warnings.append(f"{n_fc} of {len(horizon)} hours use estimated prices (same hour of the last known day)")
