@@ -133,19 +133,23 @@ def test_soc_target_is_unknown_when_not_in_battery_first(tmp_path):
     assert state == "unknown" and attrs["active"] is False
 
 
-def test_counters_and_prices_are_logged_and_evaluated(tmp_path):
-    from planner import evaluate
+def test_counters_prices_and_forecasts_are_logged_and_evaluated(tmp_path):
+    from evaluation import evaluate
+    from settings import counter_ids
     ha = make_ha()
     p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
-    imp, exp = DEFAULTS["grid_import_counter"], DEFAULTS["grid_export_counter"]
+    ids = counter_ids(DEFAULTS)
     for i, minute in enumerate((0, 15, 30)):
-        ha.numbers[imp], ha.numbers[exp] = 100.0 + i, 50.0 + 0.5 * i
+        ha.numbers[ids["import"]], ha.numbers[ids["export"]] = 100.0 + i, 50.0 + 0.5 * i
+        ha.numbers[ids["solar"]], ha.numbers[ids["battery_in"]], ha.numbers[ids["battery_out"]] = 10.0 + 0.3 * i, 5.0, 4.0
         p.run_once(datetime(2026, 11, 14, 11, minute, tzinfo=UTC))
     log = p.recent_decisions()
-    assert log[0]["counters"][imp] == 100.0 and log[0]["price_now"]["buy"] == pytest.approx(1.873)
-    days = evaluate(log, imp, exp, TZ)
-    assert days == [{"day": "2026-11-14", "import_kwh": 2.0, "export_kwh": 1.0,
-                     "cost_dkk": pytest.approx(round(2 * 1.873 - 1.0 * 1.05, 2))}]
+    assert log[0]["counters"][ids["import"]] == 100.0 and log[0]["price_now"]["buy"] == pytest.approx(1.873)
+    assert log[0]["pred"]["pv_p50_kw"] == pytest.approx(0.9645, abs=1e-3)   # 12:00 local and "pv_kw" in log[0]["pred"]
+    day = evaluate(log, ids, TZ)["days"][0]
+    assert day["day"] == "2026-11-14" and day["import_kwh"] == 2.0 and day["export_kwh"] == 1.0
+    assert day["cost_dkk"] == pytest.approx(round(2 * 1.873 - 1.0 * 1.05, 2))
+    assert day["pv_actual_kwh"] == pytest.approx(0.6)
 
 
 def test_entity_check_reports_missing_entities(tmp_path):

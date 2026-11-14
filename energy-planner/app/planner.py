@@ -9,8 +9,8 @@ import car as carmod
 from inputs import UTC, build_horizon, hour_floor, parse_prices, parse_solcast, persistence_forecast
 from optimizer import BatteryParams, solve, terminal_value_for
 from loadprofile import build_profile, load_for_hour
-from settings import REGISTER_KEYS, load_options, local_tz, split_csv
-from setpoints import derive_setpoints
+from settings import REGISTER_KEYS, counter_ids, load_options, local_tz, split_csv
+from setpoints import derive_setpoints, step_mode
 
 log = logging.getLogger("energy_planner")
 
@@ -127,7 +127,7 @@ class Planner:
         sell = parse_prices(sell_attrs)
 
         sol_attrs = [self.ha.attributes(e) for e in split_csv(opts["solcast_entities"])]
-        pv, _, _ = parse_solcast(sol_attrs, float(opts["pv_p10_weight"]))
+        pv, pv50, pv10, pv90 = parse_solcast(sol_attrs, float(opts["pv_p10_weight"]), with_p90=True)
         if not pv:
             warnings.append("no solar forecast available - planning without solar")
 
@@ -191,6 +191,10 @@ class Planner:
                 "soc_pct": round(float(plan.soc_end[i]) / params.capacity_kwh * 100.0, 1),
                 "forecast_price": bool(horizon.forecast[i]),
                 "dt": round(float(plan.dt[i]), 3),
+                "grid_load": round(float(plan.grid_load[i]), 2),
+                "pv_p10": round(pv10.get(start, 0.0) * float(plan.dt[i]), 2),
+                "pv_p90": round(pv90.get(start, 0.0) * float(plan.dt[i]), 2),
+                "mode": step_mode(plan, i),
             })
             if car_params:
                 rows[-1].update({
@@ -200,7 +204,18 @@ class Planner:
                 })
 
         actual = {k: self.ha.text(opts[k]) for k in REGISTER_KEYS if opts.get(k)}
-        counters = {e: self.ha.number(e) for e in split_csv(opts.get("counter_entities", ""))}
+        counter_entities = split_csv(opts.get("counter_entities", "")) + list(counter_ids(opts).values())
+        counters = {e: self.ha.number(e) for e in dict.fromkeys(counter_entities)}
+        h0, dt0 = horizon.starts[0], float(plan.dt[0])
+        # What the plan expected for the current hour (as average kW), next to instantaneous samples,
+        # so the evaluation can score the forecasts against the counters.
+        pred = {
+            "pv_kw": round(float(plan.pv[0]) / dt0, 3),
+            "pv_p50_kw": round(pv50.get(h0, 0.0), 3), "pv_p10_kw": round(pv10.get(h0, 0.0), 3),
+            "load_kw": round(float(plan.load[0]) / dt0, 3),
+        }
+        samples = {"house_load_w": self.ha.number(opts["house_load_entity"]),
+                   "car_w": self.ha.number(opts["car_power_entity"]) if opts.get("car_power_entity") else None}
         snapshot = {
             "updated": now.astimezone(self.tz).isoformat(timespec="seconds"),
             "dry_run": True,
@@ -210,6 +225,9 @@ class Planner:
             "actual_registers": actual,
             "counters": counters,
             "price_now": {"buy": round(float(plan.buy[0]), 4), "sell": round(float(plan.sell[0]), 4)},
+            "pred": pred,
+            "samples": samples,
+            "pv_p10_weight": float(opts["pv_p10_weight"]),
             "savings_vs_solar_only_dkk": round(float(savings), 2),
             "net_cost_dkk": round(plan.net_cost, 2),
             "horizon_hours": len(horizon),
@@ -257,8 +275,8 @@ class Planner:
 
     def _log_decision(self, snap: dict):
         entry = {k: snap.get(k) for k in ("updated", "soc_pct", "mode", "setpoints", "actual_registers",
-                                          "counters", "price_now", "savings_vs_solar_only_dkk",
-                                          "horizon_hours", "car")}
+                                          "counters", "price_now", "pred", "samples", "pv_p10_weight",
+                                          "savings_vs_solar_only_dkk", "net_cost_dkk", "horizon_hours", "car")}
         self._append(self.log_path, entry)
 
     # ---- car control (fast loop, dry-run) --------------------------------------
@@ -337,29 +355,3 @@ class Planner:
         except (OSError, ValueError):
             return []
 
-
-def evaluate(decisions: list, import_counter: str, export_counter: str, tz) -> list:
-    """Realised grid cost per local day from the logged counters and prices.
-
-    Between two consecutive log entries the counter deltas are priced at the earlier entry's
-    prices. This is what actually happened (under Node-RED during the dry-run); compare it with
-    the plan's net cost to judge the planner.
-    """
-    days: dict = {}
-    for a, b in zip(decisions, decisions[1:]):
-        ca, cb = a.get("counters") or {}, b.get("counters") or {}
-        pa = a.get("price_now") or {}
-        try:
-            d_imp = cb[import_counter] - ca[import_counter]
-            d_exp = cb[export_counter] - ca[export_counter]
-            buy, sell = float(pa["buy"]), float(pa["sell"])
-        except (KeyError, TypeError):
-            continue
-        if d_imp < 0 or d_exp < 0 or d_imp > 50 or d_exp > 50:   # counter reset or gap
-            continue
-        day = datetime.fromisoformat(a["updated"]).astimezone(tz).date().isoformat()
-        e = days.setdefault(day, {"day": day, "import_kwh": 0.0, "export_kwh": 0.0, "cost_dkk": 0.0})
-        e["import_kwh"] += d_imp
-        e["export_kwh"] += d_exp
-        e["cost_dkk"] += d_imp * buy - d_exp * sell
-    return [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in e.items()} for e in days.values()]

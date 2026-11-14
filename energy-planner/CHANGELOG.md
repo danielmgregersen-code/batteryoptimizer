@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0
+
+New panel (still dry-run).
+
+- **Plan** tab: status tiles (mode now, house battery with target/floor, price now, saving vs.
+  solar-only, car), a chart of the whole horizon in three aligned panels (prices with the estimated
+  hours hatched, energy per hour with the mode strip, battery and car SoC) with one crosshair and a
+  tooltip per hour, a "coming up" list of the planned actions in plain language, a table of what the
+  planner would set next to what the inverter registers say now, and the hourly table.
+- **Bil** tab: car SoC and charger status, what the controller would do and which calls it would
+  make, the car's planned charging against the price, and the controller's log.
+- **Evaluering** tab (7 / 14 / 30 days): realised grid cost per day, price paid per kWh against the
+  period average, agreement with Node-RED over time (planner vs. registers strip), solar actual vs.
+  forecast with a suggested `pv_p10_weight`, consumption actual vs. forecast, and the recent decisions.
+- Decision log also records the forecasts for the current hour and load/car samples;
+  `/api/evaluation?days=N` returns days, summary and timeline.
+- Light and dark theme, phone layout, keyboard support on the charts. No external scripts: the panel
+  works without internet access.
+- `tools/dev_server.py` runs the panel against a fake Home Assistant for UI work.
+
 ## 0.2.0
 
 The car is part of the plan (still dry-run: nothing is written to the inverter or the charger).

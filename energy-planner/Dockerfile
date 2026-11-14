@@ -7,6 +7,9 @@ RUN apk add --no-cache tzdata libstdc++ libgcc
 
 WORKDIR /app
 
+ARG BUILD_VERSION
+ENV ADDON_VERSION=$BUILD_VERSION
+
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
