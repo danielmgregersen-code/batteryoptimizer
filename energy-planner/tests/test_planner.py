@@ -367,3 +367,69 @@ def test_failed_history_fetch_does_not_stop_planning_and_is_retried(tmp_path):
     assert calls.count("query_forecast_data") == 1                    # not before 6 hours
     p.run_once(t0 + timedelta(hours=7))
     assert calls.count("query_forecast_data") == 2
+
+
+def test_production_switch_off_means_no_writes(tmp_path):
+    ha = make_ha()
+    ha.calls = []
+    ha.call_service = lambda *a, **k: ha.calls.append(a)
+    snap = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl")).run_once(datetime(2026, 11, 14, 16, 30, tzinfo=UTC))
+    assert snap["dry_run"] is True and snap["production"]["writes"] == []
+    assert not any(c[0] in ("select", "number") for c in ha.calls)
+    assert ha.published["sensor.energy_planner_mode"][1]["dry_run"] is True
+
+
+def test_production_switch_on_writes_the_registers(tmp_path):
+    ha = make_ha()
+    ha.texts.update({DEFAULTS["production_switch_entity"]: "on", DEFAULTS["reg_grid_charge"]: "Enabled",
+                     DEFAULTS["reg_battery_first"]: "Enabled"})
+    calls = []
+
+    def call_service(domain, service, data=None, return_response=False):
+        calls.append((domain, service, (data or {}).get("entity_id")))
+        if domain == "select":
+            ha.texts[data["entity_id"]] = data["option"]
+        if domain == "solcast_solar":
+            raise RuntimeError("no dampening")
+    ha.call_service = call_service
+    snap = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl")).run_once(datetime(2026, 11, 14, 16, 30, tzinfo=UTC))
+    assert snap["dry_run"] is False and snap["production"]["battery"] is True
+    assert snap["mode"] == "discharge"                                  # 17:30 local, the peak
+    written = [c[2] for c in calls if c[0] in ("select", "number")]
+    assert written[:2] == [DEFAULTS["reg_grid_charge"], DEFAULTS["reg_battery_first"]]
+    assert DEFAULTS["reg_export_limit"] not in written
+    assert snap["actual_registers"]["reg_battery_first"] == "Disabled"   # re-read after writing
+    assert ha.published["sensor.energy_planner_mode"][1]["dry_run"] is False
+
+
+def test_car_production_executes_calls_and_guards_the_kia_quota(tmp_path):
+    ha = car_ha()
+    ha.texts[DEFAULTS["car_production_switch_entity"]] = "on"
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 15.0                      # critical: charge now
+    calls = []
+    ha.call_service = lambda domain, service, data=None, return_response=False: calls.append((domain, service, data))
+    opts = {**DEFAULTS, "car_device_id": "abc123"}
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"),
+                options_fn=lambda: opts)
+    now = datetime(2026, 11, 14, 19, 30, tzinfo=UTC)
+    d = p.car_cycle(now)
+    assert d["dry_run"] is False
+    kia = [c for c in calls if c[0] == "kia_uvo"]
+    assert kia == [("kia_uvo", "start_charge", {"device_id": "abc123"})]
+    p.car_cycle(now + timedelta(minutes=2))                             # still suspended: no new Kia call
+    assert len([c for c in calls if c[0] == "kia_uvo"]) == 1
+    p.car_cycle(now + timedelta(minutes=12))
+    assert len([c for c in calls if c[0] == "kia_uvo"]) == 2
+    assert p.recent_car_decisions()[-1]["executed"]
+
+
+def test_car_production_without_device_id_skips_kia(tmp_path):
+    ha = car_ha()
+    ha.texts[DEFAULTS["car_production_switch_entity"]] = "on"
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 15.0
+    calls = []
+    ha.call_service = lambda domain, service, data=None, return_response=False: calls.append((domain, service))
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    d = p.car_cycle(datetime(2026, 11, 14, 19, 30, tzinfo=UTC))
+    assert not any(c[0] == "kia_uvo" for c in calls)
+    assert any(x["status"] == "skipped" and "car_device_id" in x["error"] for x in d["executed"])

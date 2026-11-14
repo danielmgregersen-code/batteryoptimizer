@@ -5,11 +5,33 @@ store solar instead of selling it, when to discharge, and when to charge the car
 Node-RED flow (forecast ≥ 10 / 7 / 4 kWh → SoC 10 / 30 / 45 %) with one optimisation over the next
 24-48 hours.
 
-**This version is dry-run.** It reads Home Assistant, computes a plan, publishes it as sensors and
-logs it next to what Node-RED and the car automation actually did. It does not write to the
-inverter or the charger. The only services the code can call are Solcast's `get_dampening`,
-`query_forecast_data` (both read-only) and `set_dampening` (only with `solcast_push: true`), enforced
-by an allowlist in `homeassistant.py`.
+**Dry-run by default.** It reads Home Assistant, computes a plan, publishes it as sensors and logs
+it next to what Node-RED and the car automation actually did. Two HA helpers switch each part to
+production (see *Production* below); while a helper is missing or off, that part writes nothing.
+
+## Production
+
+Create two helpers (Settings → Devices & services → Helpers → Toggle):
+
+| Helper | When on |
+| --- | --- |
+| `input_boolean.energy_planner_produktion` | Every planning cycle (15 min) the add-on writes the house-battery registers: battery first (the all-day slot, Enabled/Disabled), charge from grid, max SoC, load-first min SoC and charge rate. Only values that differ are written; there is no rate limit. Time slots and the export limit are never written. |
+| `input_boolean.energy_planner_bil_produktion` | Every car cycle (2 min) the add-on carries out the car controller's calls: charger current, the start button and `kia_uvo.start_charge` / `stop_charge` (needs `car_device_id`). The same Kia call is not repeated within 10 minutes while the charger status is unchanged (Kia's cloud quota). |
+
+- Write order: what goes off first (charge from grid before battery first), then the limits
+  (min/max SoC so that min never exceeds max, charge rate), then what goes on.
+- Values are clipped (min SoC ≥ `soc_floor_pct`, max SoC ≥ min SoC, charge rate 10–100) and read
+  back; the panel shows "Skrevet"/"Sendt"/"Fejl" per register. A failed planning cycle writes nothing.
+- While the battery helper is on, a manual change to a register is overwritten at the next cycle:
+  switch the helper off to take over by hand. If the add-on stops, the registers keep the last
+  values, which are chosen to stop at the planned state (no grid charging left running).
+- The add-on does not touch Node-RED: stop Node-RED's night-charging and SoC branches (and the car
+  automation) yourself when you switch the helpers on.
+- The services the code can call are limited by an allowlist in `homeassistant.py`: `select` /
+  `number` / `button` only on the registers above and the charger's current and start button,
+  `kia_uvo.start_charge` / `stop_charge`, and Solcast's dampening services.
+- Before switching the battery on, check once on the inverter that `hold` (battery first with
+  max SoC = current SoC) neither charges nor discharges the battery.
 
 ## How it decides
 

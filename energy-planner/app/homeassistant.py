@@ -12,13 +12,17 @@ BASE_URL = "http://supervisor/core/api"
 WS_URL = "ws://supervisor/core/websocket"
 
 
-# The only services this add-on may call. Inverter and charger stay dry-run: anything else is
-# refused here, whatever the caller asks for.
+# The only services this add-on may call; anything else is refused here, whatever the caller asks.
 ALLOWED_SERVICES = {
     ("solcast_solar", "set_dampening"),
     ("solcast_solar", "get_dampening"),
     ("solcast_solar", "query_forecast_data"),   # read-only: Solcast's forecast history
+    ("kia_uvo", "start_charge"),                # car (production, car switch on)
+    ("kia_uvo", "stop_charge"),
 }
+# Entity services: only on the entities the planner allows (the inverter registers it writes and the
+# charger's current / start button). The export limit and everything else stay off limits.
+ENTITY_SERVICES = {("select", "select_option"), ("number", "set_value"), ("button", "press")}
 
 
 class ServiceNotAllowed(Exception):
@@ -30,6 +34,11 @@ class HomeAssistant:
         self.token = token or os.getenv("SUPERVISOR_TOKEN", "")
         self.base_url = base_url
         self.ws_url = ws_url
+        self.allowed_entities = frozenset()
+
+    def set_allowed_entities(self, entity_ids):
+        """Entities the entity services (select / number / button) may act on."""
+        self.allowed_entities = frozenset(e for e in entity_ids if e)
 
     @property
     def _headers(self):
@@ -80,7 +89,11 @@ class HomeAssistant:
     def call_service(self, domain: str, service: str, data: dict = None, return_response: bool = False):
         """Call an allowlisted service. Returns the JSON response (with `service_response` when
         return_response is set), or raises."""
-        if (domain, service) not in ALLOWED_SERVICES:
+        if (domain, service) in ENTITY_SERVICES:
+            entity = (data or {}).get("entity_id")
+            if not entity or entity not in self.allowed_entities:
+                raise ServiceNotAllowed(f"{domain}.{service} on {entity} is not allowed")
+        elif (domain, service) not in ALLOWED_SERVICES:
             raise ServiceNotAllowed(f"{domain}.{service} is not allowed")
         url = f"{self.base_url}/services/{domain}/{service}" + ("?return_response" if return_response else "")
         r = requests.post(url, headers=self._headers, data=json.dumps(data or {}), timeout=30)

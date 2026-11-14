@@ -603,20 +603,26 @@
 
   function registerRows(p) {
     const sp = p.setpoints, a = p.actual_registers || {};
+    const writes = {};
+    for (const w of ((p.production || {}).writes || [])) writes[w.key] = w;
     const rows = [
-      ['Battery first', sp.battery_first ? 'Til' : 'Fra', a.reg_battery_first, (x) => isOn(x) === sp.battery_first],
-      ['Lad fra nettet', sp.grid_charge ? 'Til' : 'Fra', a.reg_grid_charge, (x) => isOn(x) === sp.grid_charge],
-      ['Max SoC (mål)', sp.max_soc_pct == null ? '–' : sp.max_soc_pct + ' %', a.reg_max_soc, (x) => sp.max_soc_pct == null || Math.abs(+x - sp.max_soc_pct) <= 1],
-      ['Min SoC (gulv)', sp.min_soc_pct + ' %', a.reg_min_soc, (x) => Math.abs(+x - sp.min_soc_pct) <= 1],
-      ['Ladehastighed', sp.charge_rate_pct + ' %', a.reg_charge_rate, (x) => !sp.battery_first || Math.abs(+x - sp.charge_rate_pct) <= 5],
-      ['Eksport', sp.export_hint === 'export' ? 'Sælg' : 'Ingen', a.reg_export_limit, null],
+      ['Battery first', sp.battery_first ? 'Til' : 'Fra', a.reg_battery_first, (x) => isOn(x) === sp.battery_first, 'reg_battery_first'],
+      ['Lad fra nettet', sp.grid_charge ? 'Til' : 'Fra', a.reg_grid_charge, (x) => isOn(x) === sp.grid_charge, 'reg_grid_charge'],
+      ['Max SoC (mål)', sp.max_soc_pct == null ? '–' : sp.max_soc_pct + ' %', a.reg_max_soc, (x) => sp.max_soc_pct == null || Math.abs(+x - sp.max_soc_pct) <= 1, 'reg_max_soc'],
+      ['Min SoC (gulv)', sp.min_soc_pct + ' %', a.reg_min_soc, (x) => Math.abs(+x - sp.min_soc_pct) <= 1, 'reg_min_soc'],
+      ['Ladehastighed', sp.charge_rate_pct + ' %', a.reg_charge_rate, (x) => !sp.battery_first || Math.abs(+x - sp.charge_rate_pct) <= 5, 'reg_charge_rate'],
+      ['Eksport', sp.export_hint === 'export' ? 'Sælg' : 'Ingen', a.reg_export_limit, null, null],
     ];
-    return rows.map(([name, planned, actual, same]) => {
+    return rows.map(([name, planned, actual, same, key]) => {
       const known = actual != null && actual !== 'unknown' && actual !== 'unavailable';
       const ok = same && known ? same(actual) : null;
-      return h('tr', { class: ok === false ? 'diff' : '' },
-        h('td', {}, name), h('td', {}, planned), h('td', {}, known ? String(actual) : '–'),
-        h('td', {}, ok == null ? '' : h('span', { class: 'flag ' + (ok ? 'ok' : 'warn') }, ok ? 'Ens' : 'Afviger')));
+      const w = key && writes[key];
+      const status = w
+        ? h('span', { class: 'flag ' + (w.status === 'error' ? 'warn' : 'ok'), title: w.error || '' },
+          w.status === 'error' ? 'Fejl' : (w.status === 'confirmed' ? 'Skrevet ' : 'Sendt ') + w.at.slice(11, 16))
+        : (ok == null ? '' : h('span', { class: 'flag ' + (ok ? 'ok' : 'warn') }, ok ? 'Ens' : 'Afviger'));
+      return h('tr', { class: ok === false && !w ? 'diff' : '' },
+        h('td', {}, name), h('td', {}, planned), h('td', {}, known ? String(actual) : '–'), h('td', {}, status));
     });
   }
 
@@ -699,8 +705,10 @@
         h('div', {}, h('div', { class: 'line1' }, h('span', { class: 'what' }, it.what), h('span', { class: 'when' }, it.when)),
           h('div', { class: 'why' }, it.why))))) : h('div', { class: 'empty' }, 'Intet planlagt.'));
 
+    const prodOn = p.production && p.production.battery;
     const regCard = h('div', { class: 'card' },
-      h('div', { class: 'card-head' }, h('h2', {}, 'Planner mod inverteren nu'), h('span', { class: 'hint' }, 'Dry-run: hvad planneren ville sætte, og hvad Node-RED har sat')),
+      h('div', { class: 'card-head' }, h('h2', {}, 'Planner mod inverteren nu'),
+        h('span', { class: 'hint' }, prodOn ? 'Produktion: add-on’en skriver registrene (manuelle ændringer overskrives ved næste cyklus)' : 'Dry-run: hvad planneren ville sætte, og hvad Node-RED har sat')),
       h('div', { class: 'table-wrap' }, h('table', { class: 'cmp' },
         h('thead', {}, h('tr', {}, h('th', {}, 'Register'), h('th', {}, 'Planner'), h('th', {}, 'Nu'), h('th', {}, ''))),
         h('tbody', {}, registerRows(p)))));
@@ -840,6 +848,7 @@
     [/^no solar forecast available.*/, () => 'Ingen solprognose – planlægger uden sol.'],
     [/^car minimum cannot be reached by the deadline \(([\d.]+) kWh short\)/, (m) => `Bilens minimum kan ikke nås inden deadline (mangler ${fmt(+m[1], 1)} kWh).`],
     [/^the car charger power has no long-term statistics.*/, () => 'Billaderens effekt har ingen langtidsstatistik. Indtil den har, regnes timer med over car_detect_kw husforbrug som bilopladning og tages ud af forbrugsprofilen. Se kortet "Forbrugsprofil".'],
+    [/^could not write (\S+): (.*)/, (m) => `Kunne ikke skrive ${m[1]}: ${m[2]}`],
     [/^car is connected but its SoC is unavailable.*/, () => 'Bilen er tilsluttet, men dens SoC er utilgængelig – bilen er udeladt af planen.'],
   ];
   function translateWarning(w) {
@@ -893,11 +902,17 @@
       tile('Planlagt', carInfo && carInfo.connected ? h('span', {}, fmt(carInfo.planned_kwh, 1), h('small', {}, ' kWh')) : '–',
         carInfo && carInfo.connected ? `frem til kl. ${carInfo.deadline.slice(11, 16)} · net-del ca. ${fmt(carInfo.planned_cost_dkk, 0)} kr` + (carInfo.shortfall_kwh > 0.05 ? ` · mangler ${fmt(carInfo.shortfall_kwh, 1)} kWh` : '') : 'bilen er ikke tilsluttet'));
 
-    const calls = c && c.calls && c.calls.length
-      ? h('div', { class: 'chips' }, c.calls.map((x) => h('span', { class: 'chip' }, x.service + (x.value != null ? ` → ${x.value}` : ''))))
-      : h('div', { class: 'hint' }, 'Ingen kald lige nu.');
+    const live_ = c && c.dry_run === false;
+    const executed = (c && c.executed) || [];
+    const calls = live_ && executed.length
+      ? h('div', { class: 'chips' }, executed.map((x) => h('span', { class: 'chip', title: x.error || '' },
+        x.service + (x.value != null ? ` → ${x.value}` : '') + (x.status === 'ok' ? ' ✓' : ` (${x.status === 'skipped' ? 'sprunget over' : 'fejl'})`))))
+      : c && c.calls && c.calls.length
+        ? h('div', { class: 'chips' }, c.calls.map((x) => h('span', { class: 'chip' }, x.service + (x.value != null ? ` → ${x.value}` : ''))))
+        : h('div', { class: 'hint' }, 'Ingen kald lige nu.');
     const callsCard = h('div', { class: 'card' },
-      h('div', { class: 'card-head' }, h('h2', {}, 'Ville kalde nu'), h('span', { class: 'hint' }, 'Dry-run: intet sendes til laderen eller bilen')),
+      h('div', { class: 'card-head' }, h('h2', {}, live_ ? 'Kaldte nu' : 'Ville kalde nu'),
+        h('span', { class: 'hint' }, live_ ? 'Produktion: add-on’en styrer laderen og bilen' : 'Dry-run: intet sendes til laderen eller bilen')),
       calls,
       c ? h('dl', { class: 'kv', style: { marginTop: '14px' } },
         h('dt', {}, 'Soloverskud'), h('dd', {}, c.surplus_w != null ? fmt(c.surplus_w / 1000, 2) + ' kW' : '–'),
@@ -1170,6 +1185,14 @@
   // ---------------------------------------------------------------- loading & tabs
   function setUpdated() {
     const p = state.plan;
+    const pill = $('#mode-pill');
+    const prod = (p && p.production) || {};
+    const parts = [prod.battery ? 'batteri' : null, prod.car ? 'bil' : null].filter(Boolean);
+    pill.textContent = parts.length ? 'Produktion: ' + parts.join(' + ') : 'Dry-run';
+    pill.classList.toggle('live', parts.length > 0);
+    pill.title = parts.length
+      ? 'Add-on’en styrer ' + parts.join(' og ') + '. Slå hjælperen fra for at gå tilbage til dry-run.'
+      : 'Planen beregnes og vises, men intet skrives til inverteren eller laderen';
     $('#updated').textContent = p ? `Opdateret ${p.updated.slice(11, 16)} · ${p.horizon_hours} timers horisont` : (state.planError || '');
   }
   async function loadPlan() {
