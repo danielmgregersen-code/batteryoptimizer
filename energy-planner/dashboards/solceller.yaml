@@ -1,7 +1,13 @@
 # Solceller - dashboard view for Energy Planner (sections layout, 3 columns).
 #
-# Paste as a view: open the dashboard -> pencil -> the view's ⋮ -> "Edit in YAML" (or the raw
-# configuration editor) and replace/add this view.
+# This file is ONE VIEW. Paste it in the view editor, not the raw configuration editor:
+#   open the Solceller page -> pencil -> pencil on the view (Edit view) -> ⋮ -> "Edit in YAML"
+#   -> replace everything with this file.
+# (The raw configuration editor holds the whole dashboard and expects `views:`; for a new, separate
+#  dashboard use solceller-dashboard.yaml there instead.)
+#
+# `subview: true` keeps it a sub-page with a back arrow like the current Solceller page; remove the
+# line if it should be a normal tab.
 #
 # Needs: apexcharts-card (HACS). Everything else is core cards.
 # Entity ids are the add-on's defaults; change them here if yours differ.
@@ -13,6 +19,7 @@
 title: Solceller
 path: solceller
 icon: mdi:solar-power-variant
+subview: true
 type: sections
 max_columns: 3
 sections:

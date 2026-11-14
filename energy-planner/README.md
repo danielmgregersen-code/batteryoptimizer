@@ -112,7 +112,9 @@ power, the grid part of the charging (`battery charge - solar`) is subtracted fr
 `dashboards/solceller.yaml` is a ready-made Solceller view (sections layout, needs apexcharts-card):
 the planner's status and next action, live tiles, solar today vs. forecast, price / planned energy /
 planned SoC for the next 30 hours, cost today, "Kommende", the planner vs. register table, the car,
-and the register controls. Paste it as a view in the raw configuration editor. Solcast `detailedHourly` values are average kW over the hour, i.e. kWh per hour.
+and the register controls. It is one view: paste it in *Edit view → ⋮ → Edit in YAML* (not the raw
+configuration editor, which expects a whole dashboard). `dashboards/solceller-dashboard.yaml` is the
+same as a complete dashboard for the raw configuration editor of a new dashboard. Solcast `detailedHourly` values are average kW over the hour, i.e. kWh per hour.
 
 ## Outputs
 
