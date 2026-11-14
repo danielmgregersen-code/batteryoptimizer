@@ -262,3 +262,7 @@ details[open] > summary { margin-bottom: 10px; }
 @media (forced-colors: active) {
   .key, .mode-dot, .meter > .fill { forced-color-adjust: none; }
 }
+
+.diag { margin: 12px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--ink-2); display: grid; gap: 4px; }
+.diag li.warn { color: var(--ink); }
+.diag li.warn::marker { content: "⚠  "; }

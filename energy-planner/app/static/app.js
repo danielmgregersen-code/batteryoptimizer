@@ -641,7 +641,25 @@
         h('div', { class: 'hint', style: { marginBottom: '8px' } }, 'Energi i kWh pr. time. Kursiv pris = estimeret ud fra samme time sidste kendte dag.'),
         h('div', { class: 'table-wrap' }, table)));
 
-    root.replaceChildren(h('div', { class: 'stack' }, banners, tiles, chartCard, h('div', { class: 'grid-2' }, upCard, regCard), tableCard));
+    const prof = p.profile;
+    const profBox = h('div', { class: 'chart' });
+    const profCard = prof ? h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', {}, 'Forbrugsprofil (basisforbrug pr. time, kWh)'),
+        h('span', { class: 'hint' }, `Det planen regner med · ${fmt(prof.hours_of_data, 0)} timers statistik`)),
+      profBox,
+      h('div', { style: { marginTop: '10px' } }, legend([{ color: C.batt, label: 'Hverdag' }, { color: C.export, label: 'Weekend' }])),
+      h('ul', { class: 'diag' }, profileDiagnostics(prof).map((d) => h('li', { class: d.warn ? 'warn' : '' }, d.text)))) : null;
+
+    root.replaceChildren(h('div', { class: 'stack' }, banners, tiles, chartCard, h('div', { class: 'grid-2' }, upCard, regCard), profCard, tableCard));
+    if (prof) {
+      columnChart(profBox, {
+        label: 'Basisforbrug pr. time', height: 170,
+        items: prof.weekday.map((v, hh) => ({ label: String(hh).padStart(2, '0'), values: [v, prof.weekend[hh]], hh })),
+        series: [{ label: 'Hverdag', color: C.batt }, { label: 'Weekend', color: C.export }],
+        tooltip: (it) => h('div', {}, h('div', { class: 'tt-head' }, `Kl. ${it.label}–${String((it.hh + 1) % 24).padStart(2, '0')}`),
+          ttRow(C.batt, 'Hverdag', fmt(it.values[0], 2) + ' kWh', ''), ttRow(C.export, 'Weekend', fmt(it.values[1], 2) + ' kWh', '')),
+      });
+    }
 
     const carConnected = p.car && p.car.connected;
     timeChart(chartBox, {
@@ -664,6 +682,23 @@
             ...(carConnected ? [{ label: 'Bil', short: 'Bil', color: C.car, start: p.car.soc_pct, get: (r) => r.car_soc }] : [])] },
       ],
     });
+  }
+
+  function profileDiagnostics(prof) {
+    const d = prof.diagnostics || {}, out = [];
+    if (!prof.hours_of_data) {
+      out.push({ warn: true, text: 'Ingen statistik endnu (eller forespørgslen fejlede) – planen bruger default_load_kw for alle timer.' });
+      return out;
+    }
+    if (!d.car_rows) out.push({ warn: true, text: 'Billaderens effekt har ingen langtidsstatistik, så bilen trækkes ikke fra husforbruget. Giv sensoren state_class: measurement.' });
+    else out.push({ text: `Bilen er trukket fra (${fmt(d.car_hours, 0)} timer med opladning i perioden).` });
+    const b = d.battery_detection || {};
+    const mode = d.battery_mode === 'auto' ? '' : ` (indstillet til "${d.battery_mode}")`;
+    if (!d.battery_rows) out.push({ warn: true, text: 'Batteriets ladeeffekt har ingen langtidsstatistik – kan ikke afgøre, om husforbruget indeholder batteriets opladning.' });
+    else if (b.included === true) out.push({ warn: !d.battery_subtracted, text: `Husforbruget indeholder batteriets opladning: om natten ${fmt(b.base_while_charging_kw, 2)} kW mens batteriet lader (${fmt(b.charge_kw, 1)} kW) mod ${fmt(b.base_while_idle_kw, 2)} kW uden. ` + (d.battery_subtracted ? `Opladning fra nettet er trukket fra i ${fmt(d.battery_corrected_hours, 0)} timer.` : 'Den trækkes ikke fra') + mode });
+    else if (b.included === false) out.push({ text: `Husforbruget indeholder ikke batteriets opladning (om natten ${fmt(b.base_while_charging_kw, 2)} kW under opladning mod ${fmt(b.base_while_idle_kw, 2)} kW uden).` + (d.battery_subtracted ? ' Trækkes alligevel fra' + mode + '.' : '') });
+    else out.push({ text: `For få nattetimer med batteriopladning (${b.night_charging_hours ?? 0}) til at afgøre, om husforbruget indeholder den.` + (d.battery_subtracted ? ' Trækkes fra' + mode + '.' : '') });
+    return out;
   }
 
   const WARN_DA = [

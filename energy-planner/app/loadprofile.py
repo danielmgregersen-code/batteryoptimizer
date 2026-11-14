@@ -1,18 +1,31 @@
 """Base-load profile from HA long-term statistics (hourly means).
 
-Base load = total house load minus EV charging, so the profile describes the part of the
-consumption that repeats day after day. A trimmed mean per (weekday/weekend, hour of day)
-drops the most extreme hours (a car hour the charger sensor missed, a space heater) but, unlike
-the median, still counts the ordinary peaks such as cooking: the plan needs the expected energy,
-and the median of a right-skewed load underestimates it.
+Base load = total house load minus EV charging (and minus battery charging from the grid, if the
+house-load sensor turns out to include it), so the profile describes the part of the consumption
+that repeats day after day. A trimmed mean per (weekday/weekend, hour of day) drops the most
+extreme hours (a car hour the charger sensor missed, a space heater) but, unlike the median, still
+counts the ordinary peaks such as cooking: the plan needs the expected energy, and the median of a
+right-skewed load underestimates it.
+
+Does the house-load sensor include the battery's charging? Growatt integrations differ. It is
+detected from the data: at night (no sun, car not charging) the base load is compared between
+hours where the battery charges from the grid and hours where it is idle. If the base load is
+higher by more than half the charging power, the sensor counts the charging as house load, and
+`battery charge - solar` (the part of the charging the sun cannot have covered) is subtracted.
 """
 import math
 from datetime import datetime
+from statistics import median
 
 from inputs import parse_ts
 
-
-TRIM = 0.15   # share dropped at each end
+TRIM = 0.15             # share dropped at each end
+CHARGING_W = 1000.0     # battery charging at least this much counts as a charging hour
+IDLE_W = 100.0          # battery (and car) below this counts as idle
+NIGHT_PV_W = 150.0      # sun below this counts as night
+INCLUDED_RATIO = 0.5    # base-load difference / charging power above this: charging is included
+MIN_CHARGING_HOURS = 3
+MIN_IDLE_HOURS = 10
 
 
 def trimmed_mean(values, trim: float = TRIM) -> float:
@@ -32,14 +45,63 @@ def _by_start(rows) -> dict:
     return out
 
 
-def build_profile(load_rows, car_rows, tz, default_kwh: float) -> dict:
-    """-> {"table": {(is_weekend, hour): kWh}, "hours_of_data": int, "default": kWh}."""
+def detect_battery_in_load(load: dict, car: dict, bat: dict, pv: dict) -> dict:
+    """Compare night-time base load with and without the battery charging (see module doc)."""
+    charging, idle, charge_w = [], [], []
+    for start, load_w in load.items():
+        if start not in bat or pv.get(start, 0.0) >= NIGHT_PV_W:
+            continue
+        car_w = max(0.0, car.get(start, 0.0))
+        base = load_w - car_w
+        b = bat[start]
+        if b >= CHARGING_W:
+            charging.append(base)
+            charge_w.append(b)
+        elif b < IDLE_W and car_w < IDLE_W:
+            idle.append(base)
+    out = {"night_charging_hours": len(charging), "night_idle_hours": len(idle), "included": None}
+    if len(charging) < MIN_CHARGING_HOURS or len(idle) < MIN_IDLE_HOURS:
+        return out
+    diff = median(charging) - median(idle)
+    charge = median(charge_w)
+    ratio = diff / charge if charge > 0 else 0.0
+    out.update({
+        "base_while_charging_kw": round(median(charging) / 1000.0, 2),
+        "base_while_idle_kw": round(median(idle) / 1000.0, 2),
+        "charge_kw": round(charge / 1000.0, 2),
+        "ratio": round(ratio, 2),
+        "included": ratio > INCLUDED_RATIO,
+    })
+    return out
+
+
+def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv_rows=None,
+                  battery_mode: str = "auto") -> dict:
+    """-> {"table": {(is_weekend, hour): kWh}, "hours_of_data": int, "default": kWh, "diagnostics": {...}}.
+
+    battery_mode: "auto" (detect), "yes" (always subtract grid charging), "no" (never).
+    """
     load = _by_start(load_rows)
     car = _by_start(car_rows)
+    bat = _by_start(bat_rows)
+    pv = _by_start(pv_rows)
+
+    detection = detect_battery_in_load(load, car, bat, pv) if bat else {"included": None}
+    subtract = battery_mode == "yes" or (battery_mode == "auto" and detection.get("included") is True)
+
     samples: dict = {}
-    n = 0
+    n = corrected = car_hours = 0
     for start, load_w in load.items():
-        base_w = max(0.0, load_w - max(0.0, car.get(start, 0.0)))
+        car_w = max(0.0, car.get(start, 0.0))
+        if car_w >= IDLE_W:
+            car_hours += 1
+        base_w = load_w - car_w
+        if subtract and start in bat:
+            grid_charge = max(0.0, bat[start] - max(0.0, pv.get(start, 0.0)))
+            if grid_charge > 0:
+                corrected += 1
+            base_w -= grid_charge
+        base_w = max(0.0, base_w)
         local = start.astimezone(tz)
         samples.setdefault((local.weekday() >= 5, local.hour), []).append(base_w / 1000.0)
         n += 1
@@ -59,9 +121,31 @@ def build_profile(load_rows, car_rows, tz, default_kwh: float) -> dict:
                 table[(weekend, hour)] = trimmed_mean(by_hour[hour])
             else:
                 table[(weekend, hour)] = default_kwh
-    return {"table": table, "hours_of_data": n, "default": default_kwh}
+    diagnostics = {
+        "battery_mode": battery_mode,
+        "battery_detection": detection,
+        "battery_subtracted": subtract,
+        "battery_corrected_hours": corrected,
+        "car_rows": len(car),
+        "car_hours": car_hours,
+        "battery_rows": len(bat),
+        "pv_rows": len(pv),
+    }
+    return {"table": table, "hours_of_data": n, "default": default_kwh, "diagnostics": diagnostics}
 
 
 def load_for_hour(profile: dict, hour_utc: datetime, tz) -> float:
     local = hour_utc.astimezone(tz)
     return profile["table"].get((local.weekday() >= 5, local.hour), profile["default"])
+
+
+def profile_view(profile: dict) -> dict:
+    """The profile for the panel: 24 values for weekdays and weekends plus the diagnostics."""
+    t = profile["table"]
+    return {
+        "weekday": [round(t[(False, h)], 3) for h in range(24)],
+        "weekend": [round(t[(True, h)], 3) for h in range(24)],
+        "hours_of_data": profile["hours_of_data"],
+        "diagnostics": profile.get("diagnostics", {}),
+        "statistics_rows": profile.get("statistics_rows", {}),
+    }

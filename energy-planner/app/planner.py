@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import car as carmod
 from inputs import UTC, build_horizon, hour_floor, parse_prices, parse_solcast, persistence_forecast
 from optimizer import BatteryParams, solve, terminal_value_for
-from loadprofile import build_profile, load_for_hour
+from loadprofile import build_profile, load_for_hour, profile_view
 from settings import REGISTER_KEYS, counter_ids, load_options, local_tz, split_csv
 from setpoints import derive_setpoints, step_mode
 from evaluation import evaluate
@@ -67,8 +67,9 @@ class Planner:
         self.entity_check = self._check_entities(opts)
         try:
             ids = [opts["house_load_entity"]]
-            if opts.get("car_power_entity"):
-                ids.append(opts["car_power_entity"])
+            for key in ("car_power_entity", "battery_charge_power_entity", "pv_power_entity"):
+                if opts.get(key):
+                    ids.append(opts[key])
             start = now - timedelta(days=int(opts["profile_days"]))
             stats = self.ha.statistics(ids, start, now, "hour")
             prof = build_profile(
@@ -76,7 +77,17 @@ class Planner:
                 stats.get(opts.get("car_power_entity", "")),
                 self.tz,
                 default_kwh,
+                bat_rows=stats.get(opts.get("battery_charge_power_entity", "")),
+                pv_rows=stats.get(opts.get("pv_power_entity", "")),
+                battery_mode=opts.get("load_includes_battery_charging", "auto"),
             )
+            det = prof["diagnostics"]["battery_detection"]
+            if det.get("included") is not None:
+                log.info("house load %s battery charging (night base %.2f kW while charging vs %.2f kW idle, "
+                         "charging %.2f kW); grid charging %s from the profile",
+                         "includes" if det["included"] else "does not include",
+                         det["base_while_charging_kw"], det["base_while_idle_kw"], det["charge_kw"],
+                         "subtracted" if prof["diagnostics"]["battery_subtracted"] else "not subtracted")
             prof["statistics_rows"] = {i: len(stats.get(i) or []) for i in ids}
             for i in ids:
                 if not stats.get(i):
@@ -234,6 +245,7 @@ class Planner:
             "net_cost_dkk": round(plan.net_cost, 2),
             "horizon_hours": len(horizon),
             "profile_hours_of_data": profile["hours_of_data"],
+            "profile": profile_view(profile),
             "entity_check": self.entity_check,
             "warnings": warnings,
             "car": car_info,

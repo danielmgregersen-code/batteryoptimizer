@@ -99,12 +99,26 @@ class FakeHA:
         self.published[e] = (state, attributes)
 
     def statistics(self, ids, start, end, period="hour"):
+        """Hourly means like HA's long-term statistics. The house load includes the battery's
+        night-time grid charging (02-05, 4 kW), as some Growatt integrations report it."""
         rows = {i: [] for i in ids}
+        load_id, car_id = DEFAULTS["house_load_entity"], DEFAULTS["car_power_entity"]
+        bat_id, pv_id = DEFAULTS["battery_charge_power_entity"], DEFAULTS["pv_power_entity"]
         t = start.replace(minute=0, second=0, microsecond=0)
         while t < end:
             hl = t.astimezone(TZ).hour
+            ms = t.timestamp() * 1000
             base = 450 + (900 if 17 <= hl < 21 else 350 if 6 <= hl < 17 else 150 if 21 <= hl < 23 else 0)
-            rows[ids[0]].append({"start": t.timestamp() * 1000, "mean": base + random.uniform(-80, 120)})
+            bat = 4000.0 if 2 <= hl < 5 and t.day % 4 else 0.0
+            car = 11000.0 if hl == 4 and t.day % 5 == 0 else 0.0
+            pv = SOLCAST_HOURLY[hl][0] * 1000 * random.uniform(0.5, 1.6)
+            rows.get(load_id, []).append({"start": ms, "mean": base + random.uniform(-80, 120) + bat + car})
+            if car_id in rows:
+                rows[car_id].append({"start": ms, "mean": car})
+            if bat_id in rows:
+                rows[bat_id].append({"start": ms, "mean": bat})
+            if pv_id in rows:
+                rows[pv_id].append({"start": ms, "mean": pv})
             t += timedelta(hours=1)
         return rows
 

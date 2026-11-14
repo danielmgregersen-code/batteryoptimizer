@@ -1,0 +1,339 @@
+# Solceller - dashboard view for Energy Planner (sections layout, 3 columns).
+#
+# Paste as a view: open the dashboard -> pencil -> the view's ⋮ -> "Edit in YAML" (or the raw
+# configuration editor) and replace/add this view.
+#
+# Needs: apexcharts-card (HACS). Everything else is core cards.
+# Entity ids are the add-on's defaults; change them here if yours differ.
+# Your existing power-flow cards (Produktion og forbrug) can be pasted in where marked.
+#
+# Colours follow the add-on panel (dark-theme steps): grid->battery aqua, sun->battery amber,
+# car pink, battery->house blue, export orange, buy/sell price light/dark grey.
+
+title: Solceller
+path: solceller
+icon: mdi:solar-power-variant
+type: sections
+max_columns: 3
+sections:
+
+  # ------------------------------------------------------------------ 1. Lige nu
+  - type: grid
+    cards:
+      - type: heading
+        heading: Lige nu
+        icon: mdi:solar-power
+
+      - type: markdown
+        text_only: true
+        content: >-
+          {% set m = states.sensor.energy_planner_mode %}
+          {% if m and m.attributes.label is defined %}
+          ### {{ m.attributes.label }} <small>(dry-run)</small>
+
+          {{ m.attributes.detail }}
+
+          <small>Derefter: {{ m.attributes.next_action or '–' }}<br>
+          Plan mod kun sol: {{ m.attributes.savings_vs_solar_only_dkk }} kr over
+          {{ m.attributes.horizon_hours }} timer · opdateret {{ m.attributes.updated[11:16] }}</small>
+          {% else %}
+          Energy Planner har ikke lavet en plan endnu (efter genstart tager det op til 15 min).
+          {% endif %}
+
+      - type: tile
+        entity: sensor.growatt_pv_power_total
+        name: Sol nu
+        icon: mdi:solar-power-variant
+        color: amber
+        grid_options: { columns: 6 }
+      - type: tile
+        entity: sensor.growatt_total_house_load
+        name: Husforbrug
+        icon: mdi:home-lightning-bolt
+        grid_options: { columns: 6 }
+      - type: tile
+        entity: sensor.growatt_battery_soc
+        name: Husbatteri
+        icon: mdi:home-battery
+        color: blue
+        grid_options: { columns: 6 }
+      - type: tile
+        entity: sensor.growatt_battery_charge_power
+        name: Batteri lader
+        icon: mdi:battery-charging
+        color: teal
+        grid_options: { columns: 6 }
+      - type: tile
+        entity: sensor.kob_af_el
+        name: Køb nu
+        icon: mdi:transmission-tower-import
+        grid_options: { columns: 6 }
+      - type: tile
+        entity: sensor.salg_af_el
+        name: Salg nu
+        icon: mdi:transmission-tower-export
+        grid_options: { columns: 6 }
+
+      # --- Paste your "Produktion og forbrug lige nu" / "for dagen" power-flow cards here ---
+
+      - type: heading
+        heading: Solprognose
+        heading_style: subtitle
+      - type: tile
+        entity: sensor.solcast_pv_forecast_forecast_today
+        name: I dag
+        icon: mdi:weather-sunny
+        color: amber
+        grid_options: { columns: 6 }
+      - type: tile
+        entity: sensor.solcast_pv_forecast_forecast_tomorrow
+        name: I morgen
+        icon: mdi:weather-partly-cloudy
+        color: amber
+        grid_options: { columns: 6 }
+
+      - type: custom:apexcharts-card
+        header: { show: true, title: Sol i dag (kW), show_states: false }
+        graph_span: 24h
+        span: { start: day }
+        now: { show: true, label: Nu }
+        yaxis:
+          - { min: 0, decimals: 1 }
+        series:
+          - entity: sensor.growatt_pv_power_total
+            name: Faktisk
+            type: area
+            color: '#c98500'
+            opacity: 0.25
+            stroke_width: 2
+            group_by: { func: avg, duration: 15min }
+            transform: return x / 1000;
+            show: { legend_value: false }
+          - entity: sensor.solcast_pv_forecast_forecast_today
+            name: Prognose (p50)
+            type: line
+            color: '#c3c2b7'
+            stroke_width: 2
+            show: { legend_value: false }
+            data_generator: |
+              const f = entity.attributes.detailedForecast || entity.attributes.detailedHourly || [];
+              return f.map(e => [new Date(e.period_start).getTime(), e.pv_estimate]);
+          - entity: sensor.solcast_pv_forecast_forecast_today
+            name: Prognose (p10)
+            type: line
+            color: '#75736d'
+            stroke_width: 1
+            show: { legend_value: false }
+            data_generator: |
+              const f = entity.attributes.detailedForecast || entity.attributes.detailedHourly || [];
+              return f.map(e => [new Date(e.period_start).getTime(), e.pv_estimate10]);
+
+  # ------------------------------------------------------------------ 2. Plan
+  - type: grid
+    cards:
+      - type: heading
+        heading: Plan de næste 30 timer
+        icon: mdi:chart-timeline-variant
+
+      - type: custom:apexcharts-card
+        header: { show: true, title: Elpris (kr/kWh), show_states: false }
+        graph_span: 30h
+        span: { start: hour }
+        now: { show: true, label: Nu }
+        yaxis:
+          - { decimals: 1 }
+        series:
+          - entity: sensor.kob_af_el
+            name: Køb
+            type: line
+            curve: stepline
+            color: '#c3c2b7'
+            stroke_width: 2
+            show: { legend_value: false }
+            data_generator: |
+              const raw = [...(entity.attributes.raw_today || []), ...(entity.attributes.raw_tomorrow || [])];
+              return raw.map(e => [new Date(e.hour || e.start).getTime(), e.price]);
+          - entity: sensor.salg_af_el
+            name: Salg
+            type: line
+            curve: stepline
+            color: '#75736d'
+            stroke_width: 2
+            show: { legend_value: false }
+            data_generator: |
+              const raw = [...(entity.attributes.raw_today || []), ...(entity.attributes.raw_tomorrow || [])];
+              return raw.map(e => [new Date(e.hour || e.start).getTime(), e.price]);
+
+      # plan columns: t, net->batteri, sol->batteri, batteri->hus, eksport, SoC %, bil kWh, bil SoC %
+      - type: custom:apexcharts-card
+        header: { show: true, title: Energi pr. time - plan (kWh), show_states: false }
+        graph_span: 30h
+        span: { start: hour }
+        now: { show: true, label: Nu }
+        stacked: true
+        yaxis:
+          - { decimals: 1 }
+        series:
+          - entity: sensor.energy_planner_plan
+            name: Net → batteri
+            type: column
+            color: '#199e70'
+            show: { legend_value: false }
+            data_generator: |
+              return (entity.attributes.plan || []).map(r => [new Date(r[0]).getTime() + 1800e3, r[1]]);
+          - entity: sensor.energy_planner_plan
+            name: Sol → batteri
+            type: column
+            color: '#c98500'
+            show: { legend_value: false }
+            data_generator: |
+              return (entity.attributes.plan || []).map(r => [new Date(r[0]).getTime() + 1800e3, r[2]]);
+          - entity: sensor.energy_planner_plan
+            name: Til bil
+            type: column
+            color: '#d55181'
+            show: { legend_value: false }
+            data_generator: |
+              return (entity.attributes.plan || []).map(r => [new Date(r[0]).getTime() + 1800e3, r[6] || 0]);
+          - entity: sensor.energy_planner_plan
+            name: Batteri → hus
+            type: column
+            color: '#3987e5'
+            show: { legend_value: false }
+            data_generator: |
+              return (entity.attributes.plan || []).map(r => [new Date(r[0]).getTime() + 1800e3, -r[3]]);
+          - entity: sensor.energy_planner_plan
+            name: Eksport
+            type: column
+            color: '#d95926'
+            show: { legend_value: false }
+            data_generator: |
+              return (entity.attributes.plan || []).map(r => [new Date(r[0]).getTime() + 1800e3, -r[4]]);
+
+      - type: custom:apexcharts-card
+        header: { show: true, title: Batteri - plan (%), show_states: false }
+        graph_span: 30h
+        span: { start: hour }
+        now: { show: true, label: Nu }
+        yaxis:
+          - { min: 0, max: 100, decimals: 0 }
+        series:
+          - entity: sensor.energy_planner_plan
+            name: Husbatteri
+            type: line
+            color: '#3987e5'
+            stroke_width: 2
+            show: { legend_value: false }
+            data_generator: |
+              return (entity.attributes.plan || []).map(r => [new Date(r[0]).getTime() + 3600e3, r[5]]);
+          - entity: sensor.energy_planner_plan
+            name: Bil
+            type: line
+            color: '#d55181'
+            stroke_width: 2
+            show: { legend_value: false }
+            data_generator: |
+              return (entity.attributes.plan || []).filter(r => r[7] != null)
+                .map(r => [new Date(r[0]).getTime() + 3600e3, r[7]]);
+
+      - type: tile
+        entity: sensor.energy_planner_cost_today
+        name: Netudgift i dag
+        icon: mdi:cash
+        grid_options: { columns: 6 }
+      - type: markdown
+        text_only: true
+        grid_options: { columns: 6 }
+        content: >-
+          {% set c = states.sensor.energy_planner_cost_today %}
+          {% if c %}<small>I går: {{ c.attributes.yesterday_dkk if c.attributes.yesterday_dkk is not none else '–' }} kr<br>
+          Betalt {{ c.attributes.avg_buy_paid if c.attributes.avg_buy_paid is not none else '–' }} kr/kWh
+          (gns. {{ c.attributes.avg_buy_market if c.attributes.avg_buy_market is not none else '–' }})</small>{% endif %}
+
+  # ------------------------------------------------------------------ 3. Styring
+  - type: grid
+    cards:
+      - type: heading
+        heading: Styring
+        icon: mdi:tune-variant
+
+      - type: markdown
+        title: Kommende
+        content: |-
+          {% for it in state_attr('sensor.energy_planner_mode', 'upcoming') or [] %}
+          **{{ it.when }}** · {{ it.label }}<br><small>{{ it.text }}</small>
+
+          {% else %}
+          Ingen plan endnu.
+          {% endfor %}
+
+      - type: markdown
+        title: Planner mod inverteren nu
+        content: |-
+          {% set m = states.sensor.energy_planner_mode %}
+          {% if m and m.attributes.battery_first is defined %}
+          {% set a = m.attributes %}
+          {% set bf = states('select.growatt_battery_first_time_2') %}
+          {% set gc = states('select.growatt_battery_first_charge_from_grid') %}
+          {% set mx = states('number.growatt_battery_first_maximum_soc') %}
+          {% set mn = states('number.growatt_load_first_battery_minimum_soc') %}
+          {% set cr = states('number.growatt_battery_first_charge_rate') %}
+          | Register | Planner | Nu | |
+          |:--|--:|--:|:--|
+          | Battery first | {{ 'Til' if a.battery_first else 'Fra' }} | {{ bf }} | {{ '✅' if (bf | lower == 'enabled') == a.battery_first else '⚠️ afviger' }} |
+          | Lad fra nettet | {{ 'Til' if a.grid_charge else 'Fra' }} | {{ gc }} | {{ '✅' if (gc | lower == 'enabled') == a.grid_charge else '⚠️ afviger' }} |
+          | Max SoC (mål) | {{ a.max_soc_pct ~ ' %' if a.max_soc_pct is not none else '–' }} | {{ mx }} % | {{ '' if a.max_soc_pct is none else ('✅' if (mx | float(0) - a.max_soc_pct) | abs <= 1 else '⚠️ afviger') }} |
+          | Min SoC (gulv) | {{ a.min_soc_pct }} % | {{ mn }} % | {{ '✅' if (mn | float(0) - a.min_soc_pct) | abs <= 1 else '⚠️ afviger' }} |
+          | Ladehastighed | {{ a.charge_rate_pct }} % | {{ cr }} % | {{ '' if not a.battery_first else ('✅' if (cr | float(0) - a.charge_rate_pct) | abs <= 5 else '⚠️ afviger') }} |
+          | Eksport | {{ 'Sælg' if a.export_hint == 'export' else 'Ingen' }} | {{ states('number.growatt_grid_export_limit') }} % | |
+
+          <small>Dry-run: planneren skriver ikke til inverteren. Node-RED styrer stadig.</small>
+          {% else %}
+          Ingen plan endnu.
+          {% endif %}
+
+      - type: markdown
+        title: Bilen
+        content: |-
+          {% set c = states.sensor.energy_planner_car %}
+          {% if c and c.attributes.label is defined %}
+          **{{ c.attributes.label }}**{{ ' · ' ~ c.attributes.target_amps ~ ' A' if c.attributes.target_amps else '' }} –
+          {{ c.attributes.reason_da }}
+
+          <small>{{ c.attributes.next_window or 'Ingen opladning planlagt' }}</small>
+          {% else %}
+          Bilstyringen har ikke kørt endnu.
+          {% endif %}
+
+      - type: entities
+        title: Inverterens registre
+        state_color: true
+        entities:
+          # Your own switches (replace the ids, then remove the #):
+          # - entity: input_boolean.automatisk_styring
+          #   name: Automatisk styring
+          # - entity: input_boolean.opladning_om_natten
+          #   name: Opladning om natten
+          - entity: select.growatt_battery_first_time_2
+            name: Battery first
+          - entity: select.growatt_battery_first_charge_from_grid
+            name: Lad fra nettet
+          - entity: number.growatt_battery_first_maximum_soc
+            name: Battery first max SoC
+          - entity: number.growatt_battery_first_charge_rate
+            name: Ladehastighed
+          - entity: number.growatt_load_first_battery_minimum_soc
+            name: Load first min SoC
+          - entity: number.growatt_grid_export_limit
+            name: Eksportgrænse
+
+      - type: tile
+        entity: sensor.energy_planner_soc_target
+        name: Planner mål
+        icon: mdi:battery-arrow-up
+        grid_options: { columns: 6 }
+      - type: tile
+        entity: sensor.energy_planner_soc_floor
+        name: Planner gulv
+        icon: mdi:battery-arrow-down
+        grid_options: { columns: 6 }
