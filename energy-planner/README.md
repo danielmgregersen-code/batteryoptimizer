@@ -90,10 +90,24 @@ synthetic log).
 | Buy / sell price per hour | `sensor.kob_af_el`, `sensor.salg_af_el` (`raw_today`, `raw_tomorrow`) |
 | Solar forecast per hour | Solcast `detailedHourly` of `…forecast_today`, `_tomorrow`, `_day_3` — p50 blended with p10 (`pv_p10_weight`) |
 | Battery SoC | `sensor.growatt_battery_soc` |
-| Base load | Hourly means of `sensor.growatt_total_house_load` **minus** EV charging power, median per (weekday/weekend, hour) over `profile_days` |
+| Base load | Hourly means of `sensor.growatt_total_house_load` **minus** EV charging power (and minus grid charging of the battery if the sensor includes it), trimmed mean per (weekday/weekend, hour) over `profile_days` |
 
 Until statistics are available (or if the query fails) it plans with `default_load_kw` and says so in
-the UI. Solcast `detailedHourly` values are average kW over the hour, i.e. kWh per hour.
+the UI.
+
+Some Growatt integrations count the battery's charging as house load. The add-on checks this from
+the statistics: at night (no sun, car not charging) it compares the base load in hours where the
+battery charges with hours where it is idle. If the difference is more than half the charging
+power, the grid part of the charging (`battery charge - solar`) is subtracted from the profile.
+`load_includes_battery_charging` (`auto` / `yes` / `no`) overrides it. The Plan tab's
+"Forbrugsprofil" card shows the profile and what was found.
+
+## Dashboard
+
+`dashboards/solceller.yaml` is a ready-made Solceller view (sections layout, needs apexcharts-card):
+the planner's status and next action, live tiles, solar today vs. forecast, price / planned energy /
+planned SoC for the next 30 hours, cost today, "Kommende", the planner vs. register table, the car,
+and the register controls. Paste it as a view in the raw configuration editor. Solcast `detailedHourly` values are average kW over the hour, i.e. kWh per hour.
 
 ## Outputs
 

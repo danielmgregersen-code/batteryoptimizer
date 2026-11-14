@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2
+
+- **Night-time house load too high.** Some Growatt integrations count the battery's charging as
+  house load, so Node-RED's night charging (02-05, ~4 kW) ended up in the base-load profile. The
+  add-on now detects it from the statistics (night hours with and without battery charging) and
+  subtracts the grid charging (`battery charge - solar`) from the profile. Override with
+  `load_includes_battery_charging: yes / no` (default `auto`).
+- Statistics are requested in W, so a charger reporting kW is subtracted correctly.
+- Plan tab: new "Forbrugsprofil" card with the profile per hour (weekday/weekend) and what was
+  found: whether the car is subtracted, and whether the house load includes battery charging.
+- `dashboards/solceller.yaml`: a complete Solceller dashboard view (sections) built on the
+  planner's sensors and apexcharts-card.
+
 ## 0.3.1
 
 Dashboard-friendly sensors.

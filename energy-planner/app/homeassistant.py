@@ -82,6 +82,8 @@ class HomeAssistant:
                 "statistic_ids": statistic_ids,
                 "period": period,
                 "types": ["mean"],
+                # Convert on the HA side, so a charger reporting kW is not subtracted from watts.
+                "units": {"power": "W"},
             }))
             while True:
                 msg = json.loads(ws.recv())

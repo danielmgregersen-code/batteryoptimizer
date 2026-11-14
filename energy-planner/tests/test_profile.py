@@ -49,3 +49,52 @@ def test_trimmed_mean_counts_ordinary_peaks_but_drops_extremes():
     vals = [0.5] * 14 + [2.0] * 5 + [12.0]        # 5 cooking hours, one missed car hour
     assert trimmed_mean(vals) == pytest.approx((0.5 * 11 + 2.0 * 3) / 14)   # 3 cut at each end
     assert trimmed_mean(vals) > 0.5               # the median (0.5) would ignore the cooking
+
+
+def _night_charging_rows(include_in_load: bool, days=21):
+    """Base load 0.4 kW at night; the battery charges 4 kW from the grid 02-05 every night."""
+    start = datetime(2026, 10, 20, 0, tzinfo=TZ).astimezone(UTC)
+    load, bat, pv = [], [], []
+    for i in range(24 * days):
+        t = start + timedelta(hours=i)
+        hl = t.astimezone(TZ).hour
+        charging = 2 <= hl < 5
+        b = 4000.0 if charging else 0.0
+        sun = 2000.0 if 10 <= hl < 14 else 0.0
+        base = 400.0 if hl < 6 else 900.0
+        ms = t.timestamp() * 1000
+        load.append({"start": ms, "mean": base + (b if include_in_load else 0.0)})
+        bat.append({"start": ms, "mean": b})
+        pv.append({"start": ms, "mean": sun})
+    return load, bat, pv
+
+
+def test_battery_charging_in_house_load_is_detected_and_removed():
+    load, bat, pv = _night_charging_rows(include_in_load=True)
+    prof = build_profile(load, [], TZ, 0.8, bat_rows=bat, pv_rows=pv)
+    d = prof["diagnostics"]
+    assert d["battery_detection"]["included"] is True and d["battery_subtracted"]
+    assert d["battery_detection"]["base_while_charging_kw"] == pytest.approx(4.4)
+    assert prof["table"][(False, 3)] == pytest.approx(0.4)          # not 4.4 kW at 03:00
+
+
+def test_house_load_without_battery_charging_is_left_alone():
+    load, bat, pv = _night_charging_rows(include_in_load=False)
+    prof = build_profile(load, [], TZ, 0.8, bat_rows=bat, pv_rows=pv)
+    assert prof["diagnostics"]["battery_detection"]["included"] is False
+    assert not prof["diagnostics"]["battery_subtracted"]
+    assert prof["table"][(False, 3)] == pytest.approx(0.4)
+
+
+def test_battery_mode_override():
+    load, bat, pv = _night_charging_rows(include_in_load=True)
+    prof = build_profile(load, [], TZ, 0.8, bat_rows=bat, pv_rows=pv, battery_mode="no")
+    assert prof["table"][(False, 3)] == pytest.approx(4.4)
+    assert prof["diagnostics"]["battery_detection"]["included"] is True   # still reported
+
+
+def test_detection_needs_enough_night_hours():
+    load, bat, pv = _night_charging_rows(include_in_load=True, days=1)
+    prof = build_profile(load[:4], [], TZ, 0.8, bat_rows=bat[:4], pv_rows=pv[:4])   # 00-04: one charging hour
+    assert prof["diagnostics"]["battery_detection"]["included"] is None
+    assert not prof["diagnostics"]["battery_subtracted"]
