@@ -31,13 +31,41 @@ def test_night_grid_charge_sets_battery_first_target_and_rate():
     assert s["charge_rate_pct"] == 35
 
 
-def test_peak_hour_discharges_down_to_the_planned_soc():
-    buy = [3.0] * 3 + [1.0] * 3                           # peak now, cheap later
+def test_dearest_hour_may_use_the_battery_down_to_the_configured_floor():
+    buy = [3.0] * 3 + [1.0] * 3                           # peak now (and as dear later), cheap after
     s = sp(plan_for(buy, 80, load=1.0), 80)
     assert s["mode"] == "discharge" and not s["battery_first"]
-    # floor = SoC after this hour (80 % - 1 kWh / 0.95 of 7.75 kWh = 66.4 %), not a hard 10 %:
-    # if the planner stops refreshing, the battery stops where the plan expected it to be
-    assert s["min_soc_pct"] == 66 and s["max_soc_pct"] is None
+    # no later hour is dearer than now: nothing is held back
+    assert s["min_soc_pct"] == 10 and s["max_soc_pct"] is None
+
+
+def test_floor_reserves_only_for_dearer_hours_later():
+    buy = [2.5, 3.0, 3.0, 1.0, 1.0]
+    plan = plan_for(buy, 60, load=1.0)
+    s = sp(plan, 60)
+    assert s["mode"] == "discharge"
+    # 10 % + what the two 3.0 hours take from the battery: 2 x 1 kWh / 0.95 of 7.75 kWh = 27.2 %
+    reserve = float((plan.bat_load[1:3]).sum()) / P.eta_discharge
+    assert reserve == pytest.approx(2.0 / 0.95, abs=0.01)
+    assert s["min_soc_pct"] == math.floor(10 + reserve / CAP * 100)
+    assert s["min_soc_pct"] <= math.floor(plan.soc_end[0] / CAP * 100)    # the plan stays reachable
+
+
+def test_no_reserve_beyond_the_next_charging():
+    buy = [2.5, 0.5, 3.0, 3.0]                            # discharge now, refill at 0.5, then the peak
+    plan = plan_for(buy, 40, load=1.0)
+    assert plan.grid_bat[1] > 0.1
+    s = sp(plan, 40)
+    assert s["mode"] == "discharge" and s["min_soc_pct"] == 10
+
+
+def test_car_drawing_from_the_battery_counts_in_the_reserve():
+    buy = [2.5, 3.0, 3.0, 1.0, 1.0]
+    plan = plan_for(buy, 60, load=1.0)
+    without = sp(plan, 60)["min_soc_pct"]
+    plan.bat_car[1] = 0.95                                # the car takes 0.95 kWh in a dearer hour
+    assert sp(plan, 60)["min_soc_pct"] == math.floor(10 + (2.0 / 0.95 + 1.0) / CAP * 100)
+    assert sp(plan, 60)["min_soc_pct"] > without
 
 
 def test_hold_blocks_both_charging_and_discharging():
