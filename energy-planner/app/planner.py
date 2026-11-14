@@ -8,7 +8,8 @@ from datetime import datetime, timedelta, timezone
 import car as carmod
 from inputs import UTC, build_horizon, hour_floor, parse_prices, parse_solcast, persistence_forecast
 from optimizer import BatteryParams, solve, terminal_value_for
-from loadprofile import build_profile, load_for_hour, profile_view
+from loadprofile import _by_start, build_profile, load_for_hour, profile_view
+import pvdampening as pvd
 from settings import REGISTER_KEYS, counter_ids, load_options, local_tz, split_csv
 from setpoints import derive_setpoints, step_mode
 from evaluation import evaluate
@@ -58,6 +59,14 @@ class Planner:
         self.latest = None
         self.last_error = None
         self.entity_check = {}
+        data_dir = os.path.dirname(log_path) or "."
+        self.pv_history_path = os.path.join(data_dir, "pv_history.json")
+        self.pv_state_path = os.path.join(data_dir, "pv_dampening.json")
+        self._pv_history = pvd.load_json(self.pv_history_path, {})
+        self._pv_state = pvd.load_json(self.pv_state_path, {"applied": [1.0] * 24, "previous": [1.0] * 24,
+                                                            "pushed_at": None})
+        self._pv_actual = {}
+        self._solcast_synced = False
 
     # ---- consumption profile -------------------------------------------------
     def _profile_for(self, opts: dict, now: datetime):
@@ -90,6 +99,8 @@ class Planner:
                          det["base_while_charging_kw"], det["base_while_idle_kw"], det["charge_kw"],
                          "subtracted" if prof["diagnostics"]["battery_subtracted"] else "not subtracted")
             prof["statistics_rows"] = {i: len(stats.get(i) or []) for i in ids}
+            if opts.get("pv_power_entity"):
+                self._pv_actual = _by_start(stats.get(opts["pv_power_entity"]))
             for i in ids:
                 if not stats.get(i):
                     log.warning("no long-term statistics for %s (does it have a state_class?)", i)
@@ -144,6 +155,14 @@ class Planner:
         pv, pv50, pv10, pv90 = parse_solcast(sol_attrs, float(opts["pv_p10_weight"]), with_p90=True)
         if not pv:
             warnings.append("no solar forecast available - planning without solar")
+        # Statistics first: the solar correction learns from the actual production in them.
+        profile = self._profile_for(opts, now)
+        pv_factors, damp_info = {}, None
+        if pv:
+            try:
+                pv, pv50, pv10, pv90, pv_factors, damp_info = self._pv_dampening(opts, now, sol_attrs, pv50, pv10, pv90)
+            except Exception as e:  # the correction must never stop planning
+                log.warning("solar dampening skipped: %s", e)
 
         soc_pct = self.ha.number(opts["battery_soc_entity"])
         if soc_pct is None:
@@ -157,7 +176,6 @@ class Planner:
         forecast_hours = set(buy_fc) | set(sell_fc)
         buy, sell = {**buy_fc, **buy}, {**sell_fc, **sell}
 
-        profile = self._profile_for(opts, now)
         horizon = build_horizon(now, buy, sell, pv, lambda h: load_for_hour(profile, h, self.tz),
                                 forecast_hours=forecast_hours)
         if len(horizon) == 0:
@@ -212,6 +230,7 @@ class Planner:
                 "pv_p10": round(pv10.get(start, 0.0) * float(plan.dt[i]), 2),
                 "pv_p90": round(pv90.get(start, 0.0) * float(plan.dt[i]), 2),
                 "mode": step_mode(plan, i),
+                "pv_factor": pv_factors.get(start),
             })
             if car_params:
                 rows[-1].update({
@@ -253,6 +272,7 @@ class Planner:
             "entity_check": self.entity_check,
             "warnings": warnings,
             "car": car_info,
+            "pv_dampening": damp_info,
             "plan": rows,
         }
         snapshot["upcoming"] = upcoming(rows, bool(car_params), now.astimezone(self.tz).date())
@@ -261,6 +281,7 @@ class Planner:
             self.latest = snapshot
             self.last_error = None
         self._publish(snapshot)
+        self._publish_pv_dampening(snapshot)
         self._log_decision(snapshot)
         self._publish_cost(opts, now)
         return snapshot
@@ -357,6 +378,94 @@ class Planner:
                                                                 "reason_da", "calls", "live")})
         return d
 
+    # ---- solar dampening ---------------------------------------------------------
+    def _solcast_applied(self, sol_attrs_entities: list) -> list:
+        """The dampening Solcast's values *as read now* carry: the pushed factors once Solcast has
+        updated its sensors after the push, the previous ones before that."""
+        st = self._pv_state
+        if not st.get("pushed_at"):
+            return st["applied"]
+        updated = None
+        for e in sol_attrs_entities[:1]:
+            s = self.ha.state(e) if hasattr(self.ha, "state") else None
+            updated = (s or {}).get("last_updated")
+        if updated and datetime.fromisoformat(updated.replace("Z", "+00:00")) >= datetime.fromisoformat(st["pushed_at"]):
+            return st["applied"]
+        return st.get("previous") or st["applied"]
+
+    def _pv_dampening(self, opts, now, sol_attrs, pv50, pv10, pv90):
+        mode = opts.get("pv_dampening", "auto")
+        push = bool(opts.get("solcast_push")) and mode != "off"
+        entities = split_csv(opts["solcast_entities"])
+        w = min(max(float(opts["pv_p10_weight"]), 0.0), 1.0)
+        info = {"mode": mode, "push": push, "solcast_auto": False, "days": int(opts["pv_dampening_days"])}
+
+        if pvd.solcast_auto_dampening(sol_attrs):
+            # Solcast's own automated dampening is on: its values are already corrected (and it
+            # refuses set_dampening). Use them as they are and learn nothing.
+            info["solcast_auto"] = True
+            blended = {h: (1 - w) * pv50[h] + w * pv10.get(h, pv50[h]) for h in pv50}
+            return blended, pv50, pv10, pv90, {}, info
+
+        if not self._solcast_synced:
+            self._solcast_synced = True
+            try:
+                factors = pvd.parse_get_dampening(self.ha.call_service("solcast_solar", "get_dampening",
+                                                                       {}, return_response=True))
+            except Exception as e:  # no dampening set, old integration or service missing
+                log.info("solcast get_dampening: %s", e)
+                factors = None
+            st = self._pv_state
+            current = factors or [1.0] * 24
+            if any(abs(a - b) > 0.011 for a, b in zip(current, st["applied"])):
+                log.info("Solcast dampening differs from the stored one; using Solcast's: %s", pvd.csv(current))
+                st.update(applied=current, previous=current, pushed_at=None)
+                pvd.save_json(self.pv_state_path, st)
+
+        applied = self._solcast_applied(entities)
+        h0 = hour_floor(now)
+        if h0 in pv50:
+            limit = self.ha.number(opts["reg_export_limit"]) if opts.get("reg_export_limit") else None
+            hl = h0.astimezone(self.tz).hour
+            pvd.record(self._pv_history, h0, pv50[h0], pv10.get(h0, pv50[h0]), pv90.get(h0, pv50[h0]),
+                       applied[hl], limit is not None and limit < 50, now)
+            pvd.save_json(self.pv_history_path, self._pv_history)
+
+        ref = pvd.clear_reference(self._pv_history, pv90, applied, self.tz, now)
+        model = pvd.fit(self._pv_history, self._pv_actual, ref, self.tz, now, info["days"], float(opts["inverter_kw"]))
+        manual = pvd.parse_manual(opts.get("pv_dampening_manual", ""))
+        shade = pvd.effective_shade(model["shade"], manual, mode)
+        c50, c10, c90, fac = pvd.correct(pv50, pv10, pv90, applied, shade, ref, self.tz)
+        blended = {h: (1 - w) * c50[h] + w * c10.get(h, c50[h]) for h in c50}
+
+        today = now.astimezone(self.tz).date()
+        desired = pvd.static_factors(shade, {t: v for t, v in pv50.items() if t.astimezone(self.tz).date() == today},
+                                     applied, ref, self.tz)
+        st = self._pv_state
+        if push and pvd.push_due(desired, st["applied"], st.get("pushed_at"), now, self.tz):
+            try:
+                self.ha.call_service("solcast_solar", "set_dampening", {"damp_factor": pvd.csv(desired)})
+                st.update(previous=st["applied"], applied=desired, pushed_at=now.isoformat(timespec="seconds"))
+                pvd.save_json(self.pv_state_path, st)
+                log.info("Solcast dampening set: %s", pvd.csv(desired))
+            except Exception as e:
+                log.warning("solcast set_dampening failed: %s", e)
+                info["push_error"] = str(e)
+
+        info.update({
+            "clear_factors": [round(1.0 - s, 2) for s in shade],
+            "learned_factors": [round(1.0 - s, 2) for s in model["shade"]],
+            "today_factors": desired,
+            "manual_hours": sorted(manual),
+            "applied_in_solcast": st["applied"],
+            "last_pushed": st.get("pushed_at"),
+            "hours": model["hours"], "forecast": model["forecast"], "actual": model["actual"],
+            "corrected": model["corrected"],
+            "history_hours": len(self._pv_history),
+            "mean_factor": pvd.mean_daylight(desired, ref),
+        })
+        return blended, c50, c10, c90, fac, info
+
     def _publish_cost(self, opts: dict, now: datetime):
         """sensor.energy_planner_cost_today: realised grid cost so far today (and yesterday's total)."""
         try:
@@ -373,6 +482,20 @@ class Planner:
             "agreement_pct": t and t["agreement_pct"], "hours_covered": t and t["hours"],
             "yesterday_dkk": y and y["cost_dkk"], "yesterday_import_kwh": y and y["import_kwh"],
             "updated": now.astimezone(self.tz).isoformat(timespec="seconds")})
+
+    def _publish_pv_dampening(self, snap: dict):
+        d = snap.get("pv_dampening")
+        if not d:
+            return
+        attrs = {"friendly_name": "Energy Planner solkorrektion", "icon": "mdi:weather-sunny-alert",
+                 "updated": snap["updated"], "mode": d["mode"], "solcast_auto": d["solcast_auto"],
+                 "push": d["push"]}
+        if not d["solcast_auto"]:
+            attrs.update({"factors": d["today_factors"], "factors_csv": pvd.csv(d["today_factors"]),
+                          "clear_sky_factors": d["clear_factors"], "manual_hours": d["manual_hours"],
+                          "applied_in_solcast": d["applied_in_solcast"], "last_pushed": d["last_pushed"],
+                          "days": d["days"]})
+        self.ha.set_state("sensor.energy_planner_pv_dampening", d.get("mean_factor", 1.0), attrs)
 
     def _append(self, path: str, entry: dict):
         try:

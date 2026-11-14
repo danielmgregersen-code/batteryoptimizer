@@ -7,7 +7,8 @@ Node-RED flow (forecast ≥ 10 / 7 / 4 kWh → SoC 10 / 30 / 45 %) with one opti
 
 **This version is dry-run.** It reads Home Assistant, computes a plan, publishes it as sensors and
 logs it next to what Node-RED and the car automation actually did. It does not write to the
-inverter or the charger, and the code has no way to call a service.
+inverter or the charger. The only services the code can call are Solcast's `set_dampening` /
+`get_dampening` (an allowlist in `homeassistant.py`); `set_dampening` only with `solcast_push: true`.
 
 ## How it decides
 
@@ -107,6 +108,35 @@ power, the grid part of the charging (`battery charge - solar`) is subtracted fr
 `load_includes_battery_charging` (`auto` / `yes` / `no`) overrides it. The Plan tab's
 "Forbrugsprofil" card shows the profile and what was found.
 
+## Solar correction (trees and other shading)
+
+Solcast does not know about the trees. The add-on learns, per hour of the day, how much of the
+forecast actually arrives, from Solcast's forecast (recorded every cycle in `/data/pv_history.json`)
+and the actual production (`pv_power_entity` statistics), over the last `pv_dampening_days` (14).
+
+Shading only takes the direct sun, so the correction depends on the clouds:
+
+    factor = 1 - shade[hour] x clearness        clearness = Solcast p50 / clear-sky p50 for that hour
+
+On a clear day a shaded hour gets the full correction; on an overcast day almost none. The clear-sky
+reference is the highest p90 Solcast gave for that hour in the last three weeks, so Solcast's own
+forecast serves as the cloud forecast (no weather integration needed). `shade` is fitted by least
+squares, which weights the clear hours most. Hours with the export limit at 0 (panels throttled) and
+hours at the inverter's limit are left out.
+
+- `pv_dampening`: `auto` (learn, plus the manual hours), `manual` (only the manual hours) or `off`.
+- `pv_dampening_manual`: fixed clear-sky factors, e.g. `14:0.3, 15:0.2`.
+- `solcast_push: true` also sets the factors in the Solcast integration (`solcast_solar.set_dampening`)
+  once a day, or sooner if they move a lot, so HA's own Solcast sensors match. Solcast only takes one
+  factor per hour, so it gets today's (from today's clearness); the planner itself corrects every
+  hour of the horizon with its own clearness. The add-on knows what it has set and learns against
+  the undampened forecast, so nothing is dampened twice.
+- If Solcast's own *automated dampening* is enabled, the add-on uses Solcast's corrected forecast
+  and pauses its own correction (the two cannot both set the dampening).
+
+The Plan tab's "Solkorrektion" card shows Solcast, actual and corrected per hour, the factors, and
+what is set in Solcast.
+
 ## Dashboard
 
 `dashboards/solceller.yaml` is a ready-made Solceller view (sections layout, needs apexcharts-card):
@@ -128,6 +158,7 @@ Non-persistent sensors, rewritten every cycle:
 | `sensor.energy_planner_charge_rate` | Battery-first charge rate in % of the inverter |
 | `sensor.energy_planner_plan` | Plan table as an attribute (`plan` / `columns`, incl. car energy and SoC) — usable from an ApexCharts card |
 | `sensor.energy_planner_car` | What the car controller would do now. Attributes: `label`, `target_amps`, `reason` / `reason_da`, `calls`, `next_window`, `next_start`, `planned_kwh`, `deadline` |
+| `sensor.energy_planner_pv_dampening` | Mean solar correction factor in daylight hours. Attributes: `factors` / `factors_csv` (today's 24 factors, as sent to Solcast), `clear_sky_factors`, `manual_hours`, `applied_in_solcast`, `last_pushed`, `solcast_auto` |
 | `sensor.energy_planner_cost_today` | Realised grid cost today in DKK. Attributes: `import_kwh`, `export_kwh`, `avg_buy_paid`, `avg_buy_market`, `agreement_pct`, `yesterday_dkk` |
 
 The sidebar panel shows the same plan hour by hour, plus the register values currently in use.

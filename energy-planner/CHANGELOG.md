@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.0
+
+Solar correction for shading (trees).
+
+- Learns per hour of the day how much of Solcast's forecast actually arrives (14 days of recorded
+  forecasts vs. actual production). The correction scales with the clouds:
+  `factor = 1 - shade[hour] x clearness`, with clearness from Solcast's own forecast relative to
+  the clear-sky level of that hour, so overcast hours are hardly dampened. Export-limited and
+  clipped hours are left out.
+- The planner uses the corrected forecast (p50, p10 and p90).
+- `solcast_push: true` sets the factors in the Solcast integration daily (`set_dampening`), so HA's
+  Solcast sensors match. Learning uses the undampened forecast, so nothing is dampened twice.
+  Solcast's own automated dampening, if enabled, takes precedence and the add-on's pauses.
+- Manual hours: `pv_dampening_manual: "14:0.3, 15:0.2"`; `pv_dampening: auto / manual / off`.
+- New `sensor.energy_planner_pv_dampening`, "Solkorrektion" card in the panel, correction factor in
+  the plan chart's tooltip.
+- The only services the add-on can call are Solcast's dampening services (allowlist).
+
 ## 0.3.6
 
 - `car_power_entity` and `charger_power_entity` default to `sensor.ioniq_9_ladeeffekt` (W,
