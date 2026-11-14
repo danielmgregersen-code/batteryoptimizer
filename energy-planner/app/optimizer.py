@@ -60,10 +60,14 @@ class Plan:
 def terminal_value_for(buy, params: BatteryParams) -> float:
     """DKK per kWh stored at the end of the horizon.
 
-    Leftover energy could be bought back at the cheapest known hour, so it is worth that price
-    per stored kWh. This stops the plan from draining the battery just because the horizon ends.
+    A stored kWh can at most replace eta_discharge kWh of later purchases. Valuing it at the
+    cheapest price in the horizon times eta_discharge is the safe lower bound: it keeps the plan
+    from dumping the battery just because the horizon ends, but never makes holding energy look
+    better than using it in any hour that is dearer than the cheapest one. (Valuing it at the
+    buy-back cost min(buy)/eta_grid, as 0.1.0 did, is about 12 % higher than any use of the
+    energy can return, so the battery sat idle through moderately priced hours.)
     """
-    return float(min(buy)) / params.eta_grid_bat
+    return float(min(buy)) * params.eta_discharge
 
 
 def solve(buy, sell, pv, load, dt, soc0_kwh, params: BatteryParams,
@@ -125,6 +129,9 @@ def solve(buy, sell, pv, load, dt, soc0_kwh, params: BatteryParams,
         # plan unique (no flip-flopping between replans) and avoids sitting at a high SoC.
         c[ix(t, GRID_BAT)] = buy[t] + params.wear_dkk_per_kwh + TIE_BREAK_DKK * (T - t)
         c[ix(t, PV_BAT)] = params.wear_dkk_per_kwh
+        # Among equally good options, discharge early rather than late (holding energy has no value
+        # the model can see, and an early discharge leaves room for unforecast sun).
+        c[ix(t, BAT_LOAD)] = -TIE_BREAK_DKK * (T - t)
         c[ix(t, PV_EXP)] = -sell[t]
     c[ix(T - 1, SOC)] -= terminal_value
 

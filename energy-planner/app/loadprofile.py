@@ -1,13 +1,25 @@
 """Base-load profile from HA long-term statistics (hourly means).
 
 Base load = total house load minus EV charging, so the profile describes the part of the
-consumption that repeats day after day. Median per (weekday/weekend, hour of day) keeps a
-few abnormal hours (cooking, a space heater) from skewing the profile.
+consumption that repeats day after day. A trimmed mean per (weekday/weekend, hour of day)
+drops the most extreme hours (a car hour the charger sensor missed, a space heater) but, unlike
+the median, still counts the ordinary peaks such as cooking: the plan needs the expected energy,
+and the median of a right-skewed load underestimates it.
 """
+import math
 from datetime import datetime
-from statistics import median
 
 from inputs import parse_ts
+
+
+TRIM = 0.15   # share dropped at each end
+
+
+def trimmed_mean(values, trim: float = TRIM) -> float:
+    vals = sorted(values)
+    k = int(math.floor(len(vals) * trim))
+    kept = vals[k:len(vals) - k] or vals
+    return sum(kept) / len(kept)
 
 
 def _by_start(rows) -> dict:
@@ -42,9 +54,9 @@ def build_profile(load_rows, car_rows, tz, default_kwh: float) -> dict:
         for hour in range(24):
             vals = samples.get((weekend, hour), [])
             if len(vals) >= 3:
-                table[(weekend, hour)] = median(vals)
+                table[(weekend, hour)] = trimmed_mean(vals)
             elif by_hour.get(hour):
-                table[(weekend, hour)] = median(by_hour[hour])
+                table[(weekend, hour)] = trimmed_mean(by_hour[hour])
             else:
                 table[(weekend, hour)] = default_kwh
     return {"table": table, "hours_of_data": n, "default": default_kwh}

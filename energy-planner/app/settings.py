@@ -1,6 +1,7 @@
 """Add-on options. Defaults mirror config.yaml so the app also runs outside HA."""
 import json
 import os
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 OPTIONS_FILE = "/data/options.json"
 
@@ -34,6 +35,18 @@ DEFAULTS = {
     "profile_days": 28,
     "default_load_kw": 0.8,
     "interval_minutes": 15,
+    "min_horizon_hours": 30,
+    # Cumulative energy counters (kWh) logged with every decision, so the realised cost of what
+    # actually happened can be computed afterwards (/api/evaluation).
+    "counter_entities": (
+        "sensor.growatt_total_grid_import,"
+        "sensor.growatt_total_grid_export,"
+        "sensor.growatt_total_battery_input_energy,"
+        "sensor.growatt_total_battery_output_energy,"
+        "sensor.growatt_total_solar_energy"
+    ),
+    "grid_import_counter": "sensor.growatt_total_grid_import",
+    "grid_export_counter": "sensor.growatt_total_grid_export",
 }
 
 REGISTER_KEYS = [
@@ -56,3 +69,15 @@ def load_options(path: str = OPTIONS_FILE) -> dict:
 
 def split_csv(value: str) -> list:
     return [v.strip() for v in (value or "").split(",") if v.strip()]
+
+
+def local_tz(name: str = None):
+    """The real IANA zone (with DST), from Supervisor's TZ. Never a fixed UTC offset."""
+    for candidate in (name, os.environ.get("TZ"), "Europe/Copenhagen"):
+        if not candidate:
+            continue
+        try:
+            return ZoneInfo(candidate)
+        except (ZoneInfoNotFoundError, ValueError):
+            continue
+    return ZoneInfo("UTC")
