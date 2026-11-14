@@ -91,11 +91,13 @@ def detect_battery_in_load(load: dict, car: dict, bat: dict, pv: dict) -> dict:
 
 
 def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv_rows=None,
-                  battery_mode: str = "no") -> dict:
+                  battery_mode: str = "no", car_detect_w: float = 4000.0) -> dict:
     """-> {"table": {(is_weekend, hour): kWh}, "hours_of_data": int, "default": kWh, "diagnostics": {...}}.
 
     battery_mode: "no" (default: the Growatt house load does not include battery charging),
     "auto" (detect), "yes" (always subtract grid charging).
+    car_detect_w: in hours without car statistics, a base load above this is taken to be the car
+    charging and the hour is left out (the user's old rule of thumb: more than ~4 kW is the car).
     """
     load = _by_start(load_rows)
     car, car_kind = _power_by_start(car_rows)
@@ -113,7 +115,7 @@ def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv
     subtract = battery_mode == "yes" or (battery_mode == "auto" and detection.get("included") is True)
 
     samples: dict = {}
-    n = corrected = car_hours = 0
+    n = corrected = car_hours = excluded = 0
     for start, load_w in load.items():
         car_w = max(0.0, car.get(start, 0.0))
         if car_w >= IDLE_W:
@@ -124,6 +126,9 @@ def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv
             if grid_charge > 0:
                 corrected += 1
             base_w -= grid_charge
+        if start not in car and car_detect_w and base_w > car_detect_w:
+            excluded += 1          # no car data for this hour and far above a house's load: the car
+            continue
         base_w = max(0.0, base_w)
         local = start.astimezone(tz)
         samples.setdefault((local.weekday() >= 5, local.hour), []).append(base_w / 1000.0)
@@ -151,6 +156,8 @@ def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv
         "battery_corrected_hours": corrected,
         "car_rows": len(car),
         "car_kind": car_kind,
+        "car_excluded_hours": excluded,
+        "car_detect_kw": round(car_detect_w / 1000.0, 1) if car_detect_w else None,
         "car_hours": car_hours,
         "battery_rows": len(bat),
         "pv_rows": len(pv),

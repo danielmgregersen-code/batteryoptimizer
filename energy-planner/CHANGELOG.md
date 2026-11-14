@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.5
+
+- `car_power_entity` back to the THOR's charging power: `sensor.ioniq_9_ladeeffekt` changed meaning
+  over time (first an estimate, now a reading of the charger) and is not a sound history.
+- **Hours without car statistics:** a base load above `car_detect_kw` (4 kW) is taken to be the car
+  charging and the hour is left out of the profile, instead of being counted as house load. Once the
+  THOR's power has long-term statistics (`state_class: measurement`) it is used hour by hour; hours
+  it covers are never left out by the rule of thumb.
+- The panel's "Forbrugsprofil" card shows how many hours were subtracted and left out.
+
 ## 0.3.4
 
 - **The car is now subtracted from the base-load profile.** The default car entity

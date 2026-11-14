@@ -79,7 +79,8 @@ class Planner:
                 default_kwh,
                 bat_rows=stats.get(opts.get("battery_charge_power_entity", "")),
                 pv_rows=stats.get(opts.get("pv_power_entity", "")),
-                battery_mode=opts.get("load_includes_battery_charging", "auto"),
+                battery_mode=opts.get("load_includes_battery_charging", "no"),
+                car_detect_w=float(opts.get("car_detect_kw", 4.0)) * 1000.0,
             )
             det = prof["diagnostics"]["battery_detection"]
             if det.get("included") is not None:
@@ -163,7 +164,7 @@ class Planner:
             raise PlannerError("no prices for the current hour")
         diag = profile.get("diagnostics") or {}
         if profile["hours_of_data"] and opts.get("car_power_entity") and not diag.get("car_rows"):
-            warnings.append("the car charger power has no long-term statistics - car charging is counted as house load")
+            warnings.append("the car charger power has no long-term statistics - hours above car_detect_kw are taken as car charging")
         n_fc = sum(horizon.forecast)
         if n_fc:
             warnings.append(f"{n_fc} of {len(horizon)} hours use estimated prices (same hour of the last known day)")

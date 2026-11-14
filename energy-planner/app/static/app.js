@@ -690,8 +690,9 @@
       out.push({ warn: true, text: 'Ingen statistik endnu (eller forespørgslen fejlede) – planen bruger default_load_kw for alle timer.' });
       return out;
     }
-    if (!d.car_rows) out.push({ warn: true, text: 'Bilens opladning (car_power_entity) har ingen langtidsstatistik, så bilen trækkes ikke fra husforbruget.' });
-    else out.push({ text: `Bilen er trukket fra (${fmt(d.car_hours, 0)} timer med opladning i perioden, ${d.car_kind === 'energy' ? 'fra energitæller (kWh pr. time)' : 'fra effekt (W)'}).` });
+    if (!d.car_rows) out.push({ warn: true, text: 'Billaderens effekt har ingen langtidsstatistik endnu (giv den state_class: measurement).' });
+    else out.push({ text: `Bilen er trukket fra i ${fmt(d.car_hours, 0)} timer med opladning (${d.car_kind === 'energy' ? 'energitæller, kWh pr. time' : 'effekt'}, statistik for ${fmt(d.car_rows, 0)} timer).` });
+    if (d.car_excluded_hours) out.push({ text: `${fmt(d.car_excluded_hours, 0)} timer uden data fra laderen og med over ${fmt(d.car_detect_kw, 1)} kW husforbrug er regnet som bilopladning og taget ud af profilen.` });
     const b = d.battery_detection || {};
     const mode = d.battery_mode === 'auto' ? '' : ` (indstillet til "${d.battery_mode}")`;
     if (d.battery_mode === 'no') out.push({ text: 'Batteriets opladning regnes ikke med i husforbruget (indstilling "no", korrekt for Growatt SPH).' });
@@ -707,7 +708,7 @@
     [/^(\d+) of (\d+) hours use estimated prices.*/, (m) => `${m[1]} af ${m[2]} timer bruger estimerede priser (samme time som sidste kendte dag).`],
     [/^no solar forecast available.*/, () => 'Ingen solprognose – planlægger uden sol.'],
     [/^car minimum cannot be reached by the deadline \(([\d.]+) kWh short\)/, (m) => `Bilens minimum kan ikke nås inden deadline (mangler ${fmt(+m[1], 1)} kWh).`],
-    [/^the car charger power has no long-term statistics.*/, () => 'Bilens opladning (car_power_entity) har ingen langtidsstatistik, så den tælles med som husforbrug i forbrugsprofilen (fx 3–4 kW om natten). Se kortet "Forbrugsprofil".'],
+    [/^the car charger power has no long-term statistics.*/, () => 'Billaderens effekt har ingen langtidsstatistik. Indtil den har, regnes timer med over car_detect_kw husforbrug som bilopladning og tages ud af forbrugsprofilen. Se kortet "Forbrugsprofil".'],
     [/^car is connected but its SoC is unavailable.*/, () => 'Bilen er tilsluttet, men dens SoC er utilgængelig – bilen er udeladt af planen.'],
   ];
   function translateWarning(w) {
