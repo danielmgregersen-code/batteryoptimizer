@@ -157,7 +157,7 @@ Non-persistent sensors, rewritten every cycle:
 | --- | --- |
 | `sensor.energy_planner_mode` | `grid_charge`, `solar_charge`, `discharge` or `hold` for the current hour. Attributes: all setpoints, saving vs. solar-only, and in Danish `label`, `detail`, `summary`, `next_action`, `next_change`, `upcoming` (list of `label` / `when` / `text`) |
 | `sensor.energy_planner_soc_target` | Battery-first max SoC: charging target, or the current SoC in `hold`; `unknown` while discharging |
-| `sensor.energy_planner_soc_floor` | Load-first minimum SoC: the SoC planned at the end of the current step while discharging, otherwise the current SoC |
+| `sensor.energy_planner_soc_floor` | Load-first minimum SoC: while discharging, the configured floor plus the reserve for later hours that are dearer than now; otherwise the current SoC |
 | `sensor.energy_planner_charge_rate` | Battery-first charge rate in % of the inverter |
 | `sensor.energy_planner_plan` | Plan table as an attribute (`plan` / `columns`, incl. car energy and SoC) — usable from an ApexCharts card |
 | `sensor.energy_planner_car` | What the car controller would do now. Attributes: `label`, `target_amps`, `reason` / `reason_da`, `calls`, `next_window`, `next_start`, `planned_kwh`, `deadline` |
@@ -172,7 +172,7 @@ The sidebar panel shows the same plan hour by hour, plus the register values cur
 | --- | --- | --- | --- | --- |
 | `grid_charge` | on | on | SoC after the last planned grid hour | current |
 | `solar_charge` | on | off | SoC at the end of the charging run (rate capped if part of the sun is sold) | current |
-| `discharge` | off (load first) | off | – | SoC planned after this step |
+| `discharge` | off (load first) | off | – | `soc_floor_pct` + what later, dearer hours need before the next charge (the configured floor in the dearest hour) |
 | `hold` | on | off | current SoC | current |
 
 `hold` relies on battery first not discharging and stopping at max SoC, with surplus sun going to

@@ -7,7 +7,9 @@ Registers (names as in the Node-RED flow):
 How the modes map onto the Growatt priorities (verify on the inverter before writing):
   grid_charge   battery first, charge from grid, max SoC = SoC after the last planned grid hour
   solar_charge  battery first, no grid charging, max SoC = SoC at the end of the charging run
-  discharge     load first, min SoC = the SoC the plan expects at the end of the current step
+  discharge     load first, min SoC = configured floor + what later hours that are *dearer* than now
+                need from the battery before it is charged again (the configured floor in the
+                dearest hour)
   hold          battery first with max SoC = current SoC and no grid charging: the battery neither
                 charges nor discharges, surplus sun is exported. (Load first with a raised floor is
                 NOT a hold: in load first surplus sun still goes into the battery.)
@@ -24,6 +26,7 @@ CHARGE_KW_MIN = 0.05      # below this a step counts as "not charging"
 GRID_CHARGE_KW_MIN = 0.1
 DISCHARGE_KW_MIN = 0.05
 EXPORT_KW_MIN = 0.05
+PRICE_EPS = 0.005         # DKK/kWh: a later hour must be dearer than this to get a reserve
 
 
 def _kw(energy, dt):
@@ -107,9 +110,18 @@ def derive_setpoints(plan, soc_now_pct: float, battery, inverter_kw: float,
         max_soc = clamp(soc_now_ceil)
 
     if mode == "discharge":
-        # Floor at the SoC the plan expects after this step (rounded down so the plan is reachable).
-        # If the load is higher than forecast the battery stops there and the next replan decides.
-        min_soc = clamp(math.floor(pct(plan.soc_end[0]) + 1e-9))
+        # Hold back only what later, *dearer* hours need before the battery is charged again.
+        # In the dearest hour the floor is the configured minimum: an unexpectedly high load is then
+        # taken from the battery, at the cost of cheaper later hours (the next replan rebalances).
+        reserve = 0.0
+        for t in range(1, T):
+            if charging(t):
+                break
+            if plan.buy[t] > plan.buy[0] + PRICE_EPS:
+                bat_car_t = plan.bat_car[t] if plan.bat_car is not None else 0.0
+                reserve += (plan.bat_load[t] + bat_car_t) / battery.eta_discharge
+        floor_pct = math.floor(pct(battery.soc_floor_kwh + reserve) + 1e-9)
+        min_soc = clamp(min(floor_pct, soc_now_ceil))
     else:
         min_soc = clamp(soc_now_ceil)
 

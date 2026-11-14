@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.2
+
+- **No SoC floor in the dearest hours.** While discharging, the load-first minimum SoC was the SoC
+  the plan expected at the end of the hour (since 0.1.1), so even in the peak hour a load above the
+  forecast would have been bought at the peak price instead of taken from the battery. The floor is
+  now the configured `soc_floor_pct` plus only what later hours that are *dearer* than now need from
+  the battery before it is charged again. In the dearest hour it is the configured floor (10 %).
+
 ## 0.4.1
 
 - **The solar correction learns right away.** At start the add-on fetches Solcast's own 14 days of
