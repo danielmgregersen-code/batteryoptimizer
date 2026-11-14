@@ -282,11 +282,11 @@ def test_pv_dampening_learns_shade_corrects_the_plan_and_pushes_to_solcast(tmp_p
     assert d["learned_factors"][13] < 0.6 and d["learned_factors"][11] > 0.95
     row13 = next(r for r in snap["plan"] if r["t"][11:16] == "13:00")
     assert row13["pv_factor"] < 0.9
-    assert [c[1] for c in calls] == ["get_dampening", "set_dampening"]
-    pushed = calls[1][2]["damp_factor"].split(",")
+    assert [c[1] for c in calls] == ["get_dampening", "query_forecast_data", "set_dampening"]
+    pushed = calls[2][2]["damp_factor"].split(",")
     assert len(pushed) == 24 and float(pushed[13]) < 0.9 and float(pushed[11]) > 0.95
     state, attrs = ha.published["sensor.energy_planner_pv_dampening"]
-    assert attrs["factors_csv"] == calls[1][2]["damp_factor"] and attrs["applied_in_solcast"][13] < 0.9
+    assert attrs["factors_csv"] == calls[2][2]["damp_factor"] and attrs["applied_in_solcast"][13] < 0.9
     # the stored state survives a restart and is used to undampen Solcast's values
     assert pvd.load_json(str(tmp_path / "pv_dampening.json"), {})["applied"][13] < 0.9
 
@@ -303,3 +303,67 @@ def test_pv_dampening_off_and_solcast_auto(tmp_path):
     snap = Planner(ha2, tz=TZ, log_path=str(tmp_path / "e.jsonl")).run_once(datetime(2026, 11, 14, 10, 30, tzinfo=UTC))
     assert snap["pv_dampening"]["solcast_auto"] is True
     assert ha2.published["sensor.energy_planner_pv_dampening"][1]["solcast_auto"] is True
+
+
+def _shaded_solcast_history():
+    """Solcast's 30-min forecast history (kW) and the actual production with a tree at 13:00."""
+    from fixtures import SOLCAST_HOURLY
+    entries, actual_rows = [], []
+    for d in range(1, 15):
+        k = [0.3, 0.6, 1.0, 0.9, 0.5, 0.8, 0.4][d % 7]
+        for hl in range(8, 16):
+            t = datetime(2026, 11, 14, hl, tzinfo=TZ) - timedelta(days=d)
+            clear = SOLCAST_HOURLY[hl][2]
+            f = clear * k
+            for half in (0, 30):
+                entries.append({"period_start": (t + timedelta(minutes=half)).isoformat(),
+                                "pv_estimate": f, "pv_estimate10": f * 0.5, "pv_estimate90": clear})
+            a = f * (1 - (0.7 * k if hl == 13 else 0.0))
+            actual_rows.append({"start": t.astimezone(UTC).timestamp() * 1000, "mean": a * 1000})
+    return entries, actual_rows
+
+
+def test_solcast_history_is_fetched_at_start_and_learned_from_at_once(tmp_path):
+    entries, actual_rows = _shaded_solcast_history()
+    stats = {DEFAULTS["house_load_entity"]: [], DEFAULTS["pv_power_entity"]: actual_rows}
+    ha = make_ha(stats=stats)
+    calls = []
+
+    def call_service(domain, service, data=None, return_response=False):
+        calls.append((service, data, return_response))
+        if service == "query_forecast_data":
+            return {"changed_states": [], "service_response": {"data": entries}}
+        raise RuntimeError("no dampening set")
+    ha.call_service = call_service
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))       # no pv_history.json yet
+    snap = p.run_once(datetime(2026, 11, 14, 10, 30, tzinfo=UTC))
+
+    q = next(c for c in calls if c[0] == "query_forecast_data")
+    assert q[1]["undampened"] is True and q[2] is True
+    assert q[1]["start_date_time"].startswith("2026-10-31T10:00") and q[1]["end_date_time"].startswith("2026-11-14T10:00")
+    d = snap["pv_dampening"]
+    assert d["backfill"]["hours"] == 14 * 8 and "error" not in d["backfill"]
+    assert d["learned_factors"][13] < 0.6 and d["learned_factors"][11] > 0.95   # learned on the first cycle
+    # fetched once: the next cycle does not ask again
+    p.run_once(datetime(2026, 11, 14, 10, 45, tzinfo=UTC))
+    assert sum(1 for c in calls if c[0] == "query_forecast_data") == 1
+
+
+def test_failed_history_fetch_does_not_stop_planning_and_is_retried(tmp_path):
+    ha = make_ha()
+    calls = []
+
+    def call_service(domain, service, data=None, return_response=False):
+        calls.append(service)
+        if service == "query_forecast_data":
+            return {"service_response": {"something": "else"}}
+        raise RuntimeError("no dampening set")
+    ha.call_service = call_service
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    t0 = datetime(2026, 11, 14, 10, 30, tzinfo=UTC)
+    snap = p.run_once(t0)
+    assert snap["mode"] and "error" in snap["pv_dampening"]["backfill"]
+    p.run_once(t0 + timedelta(hours=1))
+    assert calls.count("query_forecast_data") == 1                    # not before 6 hours
+    p.run_once(t0 + timedelta(hours=7))
+    assert calls.count("query_forecast_data") == 2

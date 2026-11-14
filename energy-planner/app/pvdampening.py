@@ -28,6 +28,8 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 
+from inputs import forecast_entries_to_hourly
+
 UTC = timezone.utc
 MIN_FORECAST_KWH = 0.05     # hours with less forecast sun carry no information
 LAMBDA = 0.1                # shrinkage (kWh^2): with few clear hours shade stays near 0
@@ -69,6 +71,45 @@ def record(history: dict, hour_utc: datetime, p50: float, p10: float, p90: float
     for k in [k for k in history if k < cutoff]:
         del history[k]
     return history
+
+
+def parse_forecast_history(resp) -> dict:
+    """Solcast's query_forecast_data response -> {utc_hour: (p50, p10, p90)} in kWh per hour.
+
+    Accepts {"service_response": {"data": [...]}}, {"data": [...]} or a bare list; the entries are
+    expected like detailedForecast (period_start, pv_estimate[10|90] in kW).
+    """
+    data = resp
+    if isinstance(data, dict):
+        data = data.get("service_response", data)
+    if isinstance(data, dict):
+        data = data.get("data", data)
+    if isinstance(data, dict):        # some versions nest one level more (e.g. per site)
+        data = next((v for v in data.values() if isinstance(v, list)), [])
+    if not isinstance(data, list):
+        return {}
+    return forecast_entries_to_hourly(data, default_minutes=30)
+
+
+def backfill(history: dict, hourly: dict, now: datetime, limited_hours: set = frozenset()) -> int:
+    """Add Solcast's past (undampened) forecast for hours not recorded by the add-on itself.
+
+    Own recordings win; only finished hours within HISTORY_DAYS are added, with applied = 1.0
+    (undampened). `limited_hours`: UTC hours known (from the decision log) to have had the export
+    limit at 0. Returns the number of hours added.
+    """
+    current = now.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+    cutoff = current - timedelta(days=HISTORY_DAYS)
+    added = 0
+    for t, (p50, p10, p90) in hourly.items():
+        t = t.astimezone(UTC)
+        key = t.isoformat()
+        if t >= current or t < cutoff or key in history:
+            continue
+        history[key] = {"p50": round(p50, 4), "p10": round(p10, 4), "p90": round(p90, 4),
+                        "applied": 1.0, "limited": t in limited_hours}
+        added += 1
+    return added
 
 
 # ---------------------------------------------------------------- model

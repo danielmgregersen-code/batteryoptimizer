@@ -153,3 +153,54 @@ def test_a_very_clear_forecast_does_not_rescale_the_history():
     assert m["shade"][14] == pytest.approx(0.7, abs=0.05)
     # hours with no history fall back to the forecast
     assert pvd.clear_reference({}, tomorrow, [1.0] * 24, TZ, NOW)[14] == pytest.approx(2.56)
+
+
+def _entries(day_hour, minutes=30, n=2, p50=2.0, with_bands=True):
+    t0 = datetime(2026, 11, 13, day_hour, tzinfo=TZ)
+    out = []
+    for i in range(n):
+        e = {"period_start": (t0 + timedelta(minutes=minutes * i)).isoformat(), "pv_estimate": p50}
+        if with_bands:
+            e.update(pv_estimate10=p50 / 2, pv_estimate90=p50 * 1.5)
+        out.append(e)
+    return out
+
+
+def test_parse_forecast_history_30_and_60_minutes_and_wrappers():
+    h = datetime(2026, 11, 13, 12, tzinfo=TZ).astimezone(UTC)
+    half = pvd.parse_forecast_history({"service_response": {"data": _entries(12)}})
+    assert half[h] == pytest.approx((2.0, 1.0, 3.0))                  # two half hours at 2 kW = 2 kWh
+    hourly = pvd.parse_forecast_history({"data": _entries(12, minutes=60, n=2)})
+    assert hourly[h] == pytest.approx((2.0, 1.0, 3.0))                # one full hour at 2 kW
+    assert len(hourly) == 2
+    bare = pvd.parse_forecast_history(_entries(12, with_bands=False))
+    assert bare[h] == pytest.approx((2.0, 2.0, 2.0))                  # missing p10/p90 -> p50
+    dt_objects = [{"period_start": datetime(2026, 11, 13, 12, 0, tzinfo=TZ), "pv_estimate": 1.0},
+                  {"period_start": datetime(2026, 11, 13, 12, 30, tzinfo=TZ), "pv_estimate": 1.0},
+                  {"period_start": "garbage", "pv_estimate": 5}, {"pv_estimate": 5}, "x"]
+    assert pvd.parse_forecast_history({"data": dt_objects}) == {h: pytest.approx((1.0, 1.0, 1.0))}
+    assert pvd.parse_forecast_history({"service_response": {}}) == {}
+    assert pvd.parse_forecast_history(None) == {}
+
+
+def test_backfill_keeps_own_recordings_and_skips_the_current_hour():
+    now = datetime(2026, 11, 14, 12, 20, tzinfo=UTC)
+    own = datetime(2026, 11, 14, 9, tzinfo=UTC)
+    history = {own.isoformat(): {"p50": 9.0, "p10": 9.0, "p90": 9.0, "applied": 0.5, "limited": False}}
+    hourly = {own: (1.0, 0.5, 1.5),
+              datetime(2026, 11, 14, 10, tzinfo=UTC): (1.0, 0.5, 1.5),
+              datetime(2026, 11, 14, 11, tzinfo=UTC): (1.2, 0.6, 1.8),
+              datetime(2026, 11, 14, 12, tzinfo=UTC): (1.3, 0.6, 1.9),          # current hour: not finished
+              datetime(2026, 8, 1, 12, tzinfo=UTC): (1.0, 1.0, 1.0)}            # older than HISTORY_DAYS
+    limited = {datetime(2026, 11, 14, 11, tzinfo=UTC)}
+    assert pvd.backfill(history, hourly, now, limited) == 2
+    assert history[own.isoformat()]["p50"] == 9.0                              # own recording wins
+    e11 = history[datetime(2026, 11, 14, 11, tzinfo=UTC).isoformat()]
+    assert e11["applied"] == 1.0 and e11["limited"] is True
+    assert datetime(2026, 11, 14, 12, tzinfo=UTC).isoformat() not in history
+
+
+def test_query_forecast_data_is_allowed():
+    from homeassistant import ALLOWED_SERVICES
+    assert ("solcast_solar", "query_forecast_data") in ALLOWED_SERVICES
+    assert len(ALLOWED_SERVICES) == 3

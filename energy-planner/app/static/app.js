@@ -735,6 +735,9 @@
     if (d.push_error) status.push({ warn: true, text: 'Kunne ikke sende til Solcast: ' + d.push_error });
     else if (d.push) status.push(d.last_pushed ? `Sendt til Solcast ${dayName(d.last_pushed.slice(0, 10), { weekday: 'short' })} kl. ${d.last_pushed.slice(11, 16)}` : 'Sendes til Solcast ved næste cyklus');
     else status.push('Virker kun i planneren (solcast_push er slået fra)');
+    const bf = d.backfill;
+    if (bf && bf.error) status.push({ warn: true, text: 'Kunne ikke hente prognose-historik fra Solcast (prøver igen om 6 timer): ' + bf.error });
+    else if (bf) status.push(`Hentede ${bf.received} timers prognose-historik fra Solcast (seneste 14 dage), ${bf.hours} nye`);
     const day = [...Array(24).keys()].filter((hh) => (d.hours || [])[hh] > 0 || d.clear_factors[hh] < 1);
     const cell = (v, manual) => h('td', { class: v < 0.995 ? '' : 'zero' }, fmt(v, 2) + (manual ? '*' : ''));
     const table = day.length ? h('div', { class: 'table-wrap', style: { marginTop: '12px' } }, h('table', {},

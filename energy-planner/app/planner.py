@@ -22,6 +22,8 @@ CAR_LOG = "/data/car_decisions.jsonl"
 MAX_LOG_LINES = 4000
 KEEP_LOG_LINES = 2000
 PROFILE_MAX_AGE = timedelta(hours=6)
+BACKFILL_DAYS = 14                 # Solcast keeps 14 days of undampened forecast history
+BACKFILL_RETRY = timedelta(hours=6)
 
 
 class PlannerError(Exception):
@@ -67,6 +69,8 @@ class Planner:
                                                             "pushed_at": None})
         self._pv_actual = {}
         self._solcast_synced = False
+        self._backfill = None          # {"hours", "at", "error"} of the last history fetch
+        self._backfill_at = None       # when it was last attempted
 
     # ---- consumption profile -------------------------------------------------
     def _profile_for(self, opts: dict, now: datetime):
@@ -422,6 +426,7 @@ class Planner:
                 st.update(applied=current, previous=current, pushed_at=None)
                 pvd.save_json(self.pv_state_path, st)
 
+        self._backfill_history(now)
         applied = self._solcast_applied(entities)
         h0 = hour_floor(now)
         if h0 in pv50:
@@ -463,8 +468,46 @@ class Planner:
             "corrected": model["corrected"],
             "history_hours": len(self._pv_history),
             "mean_factor": pvd.mean_daylight(desired, ref),
+            "backfill": self._backfill,
         })
         return blended, c50, c10, c90, fac, info
+
+    def _backfill_history(self, now: datetime):
+        """Fetch Solcast's own (undampened) forecast history once after start, so the correction can
+        learn right away instead of after two weeks of recording. Retried after 6 h on failure."""
+        if self._backfill_at and (self._backfill and not self._backfill.get("error")
+                                  or now - self._backfill_at < BACKFILL_RETRY):
+            return
+        self._backfill_at = now
+        end = hour_floor(now)
+        start = end - timedelta(days=BACKFILL_DAYS)
+        try:
+            resp = self.ha.call_service("solcast_solar", "query_forecast_data", {
+                "start_date_time": start.isoformat(), "end_date_time": end.isoformat(), "undampened": True,
+            }, return_response=True)
+            hourly = pvd.parse_forecast_history(resp)
+            if not hourly:
+                raise ValueError("Solcast returned no forecast history (unexpected response format?)")
+            added = pvd.backfill(self._pv_history, hourly, now, self._export_limited_hours())
+            pvd.save_json(self.pv_history_path, self._pv_history)
+            self._backfill = {"hours": added, "received": len(hourly), "at": now.isoformat(timespec="seconds")}
+            log.info("Solcast forecast history: %s hours received, %s added", len(hourly), added)
+        except Exception as e:  # old integration, unknown format, service missing: plan on as before
+            self._backfill = {"hours": 0, "at": now.isoformat(timespec="seconds"), "error": str(e)}
+            log.warning("could not fetch Solcast forecast history: %s", e)
+
+    def _export_limited_hours(self) -> set:
+        """UTC hours in which the decision log saw the export limit at 0 (panels throttled)."""
+        hours = set()
+        for e in self.recent_decisions(4000):
+            try:
+                limit = float((e.get("actual_registers") or {}).get("reg_export_limit"))
+                t = datetime.fromisoformat(e["updated"]).astimezone(UTC)
+            except (TypeError, ValueError, KeyError):
+                continue
+            if limit < 50:
+                hours.add(t.replace(minute=0, second=0, microsecond=0))
+        return hours
 
     def _publish_cost(self, opts: dict, now: datetime):
         """sensor.energy_planner_cost_today: realised grid cost so far today (and yesterday's total)."""

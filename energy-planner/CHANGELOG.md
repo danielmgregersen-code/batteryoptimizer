@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1
+
+- **The solar correction learns right away.** At start the add-on fetches Solcast's own 14 days of
+  undampened forecast history (`solcast_solar.query_forecast_data`) and learns from it together with
+  the actual production already in HA's statistics, instead of recording forecasts for two weeks
+  first. Its own recordings take precedence; hours the decision log saw with the export limit at 0
+  are marked as throttled. A failed fetch (older integration, unexpected format) is shown in the
+  "Solkorrektion" card and retried after 6 hours; planning carries on.
+- `query_forecast_data` (read-only) joins the allowlist of services the add-on may call.
+
 ## 0.4.0
 
 Solar correction for shading (trees).
