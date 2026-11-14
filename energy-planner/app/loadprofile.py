@@ -7,8 +7,9 @@ extreme hours (a car hour the charger sensor missed, a space heater) but, unlike
 counts the ordinary peaks such as cooking: the plan needs the expected energy, and the median of a
 right-skewed load underestimates it.
 
-Does the house-load sensor include the battery's charging? Growatt integrations differ. It is
-detected from the data: at night (no sun, car not charging) the base load is compared between
+Does the house-load sensor include the battery's charging? On the Growatt SPH it does not (the
+battery has its own charge-power sensor), so the default is "no". For other setups "auto" detects
+it from the data (only when the car's statistics exist, see below): at night (no sun, car not charging) the base load is compared between
 hours where the battery charges from the grid and hours where it is idle. If the base load is
 higher by more than half the charging power, the sensor counts the charging as house load, and
 `battery charge - solar` (the part of the charging the sun cannot have covered) is subtracted.
@@ -76,17 +77,25 @@ def detect_battery_in_load(load: dict, car: dict, bat: dict, pv: dict) -> dict:
 
 
 def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv_rows=None,
-                  battery_mode: str = "auto") -> dict:
+                  battery_mode: str = "no") -> dict:
     """-> {"table": {(is_weekend, hour): kWh}, "hours_of_data": int, "default": kWh, "diagnostics": {...}}.
 
-    battery_mode: "auto" (detect), "yes" (always subtract grid charging), "no" (never).
+    battery_mode: "no" (default: the Growatt house load does not include battery charging),
+    "auto" (detect), "yes" (always subtract grid charging).
     """
     load = _by_start(load_rows)
     car = _by_start(car_rows)
     bat = _by_start(bat_rows)
     pv = _by_start(pv_rows)
 
-    detection = detect_battery_in_load(load, car, bat, pv) if bat else {"included": None}
+    # Without the car's statistics, night car charging looks like extra house load exactly when the
+    # battery charges (both use the cheapest hours), and would be mistaken for battery charging.
+    if not bat:
+        detection = {"included": None, "reason": "no_battery_statistics"}
+    elif car_rows is None or not car:
+        detection = {"included": None, "reason": "no_car_statistics"}
+    else:
+        detection = detect_battery_in_load(load, car, bat, pv)
     subtract = battery_mode == "yes" or (battery_mode == "auto" and detection.get("included") is True)
 
     samples: dict = {}

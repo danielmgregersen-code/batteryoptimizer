@@ -95,8 +95,12 @@ synthetic log).
 Until statistics are available (or if the query fails) it plans with `default_load_kw` and says so in
 the UI.
 
-Some Growatt integrations count the battery's charging as house load. The add-on checks this from
-the statistics: at night (no sun, car not charging) it compares the base load in hours where the
+If the car charger's power has no long-term statistics (it needs `state_class: measurement`), the car
+cannot be subtracted and its night charging shows up as 3-4 kW of base load; the panel warns about it.
+
+On the SPH10000TL3 the house load does not include the battery's charging, so
+`load_includes_battery_charging` defaults to `no`. For integrations that do count it, `auto` checks
+the statistics (only when the car's statistics exist): at night (no sun, car not charging) it compares the base load in hours where the
 battery charges with hours where it is idle. If the difference is more than half the charging
 power, the grid part of the charging (`battery charge - solar`) is subtracted from the profile.
 `load_includes_battery_charging` (`auto` / `yes` / `no`) overrides it. The Plan tab's

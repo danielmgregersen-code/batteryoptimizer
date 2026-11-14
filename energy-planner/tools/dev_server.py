@@ -99,8 +99,8 @@ class FakeHA:
         self.published[e] = (state, attributes)
 
     def statistics(self, ids, start, end, period="hour"):
-        """Hourly means like HA's long-term statistics. The house load includes the battery's
-        night-time grid charging (02-05, 4 kW), as some Growatt integrations report it."""
+        """Hourly means like HA's long-term statistics. As on the SPH10000TL3, the house load includes
+        the car but not the battery's charging (that has its own sensor)."""
         rows = {i: [] for i in ids}
         load_id, car_id = DEFAULTS["house_load_entity"], DEFAULTS["car_power_entity"]
         bat_id, pv_id = DEFAULTS["battery_charge_power_entity"], DEFAULTS["pv_power_entity"]
@@ -112,7 +112,7 @@ class FakeHA:
             bat = 4000.0 if 2 <= hl < 5 and t.day % 4 else 0.0
             car = 11000.0 if hl == 4 and t.day % 5 == 0 else 0.0
             pv = SOLCAST_HOURLY[hl][0] * 1000 * random.uniform(0.5, 1.6)
-            rows.get(load_id, []).append({"start": ms, "mean": base + random.uniform(-80, 120) + bat + car})
+            rows.get(load_id, []).append({"start": ms, "mean": base + random.uniform(-80, 120) + car})
             if car_id in rows:
                 rows[car_id].append({"start": ms, "mean": car})
             if bat_id in rows:

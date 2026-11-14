@@ -694,7 +694,9 @@
     else out.push({ text: `Bilen er trukket fra (${fmt(d.car_hours, 0)} timer med opladning i perioden).` });
     const b = d.battery_detection || {};
     const mode = d.battery_mode === 'auto' ? '' : ` (indstillet til "${d.battery_mode}")`;
-    if (!d.battery_rows) out.push({ warn: true, text: 'Batteriets ladeeffekt har ingen langtidsstatistik – kan ikke afgøre, om husforbruget indeholder batteriets opladning.' });
+    if (d.battery_mode === 'no') out.push({ text: 'Batteriets opladning regnes ikke med i husforbruget (indstilling "no", korrekt for Growatt SPH).' });
+    else if (!d.battery_rows) out.push({ warn: true, text: 'Batteriets ladeeffekt har ingen langtidsstatistik – kan ikke afgøre, om husforbruget indeholder batteriets opladning.' });
+    else if (b.reason === 'no_car_statistics') out.push({ warn: true, text: 'Kan ikke afgøre, om husforbruget indeholder batteriets opladning, før bilens statistik findes (bilens natopladning ville ligne batteriopladning).' + (d.battery_subtracted ? ' Trækkes fra' + mode + '.' : '') });
     else if (b.included === true) out.push({ warn: !d.battery_subtracted, text: `Husforbruget indeholder batteriets opladning: om natten ${fmt(b.base_while_charging_kw, 2)} kW mens batteriet lader (${fmt(b.charge_kw, 1)} kW) mod ${fmt(b.base_while_idle_kw, 2)} kW uden. ` + (d.battery_subtracted ? `Opladning fra nettet er trukket fra i ${fmt(d.battery_corrected_hours, 0)} timer.` : 'Den trækkes ikke fra') + mode });
     else if (b.included === false) out.push({ text: `Husforbruget indeholder ikke batteriets opladning (om natten ${fmt(b.base_while_charging_kw, 2)} kW under opladning mod ${fmt(b.base_while_idle_kw, 2)} kW uden).` + (d.battery_subtracted ? ' Trækkes alligevel fra' + mode + '.' : '') });
     else out.push({ text: `For få nattetimer med batteriopladning (${b.night_charging_hours ?? 0}) til at afgøre, om husforbruget indeholder den.` + (d.battery_subtracted ? ' Trækkes fra' + mode + '.' : '') });
@@ -705,6 +707,7 @@
     [/^(\d+) of (\d+) hours use estimated prices.*/, (m) => `${m[1]} af ${m[2]} timer bruger estimerede priser (samme time som sidste kendte dag).`],
     [/^no solar forecast available.*/, () => 'Ingen solprognose – planlægger uden sol.'],
     [/^car minimum cannot be reached by the deadline \(([\d.]+) kWh short\)/, (m) => `Bilens minimum kan ikke nås inden deadline (mangler ${fmt(+m[1], 1)} kWh).`],
+    [/^the car charger power has no long-term statistics.*/, () => 'Billaderens effekt har ingen langtidsstatistik, så bilens opladning tælles med som husforbrug i forbrugsprofilen (fx 3–4 kW om natten). Se kortet "Forbrugsprofil".'],
     [/^car is connected but its SoC is unavailable.*/, () => 'Bilen er tilsluttet, men dens SoC er utilgængelig – bilen er udeladt af planen.'],
   ];
   function translateWarning(w) {
