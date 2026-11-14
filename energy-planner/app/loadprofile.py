@@ -46,6 +46,20 @@ def _by_start(rows) -> dict:
     return out
 
 
+def _power_by_start(rows) -> tuple:
+    """Hourly average power in W from statistics rows: the mean of a power sensor, or the hourly
+    change of an energy counter in kWh (kWh in one hour = average kW). -> ({start: W}, kind)."""
+    out, kind = {}, None
+    for r in rows or []:
+        if r.get("mean") is not None:
+            out[parse_ts(r["start"])] = float(r["mean"])
+            kind = kind or "power"
+        elif r.get("change") is not None:
+            out[parse_ts(r["start"])] = max(0.0, float(r["change"])) * 1000.0
+            kind = kind or "energy"
+    return out, kind
+
+
 def detect_battery_in_load(load: dict, car: dict, bat: dict, pv: dict) -> dict:
     """Compare night-time base load with and without the battery charging (see module doc)."""
     charging, idle, charge_w = [], [], []
@@ -84,7 +98,7 @@ def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv
     "auto" (detect), "yes" (always subtract grid charging).
     """
     load = _by_start(load_rows)
-    car = _by_start(car_rows)
+    car, car_kind = _power_by_start(car_rows)
     bat = _by_start(bat_rows)
     pv = _by_start(pv_rows)
 
@@ -136,6 +150,7 @@ def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv
         "battery_subtracted": subtract,
         "battery_corrected_hours": corrected,
         "car_rows": len(car),
+        "car_kind": car_kind,
         "car_hours": car_hours,
         "battery_rows": len(bat),
         "pv_rows": len(pv),

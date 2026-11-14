@@ -76,8 +76,8 @@ def test_websocket_statistics_protocol():
     assert seen["auth"] == {"type": "auth", "access_token": "tok"}
     assert seen["cmd"]["type"] == "recorder/statistics_during_period"
     assert seen["cmd"]["statistic_ids"] == ["sensor.x"] and seen["cmd"]["period"] == "hour"
-    assert seen["cmd"]["types"] == ["mean"] and seen["cmd"]["start_time"].startswith("2026-10-01")
-    assert seen["cmd"]["units"] == {"power": "W"}
+    assert seen["cmd"]["types"] == ["mean", "change"] and seen["cmd"]["start_time"].startswith("2026-10-01")
+    assert seen["cmd"]["units"] == {"power": "W", "energy": "kWh"}
     assert res["sensor.x"][0]["mean"] == 812.5
 
 

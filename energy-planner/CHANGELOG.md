@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.4
+
+- **The car is now subtracted from the base-load profile.** The default car entity
+  (`sensor.garage_growatt_thor_ev_charger_charging_power`) has no long-term statistics, so the car's
+  night charging was counted as 3-4 kW of house load. `car_power_entity` now defaults to
+  `sensor.ioniq_9_ladeeffekt`, which has statistics.
+- `car_power_entity` may be a power sensor (W/kW, hourly mean) or an energy counter (kWh,
+  total/total_increasing: hourly change = average kW); the panel shows which was used.
+- New `charger_power_entity` (default the THOR's live charging power) for the car controller and
+  the evaluation samples, which need the live value rather than statistics.
+
 ## 0.3.3
 
 - `load_includes_battery_charging` defaults to `no`: on the SPH10000TL3 the house load does not
