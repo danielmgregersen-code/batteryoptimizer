@@ -129,9 +129,12 @@ def test_solcast_auto_dampening_is_detected():
     assert not pvd.solcast_auto_dampening([{"detailedForecast": [{"period_start": "x", "pv_estimate": 1}]}, None])
 
 
-def test_only_solcast_dampening_services_may_be_called():
+def test_entity_services_need_an_allowed_entity():
     ha = HomeAssistant(token="t", base_url="http://127.0.0.1:9/api")
-    for domain, service in (("select", "select_option"), ("number", "set_value"), ("kia_uvo", "start_charge")):
+    for domain, service in (("select", "select_option"), ("number", "set_value"), ("button", "press")):
+        with pytest.raises(ServiceNotAllowed):
+            ha.call_service(domain, service, {"entity_id": "number.growatt_grid_export_limit"})
+    for domain, service in (("switch", "turn_on"), ("homeassistant", "restart"), ("script", "x")):
         with pytest.raises(ServiceNotAllowed):
             ha.call_service(domain, service, {})
 
@@ -203,4 +206,4 @@ def test_backfill_keeps_own_recordings_and_skips_the_current_hour():
 def test_query_forecast_data_is_allowed():
     from homeassistant import ALLOWED_SERVICES
     assert ("solcast_solar", "query_forecast_data") in ALLOWED_SERVICES
-    assert len(ALLOWED_SERVICES) == 3
+    assert len(ALLOWED_SERVICES) == 5

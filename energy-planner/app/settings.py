@@ -96,7 +96,14 @@ DEFAULTS = {
     "car_min_charge_s": 1200,
     "car_cooldown_s": 1800,
     "car_interval_seconds": 120,
+    # --- production: HA helpers that switch each part from dry-run to writing (missing = dry-run) ---
+    "production_switch_entity": "input_boolean.energy_planner_produktion",
+    "car_production_switch_entity": "input_boolean.energy_planner_bil_produktion",
+    "car_device_id": "",               # the IONIQ 9's device id for kia_uvo.start_charge / stop_charge
 }
+
+# Registers the planner writes in production. The export limit is deliberately not one of them.
+WRITE_REGISTER_KEYS = ["reg_battery_first", "reg_grid_charge", "reg_max_soc", "reg_min_soc", "reg_charge_rate"]
 
 REGISTER_KEYS = [
     "reg_battery_first",

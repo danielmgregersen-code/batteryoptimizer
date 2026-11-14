@@ -14,11 +14,13 @@ from settings import REGISTER_KEYS, counter_ids, load_options, local_tz, split_c
 from setpoints import derive_setpoints, step_mode
 from evaluation import evaluate
 from summary import CAR_ACTION_LABEL, reason_da, summary_attributes, upcoming
+import writer
 
 log = logging.getLogger("energy_planner")
 
 DECISION_LOG = "/data/decisions.jsonl"
 CAR_LOG = "/data/car_decisions.jsonl"
+KIA_REPEAT_S = 600     # the same Kia cloud call is not repeated within this while the status is unchanged
 MAX_LOG_LINES = 4000
 KEEP_LOG_LINES = 2000
 PROFILE_MAX_AGE = timedelta(hours=6)
@@ -53,6 +55,7 @@ class Planner:
         self.car_log_path = car_log_path
         self.car_latest = None
         self._car_last_logged = None
+        self._last_kia = None          # (service, charger status, time) of the last Kia call
         self.options_fn = options_fn
         self._profile = None
         self._profile_at = None
@@ -256,9 +259,26 @@ class Planner:
         }
         samples = {"house_load_w": self.ha.number(opts["house_load_entity"]),
                    "car_w": self.ha.number(opts["charger_power_entity"]) if opts.get("charger_power_entity") else None}
+        # Production: write the registers when the helper is on (otherwise dry-run, as before).
+        production = writer.switch_on(self.ha, opts.get("production_switch_entity"))
+        writes = []
+        if production:
+            if hasattr(self.ha, "set_allowed_entities"):
+                self.ha.set_allowed_entities(writer.allowed_entities(opts))
+            writes = writer.apply(self.ha, opts, sp, now.astimezone(self.tz))
+            for w in writes:
+                if w["status"] == "error":
+                    warnings.append(f"could not write {w['entity']}: {w.get('error')}")
+                else:
+                    log.info("wrote %s: %s -> %s (%s)", w["entity"], w["from"], w["to"], w["status"])
+            if writes:
+                actual = {k: self.ha.text(opts[k]) for k in REGISTER_KEYS if opts.get(k)}
         snapshot = {
             "updated": now.astimezone(self.tz).isoformat(timespec="seconds"),
-            "dry_run": True,
+            "dry_run": not production,
+            "production": {"battery": production,
+                           "car": writer.switch_on(self.ha, opts.get("car_production_switch_entity")),
+                           "writes": writes},
             "soc_pct": soc_pct,
             "mode": sp["mode"],
             "setpoints": sp,
@@ -293,7 +313,7 @@ class Planner:
     # ---- outputs -------------------------------------------------------------
     def _publish(self, snap: dict):
         sp = snap["setpoints"]
-        common = {"dry_run": True, "updated": snap["updated"]}
+        common = {"dry_run": snap["dry_run"], "updated": snap["updated"]}
         self.ha.set_state("sensor.energy_planner_mode", snap["mode"], {
             **common, "friendly_name": "Energy Planner mode", "icon": "mdi:home-battery", **sp,
             **snap.get("summary", {}),
@@ -358,8 +378,11 @@ class Planner:
             snap = self.latest
         row = carmod.plan_for_now(snap, now, self.tz)
         d = carmod.decide(live, row, opts)
-        d.update({"updated": now.astimezone(self.tz).isoformat(timespec="seconds"), "dry_run": True,
-                  "live": live, "plan_row": row})
+        car_production = writer.switch_on(self.ha, opts.get("car_production_switch_entity"))
+        d.update({"updated": now.astimezone(self.tz).isoformat(timespec="seconds"), "dry_run": not car_production,
+                  "live": live, "plan_row": row, "executed": []})
+        if car_production and d["calls"]:
+            d["executed"] = self._execute_car_calls(d["calls"], opts, live.get("status"), now)
         with self._lock:
             self.car_latest = d
         d["reason_da"] = reason_da(d["reason"])
@@ -367,20 +390,59 @@ class Planner:
         car_info = (snap or {}).get("car") or {}
         nxt = car_items[0] if car_items else None
         self.ha.set_state("sensor.energy_planner_car", d["action"], {
-            "friendly_name": "Energy Planner car", "icon": "mdi:car-electric", "dry_run": True, "updated": d["updated"],
+            "friendly_name": "Energy Planner car", "icon": "mdi:car-electric", "dry_run": d["dry_run"], "updated": d["updated"],
             "label": CAR_ACTION_LABEL.get(d["action"], d["action"]),
             "target_amps": d["target_amps"], "reason": d["reason"], "reason_da": d["reason_da"], "calls": d["calls"],
+            "executed": d["executed"],
             "surplus_w": d.get("surplus_w"),
             "next_window": f"{nxt['when']} · {nxt['text']}" if nxt else None,
             "next_start": nxt["start"] if nxt else None,
             "planned_kwh": car_info.get("planned_kwh"),
             "deadline": car_info.get("deadline")})
         key = (d["action"], d["target_amps"], d["reason"].split(" (")[0], live["status"], live["amps"])
-        if key != self._car_last_logged:          # log changes only, not every 2 minutes
+        if key != self._car_last_logged or d["executed"]:   # log changes and every executed call
             self._car_last_logged = key
             self._append(self.car_log_path, {k: d[k] for k in ("updated", "action", "target_amps", "reason",
-                                                                "reason_da", "calls", "live")})
+                                                                "reason_da", "calls", "executed", "dry_run", "live")})
         return d
+
+    def _execute_car_calls(self, calls: list, opts: dict, status: str, now: datetime) -> list:
+        """Carry out the controller's calls (car production helper on)."""
+        if hasattr(self.ha, "set_allowed_entities"):
+            self.ha.set_allowed_entities(writer.allowed_entities(opts))
+        done = []
+        for c in calls:
+            svc = c["service"]
+            res = {"service": svc, "value": c.get("value")}
+            try:
+                if svc == "number.set_value":
+                    self.ha.call_service("number", "set_value", {"entity_id": c["entity_id"], "value": c["value"]})
+                elif svc == "button.press":
+                    self.ha.call_service("button", "press", {"entity_id": c["entity_id"]})
+                elif svc.startswith("kia_uvo."):
+                    device = opts.get("car_device_id")
+                    if not device:
+                        res.update(status="skipped", error="car_device_id is not set")
+                        done.append(res)
+                        continue
+                    last = self._last_kia
+                    if last and last[0] == svc and last[1] == status and (now - last[2]).total_seconds() < KIA_REPEAT_S:
+                        res.update(status="skipped", error="repeated within 10 min (Kia cloud quota)")
+                        done.append(res)
+                        continue
+                    self.ha.call_service("kia_uvo", svc.split(".", 1)[1], {"device_id": device})
+                    self._last_kia = (svc, status, now)
+                else:
+                    res.update(status="skipped", error="unknown call")
+                    done.append(res)
+                    continue
+                res["status"] = "ok"
+                log.info("car: %s %s", svc, c.get("value", ""))
+            except Exception as e:
+                res.update(status="error", error=str(e))
+                log.warning("car call %s failed: %s", svc, e)
+            done.append(res)
+        return done
 
     # ---- solar dampening ---------------------------------------------------------
     def _solcast_applied(self, sol_attrs_entities: list) -> list:

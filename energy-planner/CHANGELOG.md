@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.0
+
+**Production.** Two HA helpers switch the add-on from dry-run to control; missing or off = dry-run.
+
+- `input_boolean.energy_planner_produktion`: writes the house-battery registers every cycle (battery
+  first all-day slot, charge from grid, max SoC, min SoC, charge rate). Only differing values, no
+  rate limit, in a safe order; clipped to hard limits; read back. Export limit and time slots are
+  never written. Manual changes are overwritten at the next cycle while the helper is on.
+- `input_boolean.energy_planner_bil_produktion`: carries out the car controller's calls (charger
+  current, start button, Kia start/stop with the new `car_device_id`). A repeated Kia call within
+  10 minutes with unchanged charger status is skipped (cloud quota).
+- Service allowlist per entity: `select` / `number` / `button` only on those registers and the
+  charger's controls.
+- Panel: the header pill shows "Produktion: batteri + bil", the register table shows what was
+  written, the car tab shows the executed calls. Sensors' `dry_run` attribute follows the helpers.
+
 ## 0.5.0
 
 - **New "Økonomi" tab**: what the installation cost and earned, hour by hour from HA's long-term

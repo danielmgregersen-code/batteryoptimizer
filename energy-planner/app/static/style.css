@@ -269,3 +269,4 @@ details[open] > summary { margin-bottom: 10px; }
 .chip.wrap { word-break: break-all; white-space: normal; max-width: 100%; }
 .tiles.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 @media (max-width: 900px) { .tiles.four { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.pill.live { color: #ffffff; background: var(--critical); }

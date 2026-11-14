@@ -97,6 +97,8 @@ class FakeHA:
                 "last_changed": (datetime.now(UTC) - timedelta(minutes=47)).isoformat()}
 
     def attributes(self, e):
+        if e.startswith("select."):
+            return {"options": ["Enabled", "Disabled"]}
         return self.attrs.get(e)
 
     def number(self, e):
@@ -110,6 +112,14 @@ class FakeHA:
 
     def call_service(self, domain, service, data=None, return_response=False):
         print(f"[fake HA] {domain}.{service} {data or ''}")
+        if domain == "select":
+            self.states[data["entity_id"]] = data["option"]
+            return {}
+        if domain == "number":
+            self.states[data["entity_id"]] = str(data["value"])
+            return {}
+        if domain in ("button", "kia_uvo"):
+            return {}
         if service == "get_dampening":
             return {"service_response": {"data": [{"site": "all", "damp_factor": ",".join(["1.0"] * 24)}]}}
         if service == "query_forecast_data":
@@ -234,6 +244,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8010)
     ap.add_argument("--no-car", action="store_true")
+    ap.add_argument("--production", action="store_true", help="turn both production helpers on")
     ap.add_argument("--data-dir", default=None)
     args = ap.parse_args()
     data = args.data_dir or tempfile.mkdtemp(prefix="energy-planner-")
@@ -248,6 +259,8 @@ def main():
     synthetic_log(os.path.join(data, "decisions.jsonl"))
     # No pv_history.json: the planner fetches Solcast's forecast history (query_forecast_data) itself.
     fake = FakeHA(car=not args.no_car)
+    for key in ("production_switch_entity", "car_production_switch_entity"):
+        fake.states[DEFAULTS[key]] = "on" if args.production else "off"
     app_main.planner = Planner(fake, tz=TZ, log_path=os.path.join(data, "decisions.jsonl"),
                                car_log_path=os.path.join(data, "car_decisions.jsonl"))
     app_main.planner.run_once()
