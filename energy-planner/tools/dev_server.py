@@ -38,6 +38,19 @@ def solcast(day, scale=1.0):
         for h, (a, b, c) in enumerate(SOLCAST_HOURLY)]}
 
 
+TREE_SHADE = {13: 0.6, 14: 0.75, 15: 0.5}   # local hours behind the trees (share of direct sun lost)
+
+
+def synthetic_sun(t):
+    """(Solcast p50, p90, actual) in kWh for a past hour: day-to-day cloudiness, trees at 13-15."""
+    hl = t.astimezone(TZ).hour
+    clear = SOLCAST_HOURLY[hl][2]
+    k = 0.25 + 0.75 * abs(math.sin(t.toordinal() * 1.7))
+    f = clear * k
+    actual = f * (1 - TREE_SHADE.get(hl, 0.0) * k) * random.Random(int(t.timestamp())).uniform(0.9, 1.1)
+    return f, clear, actual
+
+
 class FakeHA:
     def __init__(self, car=True):
         today = datetime.now(TZ).date()
@@ -95,6 +108,12 @@ class FakeHA:
     def text(self, e):
         return self.states.get(e)
 
+    def call_service(self, domain, service, data=None, return_response=False):
+        print(f"[fake HA] {domain}.{service} {data or ''}")
+        if service == "get_dampening":
+            return {"service_response": {"data": [{"site": "all", "damp_factor": ",".join(["1.0"] * 24)}]}}
+        return {}
+
     def set_state(self, e, state, attributes=None):
         self.published[e] = (state, attributes)
 
@@ -111,7 +130,7 @@ class FakeHA:
             base = 450 + (900 if 17 <= hl < 21 else 350 if 6 <= hl < 17 else 150 if 21 <= hl < 23 else 0)
             bat = 4000.0 if 2 <= hl < 5 and t.day % 4 else 0.0
             car = 11000.0 if hl == 4 and t.day % 5 == 0 else 0.0
-            pv = SOLCAST_HOURLY[hl][0] * 1000 * random.uniform(0.5, 1.6)
+            pv = synthetic_sun(t)[2] * 1000
             rows.get(load_id, []).append({"start": ms, "mean": base + random.uniform(-80, 120) + car})
             if car_id in rows:
                 rows[car_id].append({"start": ms, "mean": car})
@@ -194,6 +213,16 @@ def main():
     from planner import Planner
 
     synthetic_log(os.path.join(data, "decisions.jsonl"))
+    history = {}
+    start = (datetime.now(UTC) - timedelta(days=14)).replace(minute=0, second=0, microsecond=0)
+    t = start
+    while t < datetime.now(UTC) - timedelta(hours=1):
+        f, clear, _ = synthetic_sun(t)
+        if clear > 0:
+            history[t.isoformat()] = {"p50": f, "p10": f * 0.6, "p90": clear, "applied": 1.0, "limited": False}
+        t += timedelta(hours=1)
+    with open(os.path.join(data, "pv_history.json"), "w") as fh:
+        json.dump(history, fh)
     fake = FakeHA(car=not args.no_car)
     app_main.planner = Planner(fake, tz=TZ, log_path=os.path.join(data, "decisions.jsonl"),
                                car_log_path=os.path.join(data, "car_decisions.jsonl"))

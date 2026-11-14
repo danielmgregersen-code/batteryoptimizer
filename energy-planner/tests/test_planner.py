@@ -247,3 +247,59 @@ def test_missing_car_statistics_is_a_visible_warning(tmp_path):
         datetime(2026, 11, 14, 11, 30, tzinfo=UTC))
     assert any("no long-term statistics" in w for w in snap["warnings"])
     assert snap["profile"]["diagnostics"]["battery_mode"] == "no"
+
+
+def test_pv_dampening_learns_shade_corrects_the_plan_and_pushes_to_solcast(tmp_path):
+    import pvdampening as pvd
+    from fixtures import SOLCAST_HOURLY
+
+    # 14 days of history: Solcast's forecast vs. actual, with a tree in front of the 13:00 sun
+    history, actual_rows = {}, []
+    for d in range(1, 15):
+        k = [0.3, 0.6, 1.0, 0.9, 0.5, 0.8, 0.4][d % 7]
+        for hl in range(8, 16):
+            t = (datetime(2026, 11, 14, hl, tzinfo=TZ) - timedelta(days=d)).astimezone(UTC)
+            clear = SOLCAST_HOURLY[hl][2]
+            f = clear * k
+            history[t.isoformat()] = {"p50": f, "p10": f * 0.5, "p90": clear, "applied": 1.0, "limited": False}
+            a = f * (1 - (0.7 * k if hl == 13 else 0.0))
+            actual_rows.append({"start": t.timestamp() * 1000, "mean": a * 1000})
+    pvd.save_json(str(tmp_path / "pv_history.json"), history)
+    stats = {DEFAULTS["house_load_entity"]: [], DEFAULTS["pv_power_entity"]: actual_rows}
+
+    ha = make_ha(stats=stats)
+    calls = []
+
+    def call_service(domain, service, data=None, return_response=False):
+        calls.append((domain, service, data))
+        return {"service_response": {"data": [{"site": "all", "damp_factor": ",".join(["1.0"] * 24)}]}}
+    ha.call_service = call_service
+    opts = {**DEFAULTS, "solcast_push": True}
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), options_fn=lambda: opts)
+    snap = p.run_once(datetime(2026, 11, 14, 10, 30, tzinfo=UTC))      # 11:30 local
+
+    d = snap["pv_dampening"]
+    assert d["learned_factors"][13] < 0.6 and d["learned_factors"][11] > 0.95
+    row13 = next(r for r in snap["plan"] if r["t"][11:16] == "13:00")
+    assert row13["pv_factor"] < 0.9
+    assert [c[1] for c in calls] == ["get_dampening", "set_dampening"]
+    pushed = calls[1][2]["damp_factor"].split(",")
+    assert len(pushed) == 24 and float(pushed[13]) < 0.9 and float(pushed[11]) > 0.95
+    state, attrs = ha.published["sensor.energy_planner_pv_dampening"]
+    assert attrs["factors_csv"] == calls[1][2]["damp_factor"] and attrs["applied_in_solcast"][13] < 0.9
+    # the stored state survives a restart and is used to undampen Solcast's values
+    assert pvd.load_json(str(tmp_path / "pv_dampening.json"), {})["applied"][13] < 0.9
+
+
+def test_pv_dampening_off_and_solcast_auto(tmp_path):
+    ha = make_ha()
+    opts = {**DEFAULTS, "pv_dampening": "off"}
+    snap = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), options_fn=lambda: opts).run_once(
+        datetime(2026, 11, 14, 10, 30, tzinfo=UTC))
+    assert all(r["pv_factor"] in (None, 1.0) for r in snap["plan"])
+    ha2 = make_ha()
+    attrs = ha2.attrs["sensor.solcast_pv_forecast_forecast_today"]
+    attrs["detailedForecast"] = [{"period_start": "2026-11-14T12:00:00+01:00", "pv_estimate": 1.0, "dampening_factor": 0.8}]
+    snap = Planner(ha2, tz=TZ, log_path=str(tmp_path / "e.jsonl")).run_once(datetime(2026, 11, 14, 10, 30, tzinfo=UTC))
+    assert snap["pv_dampening"]["solcast_auto"] is True
+    assert ha2.published["sensor.energy_planner_pv_dampening"][1]["solcast_auto"] is True

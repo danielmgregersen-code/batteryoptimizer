@@ -12,6 +12,15 @@ BASE_URL = "http://supervisor/core/api"
 WS_URL = "ws://supervisor/core/websocket"
 
 
+# The only services this add-on may call. Inverter and charger stay dry-run: anything else is
+# refused here, whatever the caller asks for.
+ALLOWED_SERVICES = {("solcast_solar", "set_dampening"), ("solcast_solar", "get_dampening")}
+
+
+class ServiceNotAllowed(Exception):
+    pass
+
+
 class HomeAssistant:
     def __init__(self, token: str = None, base_url: str = BASE_URL, ws_url: str = WS_URL):
         self.token = token or os.getenv("SUPERVISOR_TOKEN", "")
@@ -63,6 +72,19 @@ class HomeAssistant:
             r.raise_for_status()
         except requests.RequestException as e:
             log.warning("set_state(%s) failed: %s", entity_id, e)
+
+    def call_service(self, domain: str, service: str, data: dict = None, return_response: bool = False):
+        """Call an allowlisted service. Returns the JSON response (with `service_response` when
+        return_response is set), or raises."""
+        if (domain, service) not in ALLOWED_SERVICES:
+            raise ServiceNotAllowed(f"{domain}.{service} is not allowed")
+        url = f"{self.base_url}/services/{domain}/{service}" + ("?return_response" if return_response else "")
+        r = requests.post(url, headers=self._headers, data=json.dumps(data or {}), timeout=30)
+        r.raise_for_status()
+        try:
+            return r.json()
+        except ValueError:
+            return None
 
     def statistics(self, statistic_ids: list, start: datetime, end: datetime, period: str = "hour") -> dict:
         """recorder/statistics_during_period over the WebSocket API -> {statistic_id: [rows]}."""

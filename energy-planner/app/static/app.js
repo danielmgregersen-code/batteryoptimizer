@@ -550,7 +550,8 @@
     const flows = [[C.gridbat, 'Net → batteri', r.grid_bat], [C.sun, 'Sol → batteri', r.pv_bat], [C.car, 'Til bil', carIn(r)],
       [C.batt, 'Batteri → hus', r.bat_load + (r.car_bat || 0)], [C.export, 'Eksport', r.pv_exp]];
     flows.forEach(([c, l, v]) => { if (v > 0.005) kids.push(ttRow(c, l, fmt(v, 2), '')); });
-    kids.push(ttRow(C.ink2, 'Net → hus', fmt(r.grid_load, 2)), ttRow(C.sun, 'Sol (prognose)', fmt(r.pv, 2) + (r.pv_p90 > r.pv_p10 ? `  (${fmt(r.pv_p10, 1)}–${fmt(r.pv_p90, 1)})` : '')), ttRow(C.ink2, 'Husforbrug', fmt(r.load, 2)));
+    kids.push(ttRow(C.ink2, 'Net → hus', fmt(r.grid_load, 2)), ttRow(C.sun, 'Sol (prognose)', fmt(r.pv, 2) + (r.pv_p90 > r.pv_p10 ? `  (${fmt(r.pv_p10, 1)}–${fmt(r.pv_p90, 1)})` : '')),
+      r.pv_factor != null && r.pv_factor < 0.995 ? ttRow(C.ink2, 'Skyggekorrektion', '× ' + fmt(r.pv_factor, 2)) : null, ttRow(C.ink2, 'Husforbrug', fmt(r.load, 2)));
     kids.push(ttSec('Batteri ved timens slut'));
     kids.push(ttRow(C.batt, 'Hus', pct(r.soc_pct)));
     if (r.car_soc != null) kids.push(ttRow(C.car, 'Bil', pct(r.car_soc)));
@@ -650,7 +651,24 @@
       h('div', { style: { marginTop: '10px' } }, legend([{ color: C.batt, label: 'Hverdag' }, { color: C.export, label: 'Weekend' }])),
       h('ul', { class: 'diag' }, profileDiagnostics(prof).map((d) => h('li', { class: d.warn ? 'warn' : '' }, d.text)))) : null;
 
-    root.replaceChildren(h('div', { class: 'stack' }, banners, tiles, chartCard, h('div', { class: 'grid-2' }, upCard, regCard), profCard, tableCard));
+    const dmp = p.pv_dampening;
+    const dmpBox = h('div', { class: 'chart' });
+    const dmpCard = dmp ? dampeningCard(dmp, dmpBox) : null;
+
+    root.replaceChildren(h('div', { class: 'stack' }, banners, tiles, chartCard, h('div', { class: 'grid-2' }, upCard, regCard), profCard, dmpCard, tableCard));
+    if (dmp && !dmp.solcast_auto) {
+      const hrs = [...Array(24).keys()].filter((hh) => (dmp.hours || [])[hh] > 0);
+      columnChart(dmpBox, {
+        label: 'Sol pr. time: Solcast, faktisk og korrigeret', height: 180,
+        empty: 'Ingen soltimer at sammenligne endnu – historikken bygges op time for time.',
+        items: hrs.map((hh) => ({ label: String(hh).padStart(2, '0'), values: [dmp.forecast[hh], dmp.actual[hh], dmp.corrected[hh]], hh })),
+        series: [{ label: 'Solcast', color: C.sun }, { label: 'Faktisk', color: C.batt }, { label: 'Med korrektion', color: C.gridbat }],
+        tooltip: (it) => h('div', {}, h('div', { class: 'tt-head' }, `Kl. ${it.label} · gns. over ${dmp.hours[it.hh]} dage`),
+          ttRow(C.sun, 'Solcast (uden dæmpning)', fmt(it.values[0], 2) + ' kWh', ''), ttRow(C.batt, 'Faktisk', fmt(it.values[1], 2) + ' kWh', ''),
+          ttRow(C.gridbat, 'Med korrektion', fmt(it.values[2], 2) + ' kWh', ''),
+          ttRow(C.ink2, 'Faktor ved klar himmel', fmt(dmp.clear_factors[it.hh], 2)), ttRow(C.ink2, 'Faktor i dag', fmt(dmp.today_factors[it.hh], 2))),
+      });
+    }
     if (prof) {
       columnChart(profBox, {
         label: 'Basisforbrug pr. time', height: 170,
@@ -702,6 +720,35 @@
     else if (b.included === false) out.push({ text: `Husforbruget indeholder ikke batteriets opladning (om natten ${fmt(b.base_while_charging_kw, 2)} kW under opladning mod ${fmt(b.base_while_idle_kw, 2)} kW uden).` + (d.battery_subtracted ? ' Trækkes alligevel fra' + mode + '.' : '') });
     else out.push({ text: `For få nattetimer med batteriopladning (${b.night_charging_hours ?? 0}) til at afgøre, om husforbruget indeholder den.` + (d.battery_subtracted ? ' Trækkes fra' + mode + '.' : '') });
     return out;
+  }
+
+  function dampeningCard(d, box) {
+    const head = h('div', { class: 'card-head' }, h('h2', {}, 'Solkorrektion (skygge pr. time)'),
+      h('span', { class: 'hint' }, d.solcast_auto ? 'Solcast dæmper selv' : `Lært over ${d.days} dage · faktor = 1 − skygge × klarhed`));
+    if (d.solcast_auto) {
+      return h('div', { class: 'card' }, head, h('div', { class: 'empty' },
+        'Solcasts egen automatiske dæmpning er slået til. Planneren bruger Solcasts dæmpede prognose, og add-on’ens korrektion er sat på pause (de to kan ikke køre samtidig).'));
+    }
+    const status = [];
+    const modeTxt = { auto: 'Lærer automatisk', manual: 'Kun manuelle timer', off: 'Slået fra' }[d.mode] || d.mode;
+    status.push(modeTxt + (d.manual_hours && d.manual_hours.length ? ` · manuelt låst: kl. ${d.manual_hours.map((x) => String(x).padStart(2, '0')).join(', ')}` : ''));
+    if (d.push_error) status.push({ warn: true, text: 'Kunne ikke sende til Solcast: ' + d.push_error });
+    else if (d.push) status.push(d.last_pushed ? `Sendt til Solcast ${dayName(d.last_pushed.slice(0, 10), { weekday: 'short' })} kl. ${d.last_pushed.slice(11, 16)}` : 'Sendes til Solcast ved næste cyklus');
+    else status.push('Virker kun i planneren (solcast_push er slået fra)');
+    const day = [...Array(24).keys()].filter((hh) => (d.hours || [])[hh] > 0 || d.clear_factors[hh] < 1);
+    const cell = (v, manual) => h('td', { class: v < 0.995 ? '' : 'zero' }, fmt(v, 2) + (manual ? '*' : ''));
+    const table = day.length ? h('div', { class: 'table-wrap', style: { marginTop: '12px' } }, h('table', {},
+      h('thead', {}, h('tr', {}, h('th', {}, 'Kl.'), day.map((hh) => h('th', {}, String(hh).padStart(2, '0'))))),
+      h('tbody', {},
+        h('tr', {}, h('td', {}, 'Klar himmel'), day.map((hh) => cell(d.clear_factors[hh], (d.manual_hours || []).includes(hh)))),
+        h('tr', {}, h('td', {}, 'I dag'), day.map((hh) => cell(d.today_factors[hh]))),
+        h('tr', {}, h('td', {}, 'I Solcast nu'), day.map((hh) => cell(d.applied_in_solcast[hh]))),
+        h('tr', {}, h('td', {}, 'Dage med data'), day.map((hh) => h('td', { class: 'zero' }, String(d.hours[hh] || 0))))))) : null;
+    return h('div', { class: 'card' }, head, box,
+      h('div', { style: { marginTop: '10px' } }, legend([{ color: C.sun, label: 'Solcast (uden dæmpning)' }, { color: C.batt, label: 'Faktisk' }, { color: C.gridbat, label: 'Med korrektion' }])),
+      table,
+      h('ul', { class: 'diag' }, status.map((x) => typeof x === 'string' ? h('li', {}, x) : h('li', { class: 'warn' }, x.text))),
+      h('div', { class: 'chips', style: { marginTop: '8px' } }, h('span', { class: 'chip wrap', title: 'Dagens faktorer til solcast_solar.set_dampening' }, d.today_factors.map((f) => f.toFixed(2)).join(','))));
   }
 
   const WARN_DA = [
