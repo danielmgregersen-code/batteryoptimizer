@@ -197,3 +197,43 @@ def test_car_disabled_leaves_the_car_out(tmp_path):
     snap = p.run_once(datetime(2026, 11, 14, 19, 30, tzinfo=UTC))
     assert snap["car"] == {"enabled": False} and "car_grid" not in snap["plan"][0]
     assert p.car_cycle() is None
+
+
+def test_mode_sensor_has_danish_summary_and_upcoming(tmp_path):
+    ha = car_ha()
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    snap = p.run_once(datetime(2026, 11, 14, 11, 30, tzinfo=UTC))       # 12:30 local
+    state, attrs = ha.published["sensor.energy_planner_mode"]
+    assert attrs["label"] in ("Lader fra nettet", "Lader fra sol", "Aflader til huset", "Holder batteriet")
+    assert attrs["summary"].startswith(attrs["label"])
+    assert attrs["next_action"] and attrs["next_change"] > snap["plan"][0]["t"]
+    kinds = [it["kind"] for it in snap["upcoming"]]
+    assert "car" in kinds                                                # the car's night window
+    car = next(it for it in snap["upcoming"] if it["kind"] == "car")
+    # 12:00 (1.87 kr) is cheaper than the estimated night (1.94 kr), so the car's minimum goes there
+    assert car["when"].startswith("12:00") and "kWh" in car["text"]
+    assert attrs["upcoming"][0]["when"].startswith("12:00")
+
+
+def test_car_sensor_has_danish_reason_and_next_window(tmp_path):
+    ha = car_ha()
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    now = datetime(2026, 11, 14, 19, 30, tzinfo=UTC)
+    p.run_once(now)
+    p.car_cycle(now)
+    _, attrs = ha.published["sensor.energy_planner_car"]
+    assert attrs["reason_da"] == "Planen lader ikke bilen denne time" and attrs["label"] == "Venter"
+    assert attrs["next_window"].startswith("i morgen 04:00–06:00") and attrs["planned_kwh"] > 10
+
+
+def test_cost_today_sensor(tmp_path):
+    from settings import counter_ids
+    ha = make_ha()
+    ids = counter_ids(DEFAULTS)
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    for i, minute in enumerate((0, 15, 30)):
+        ha.numbers[ids["import"]], ha.numbers[ids["export"]] = 100.0 + i, 50.0
+        p.run_once(datetime(2026, 11, 14, 11, minute, tzinfo=UTC))
+    state, attrs = ha.published["sensor.energy_planner_cost_today"]
+    assert state == pytest.approx(2 * 1.873, abs=0.01) and attrs["unit_of_measurement"] == "DKK"
+    assert attrs["import_kwh"] == 2.0 and attrs["yesterday_dkk"] is None

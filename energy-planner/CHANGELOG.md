@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1
+
+Dashboard-friendly sensors.
+
+- `sensor.energy_planner_mode` gets Danish attributes: `label`, `detail`, `summary` (one sentence:
+  now and next), `next_action`, `next_change` and `upcoming` (the next six actions with time and
+  explanation). The panel's "Kommende" list now comes from the same code.
+- `sensor.energy_planner_car` gets `label`, `reason_da`, `next_window` (e.g. "i morgen 04:00–06:00 ·
+  14,3 kWh, à 1,94 kr · til 42 %"), `next_start`, `planned_kwh` and `deadline`.
+- New `sensor.energy_planner_cost_today`: realised grid cost so far today (DKK), with import/export,
+  price paid vs. average, agreement with Node-RED and yesterday's total as attributes.
+
 ## 0.3.0
 
 New panel (still dry-run).
