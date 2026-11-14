@@ -76,33 +76,63 @@ def parse_solcast(attrs_list: list, p10_weight: float = 0.0) -> tuple:
     return blended, p50, p10
 
 
+def persistence_forecast(prices: dict, until: datetime, tz) -> dict:
+    """Fill the hours after the last known price up to `until` (exclusive) with the latest known
+    price at the same local hour of day.
+
+    Danish buy/sell prices repeat a daily shape (the grid tariff steps 00-06 / 06-17 / 17-21 /
+    21-24 and the spot price's day shape), so "same hour as the last known day" is a sane,
+    conservative stand-in until tomorrow's prices are published around 13:00. Without it the plan
+    would end at midnight in the morning and could never weigh today's sun against tonight's grid
+    price. Returns only the forecast hours.
+    """
+    if not prices:
+        return {}
+    by_local_hour = {}
+    for h in sorted(prices):
+        by_local_hour[h.astimezone(tz).hour] = prices[h]
+    out = {}
+    t = max(prices) + timedelta(hours=1)
+    while t < until:
+        price = by_local_hour.get(t.astimezone(tz).hour)
+        if price is None:
+            break
+        out[t] = price
+        t += timedelta(hours=1)
+    return out
+
+
 class Horizon:
     """Aligned per-step inputs for the optimiser. Step 0 is the (partial) current hour."""
 
-    def __init__(self, starts, buy, sell, pv, load, dt):
+    def __init__(self, starts, buy, sell, pv, load, dt, forecast=None):
         self.starts = starts
         self.buy = buy
         self.sell = sell
         self.pv = pv
         self.load = load
         self.dt = dt
+        self.forecast = forecast or [False] * len(starts)  # True where the price is estimated
 
     def __len__(self):
         return len(self.starts)
 
 
-def build_horizon(now: datetime, buy: dict, sell: dict, pv: dict, load_fn, max_hours: int = 48) -> Horizon:
+def build_horizon(now: datetime, buy: dict, sell: dict, pv: dict, load_fn, max_hours: int = 48,
+                  forecast_hours: set = None) -> Horizon:
     """Hours from the current one to the last hour with both a buy and a sell price.
 
     pv: {hour: kWh}; load_fn(hour_utc) -> kWh for a full hour. The current hour is scaled
     by its remaining fraction so the plan does not count energy that has already passed.
+    forecast_hours: hours whose prices are estimates (flagged in the horizon).
     """
+    forecast_hours = forecast_hours or set()
     now = now.astimezone(UTC)
     start = hour_floor(now)
     elapsed = (now - start).total_seconds() / 3600.0
     frac0 = max(0.1, 1.0 - elapsed)
 
-    starts, b, s, p, l, dts = [], [], [], [], [], []
+    starts, b, s, p, l, dts, fc = [], [], [], [], [], [], []
     t = start
     while len(starts) < max_hours and t in buy and t in sell:
         f = frac0 if not starts else 1.0
@@ -112,5 +142,6 @@ def build_horizon(now: datetime, buy: dict, sell: dict, pv: dict, load_fn, max_h
         p.append(pv.get(t, 0.0) * f)
         l.append(load_fn(t) * f)
         dts.append(f)
+        fc.append(t in forecast_hours)
         t = t + timedelta(hours=1)
-    return Horizon(starts, b, s, p, l, dts)
+    return Horizon(starts, b, s, p, l, dts, fc)

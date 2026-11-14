@@ -14,7 +14,7 @@ def rows(start, hours, fn):
             for i in range(hours)]
 
 
-def test_profile_subtracts_car_and_uses_the_median():
+def test_profile_subtracts_car_and_ignores_outliers():
     start = datetime(2026, 10, 19, 0, tzinfo=UTC)  # a Monday
     load = rows(start, 24 * 14, lambda t: 1000.0)
     car = rows(start, 24 * 14, lambda t: 11000.0 if t.hour == 0 and t.day == 20 else 0.0)
@@ -42,3 +42,10 @@ def test_profile_separates_weekend_from_weekday():
 def test_rows_without_mean_are_ignored():
     prof = build_profile([{"start": 0, "mean": None}], None, TZ, 0.8)
     assert prof["hours_of_data"] == 0
+
+
+def test_trimmed_mean_counts_ordinary_peaks_but_drops_extremes():
+    from loadprofile import trimmed_mean
+    vals = [0.5] * 14 + [2.0] * 5 + [12.0]        # 5 cooking hours, one missed car hour
+    assert trimmed_mean(vals) == pytest.approx((0.5 * 11 + 2.0 * 3) / 14)   # 3 cut at each end
+    assert trimmed_mean(vals) > 0.5               # the median (0.5) would ignore the cooking

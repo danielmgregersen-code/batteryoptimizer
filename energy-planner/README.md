@@ -11,10 +11,12 @@ logs it next to what Node-RED actually did. It does not write to the inverter.
 ## How it decides
 
 Every 15 minutes (and whenever you press *Kør planlægning nu*) it solves a linear program over the
-hours for which both a buy and a sell price exist (today, and tomorrow once the prices are out):
+hours for which both a buy and a sell price exist (today, and tomorrow once the prices are out).
+Before tomorrow's prices are published the horizon is extended to `min_horizon_hours` with
+**estimated** prices: the last known day's price at the same local hour (shown in italics).
 
 - Minimise `buy × import − sell × export + battery wear`, with leftover battery energy credited at
-  what it would cost to buy back at the cheapest known hour.
+  the cheapest price in the horizon × the discharge efficiency (what a stored kWh can at least save).
 - Battery limits: capacity, max charge/discharge power, SoC floor and ceiling, and separate losses for
   solar → battery, grid → battery and battery → house.
 - The battery only serves the house. It is never sold to the grid (no arbitrage in this version).
@@ -45,19 +47,34 @@ Non-persistent sensors, rewritten every cycle:
 | Entity | Meaning |
 | --- | --- |
 | `sensor.energy_planner_mode` | `grid_charge`, `solar_charge`, `discharge` or `hold` for the current hour (attributes: all setpoints, saving vs. solar-only) |
-| `sensor.energy_planner_soc_target` | Battery-first max SoC for the current charging run (only while charging) |
-| `sensor.energy_planner_soc_floor` | Load-first minimum SoC: the configured floor while discharging, the current SoC to hold the battery |
+| `sensor.energy_planner_soc_target` | Battery-first max SoC: charging target, or the current SoC in `hold`; `unknown` while discharging |
+| `sensor.energy_planner_soc_floor` | Load-first minimum SoC: the SoC planned at the end of the current step while discharging, otherwise the current SoC |
 | `sensor.energy_planner_charge_rate` | Battery-first charge rate in % of the inverter |
 | `sensor.energy_planner_plan` | Plan table as an attribute (`plan` / `columns`) — usable from an ApexCharts card |
 
 The sidebar panel shows the same plan hour by hour, plus the register values currently in use.
+
+### How the modes map onto the inverter
+
+| Mode | Battery first | Grid charge | Max SoC | Min SoC |
+| --- | --- | --- | --- | --- |
+| `grid_charge` | on | on | SoC after the last planned grid hour | current |
+| `solar_charge` | on | off | SoC at the end of the charging run (rate capped if part of the sun is sold) | current |
+| `discharge` | off (load first) | off | – | SoC planned after this step |
+| `hold` | on | off | current SoC | current |
+
+`hold` relies on battery first not discharging and stopping at max SoC, with surplus sun going to
+export. **Verify that on the SPH10000TL3 before anything is written.** Every value is chosen so a
+planner that stops refreshing leaves the inverter at the planned state, not charging on.
 
 ## Dry-run checklist
 
 1. Let it run for a week or two.
 2. Compare `/api/decisions` (also `/data/decisions.jsonl`): the planned mode and setpoints versus
    `actual_registers`. Look at the hours where they disagree and decide who was right.
-3. Only then move the night-charging and SoC-target branches out of Node-RED.
+   `/api/evaluation` gives the realised grid cost per day from the logged counters and prices.
+3. Check the entity warnings in the panel: every configured entity must exist.
+4. Only then move the night-charging and SoC-target branches out of Node-RED.
 
 When the planner takes over, the Node-RED car guard must restore the **planner's floor**
 (`sensor.energy_planner_soc_floor`) instead of a fixed 10 % when the house load drops below 4 kW.

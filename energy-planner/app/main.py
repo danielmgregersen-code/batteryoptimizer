@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 
 from homeassistant import HomeAssistant
-from planner import Planner, PlannerError
+from planner import Planner, PlannerError, evaluate
 from settings import load_options
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -55,6 +55,14 @@ def get_decisions(limit: int = 200):
     return planner.recent_decisions(min(limit, 2000))
 
 
+@app.get("/api/evaluation")
+def get_evaluation():
+    """Realised grid cost per day from the decision log (what actually happened)."""
+    opts = load_options()
+    return evaluate(planner.recent_decisions(2000), opts["grid_import_counter"],
+                    opts["grid_export_counter"], planner.tz)
+
+
 @app.post("/api/run")
 async def run_now():
     try:
@@ -73,12 +81,12 @@ INDEX_HTML = """<!doctype html>
  table{border-collapse:collapse;width:100%} th,td{padding:3px 8px;text-align:right;border-bottom:1px solid #8883;white-space:nowrap}
  th:first-child,td:first-child{text-align:left} th{background:#eee;position:sticky;top:0}
  .grid_charge{background:#2a7fff22} .solar_charge{background:#2ecc7122} .discharge{background:#ff9f4322}
- .wrap{overflow-x:auto} button{padding:4px 10px}
+ .wrap{overflow-x:auto} button{padding:4px 10px} .fc{font-style:italic;opacity:.7}
 </style></head><body>
 <h1>Energy Planner <span class="muted">(dry-run — skriver ikke til inverteren)</span></h1>
 <div id="status" class="box">Henter plan…</div>
 <div class="wrap"><table id="t"></table></div>
-<p class="muted">Priser i DKK/kWh, energi i kWh pr. time. <button onclick="run()">Kør planlægning nu</button></p>
+<p class="muted">Priser i DKK/kWh, energi i kWh pr. time. <i>Kursiv pris</i> = estimeret (samme time som sidste kendte dag). <button onclick="run()">Kør planlægning nu</button></p>
 <script>
 const f=(v,d=2)=>v==null?'':Number(v).toFixed(d);
 async function load(){
@@ -90,11 +98,13 @@ async function load(){
     '<br>Besparelse mod "kun sol til batteri": <b>'+f(p.savings_vs_solar_only_dkk)+' DKK</b> over '+p.horizon_hours+' timer'+
     '<br><span class="muted">Opdateret '+p.updated+' · forbrugsprofil bygget på '+p.profile_hours_of_data+' timer</span>'+
     (p.warnings.length?'<br>⚠ '+p.warnings.join('; '):'')+
-    '<br><span class="muted">Nuværende registre: '+Object.entries(p.actual_registers).map(([k,v])=>k.replace('reg_','')+'='+v).join(', ')+'</span>';
+    '<br><span class="muted">Nuværende registre: '+Object.entries(p.actual_registers).map(([k,v])=>k.replace('reg_','')+'='+v).join(', ')+'</span>'+
+    (()=>{const bad=Object.entries(p.entity_check||{}).filter(([e,v])=>v!='ok');return bad.length?'<br>⚠ Entiteter: '+bad.map(([e,v])=>e+' ('+v+')').join(', '):'';})();
   let h='<tr><th>Time</th><th>Køb</th><th>Salg</th><th>Sol</th><th>Forbrug</th><th>Sol→bat</th><th>Net→bat</th><th>Bat→hus</th><th>Eksport</th><th>SoC %</th></tr>';
   for(const r of p.plan){
     const c=r.grid_bat>0.05?'grid_charge':r.pv_bat>0.05?'solar_charge':r.bat_load>0.05?'discharge':'';
-    h+='<tr class="'+c+'"><td>'+r.t.slice(5,16).replace('T',' ')+'</td><td>'+f(r.buy)+'</td><td>'+f(r.sell)+'</td><td>'+f(r.pv)+'</td><td>'+f(r.load)+
+    const fc=r.forecast_price?' class="fc"':'';
+    h+='<tr class="'+c+'"><td>'+r.t.slice(5,16).replace('T',' ')+'</td><td'+fc+'>'+f(r.buy)+'</td><td'+fc+'>'+f(r.sell)+'</td><td>'+f(r.pv)+'</td><td>'+f(r.load)+
        '</td><td>'+f(r.pv_bat)+'</td><td>'+f(r.grid_bat)+'</td><td>'+f(r.bat_load)+'</td><td>'+f(r.pv_exp)+'</td><td>'+f(r.soc_pct,0)+'</td></tr>';
   }
   document.getElementById('t').innerHTML=h;

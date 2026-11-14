@@ -67,3 +67,18 @@ def test_horizon_scales_the_current_hour_and_stops_where_prices_end():
 def test_horizon_empty_when_current_hour_has_no_price():
     now = datetime(2026, 11, 20, 12, tzinfo=UTC)
     assert len(build_horizon(now, {}, {}, {}, lambda h: 0)) == 0
+
+
+def test_persistence_forecast_repeats_the_last_known_day_by_local_hour():
+    from zoneinfo import ZoneInfo
+    from inputs import persistence_forecast
+    tz = ZoneInfo("Europe/Copenhagen")
+    buy = parse_prices(price_attrs(BUY_TODAY))
+    last = max(buy)
+    fc = persistence_forecast(buy, last + timedelta(hours=7), tz)
+    assert len(fc) == 6                                      # 00:00 .. 05:00 local tomorrow
+    assert fc[last + timedelta(hours=1)] == pytest.approx(BUY_TODAY[0])
+    assert fc[last + timedelta(hours=6)] == pytest.approx(BUY_TODAY[5])
+    hz = build_horizon(datetime(2026, 11, 14, 21, tzinfo=UTC), {**fc, **buy}, {**fc, **buy}, {},
+                       lambda h: 1.0, forecast_hours=set(fc))
+    assert len(hz) == 8 and hz.forecast == [False, False] + [True] * 6

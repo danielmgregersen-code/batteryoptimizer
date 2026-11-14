@@ -50,14 +50,16 @@ def test_run_once_produces_a_plan_publishes_sensors_and_logs(tmp_path):
     p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
     snap = p.run_once(datetime(2026, 11, 14, 11, 30, tzinfo=UTC))   # 12:30 local
     assert snap["dry_run"] is True
-    assert snap["horizon_hours"] == 12
+    # 12 known hours (to midnight) + estimated prices up to 30 h from the current hour
+    assert snap["horizon_hours"] == 30
+    assert sum(r["forecast_price"] for r in snap["plan"]) == 18
     assert snap["mode"] in {"grid_charge", "solar_charge", "discharge", "hold"}
     assert snap["savings_vs_solar_only_dkk"] >= -1e-6
-    assert len(snap["plan"]) == 12 and snap["plan"][0]["t"].startswith("2026-11-14T12:00")
+    assert len(snap["plan"]) == 30 and snap["plan"][0]["t"].startswith("2026-11-14T12:00")
     assert snap["actual_registers"]["reg_battery_first"] == "Enabled"
     assert "sensor.energy_planner_mode" in ha.published and "sensor.energy_planner_plan" in ha.published
     state, attrs = ha.published["sensor.energy_planner_plan"]
-    assert len(attrs["plan"]) == 12
+    assert len(attrs["plan"]) == 30
     lines = (tmp_path / "d.jsonl").read_text().strip().splitlines()
     assert json.loads(lines[0])["mode"] == snap["mode"]
 
@@ -108,3 +110,41 @@ def test_decision_log_is_trimmed(tmp_path, monkeypatch):
     for _ in range(7):
         p.run_once(datetime(2026, 11, 14, 11, 30, tzinfo=UTC))
     assert len(p.recent_decisions(100)) <= 5
+
+
+def test_default_timezone_follows_dst(monkeypatch):
+    monkeypatch.setenv("TZ", "Europe/Copenhagen")
+    p = Planner(make_ha())
+    assert datetime(2026, 7, 1, 10, tzinfo=UTC).astimezone(p.tz).hour == 12    # summer: UTC+2
+    assert datetime(2026, 12, 1, 10, tzinfo=UTC).astimezone(p.tz).hour == 11   # winter: UTC+1
+
+
+def test_soc_target_is_unknown_when_not_in_battery_first(tmp_path):
+    ha = make_ha()
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    p.run_once(datetime(2026, 11, 14, 16, 30, tzinfo=UTC))    # 17:30 local, the 3.1 DKK peak
+    state, attrs = ha.published["sensor.energy_planner_soc_target"]
+    assert ha.published["sensor.energy_planner_mode"][0] == "discharge"
+    assert state == "unknown" and attrs["active"] is False
+
+
+def test_counters_and_prices_are_logged_and_evaluated(tmp_path):
+    from planner import evaluate
+    ha = make_ha()
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    imp, exp = DEFAULTS["grid_import_counter"], DEFAULTS["grid_export_counter"]
+    for i, minute in enumerate((0, 15, 30)):
+        ha.numbers[imp], ha.numbers[exp] = 100.0 + i, 50.0 + 0.5 * i
+        p.run_once(datetime(2026, 11, 14, 11, minute, tzinfo=UTC))
+    log = p.recent_decisions()
+    assert log[0]["counters"][imp] == 100.0 and log[0]["price_now"]["buy"] == pytest.approx(1.873)
+    days = evaluate(log, imp, exp, TZ)
+    assert days == [{"day": "2026-11-14", "import_kwh": 2.0, "export_kwh": 1.0,
+                     "cost_dkk": pytest.approx(round(2 * 1.873 - 1.0 * 1.05, 2))}]
+
+
+def test_entity_check_reports_missing_entities(tmp_path):
+    p = Planner(make_ha(), tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    snap = p.run_once(datetime(2026, 11, 14, 11, 30, tzinfo=UTC))
+    assert snap["entity_check"]["select.growatt_battery_first_time_2"] == "ok"
+    assert snap["entity_check"]["number.growatt_grid_export_limit"] == "missing"

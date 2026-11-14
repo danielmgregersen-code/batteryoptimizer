@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour battery and grid planning for a Growatt hybrid inverter (dry-run)."
-version: "0.1.0"
+version: "0.1.1"
 slug: "energy_planner"
 init: false
 arch:
@@ -40,6 +40,10 @@ options:
   profile_days: 28
   default_load_kw: 0.8
   interval_minutes: 15
+  min_horizon_hours: 30
+  counter_entities: "sensor.growatt_total_grid_import,sensor.growatt_total_grid_export,sensor.growatt_total_battery_input_energy,sensor.growatt_total_battery_output_energy,sensor.growatt_total_solar_energy"
+  grid_import_counter: "sensor.growatt_total_grid_import"
+  grid_export_counter: "sensor.growatt_total_grid_export"
 
 schema:
   price_buy_entity: str
@@ -67,6 +71,10 @@ schema:
   profile_days: int(7,120)
   default_load_kw: float(0.1,10)
   interval_minutes: int(5,60)
+  min_horizon_hours: int(12,48)
+  counter_entities: str
+  grid_import_counter: str
+  grid_export_counter: str
 
 homeassistant_api: true
 

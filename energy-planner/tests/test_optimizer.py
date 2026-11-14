@@ -116,3 +116,16 @@ def test_real_afternoon_of_2026_11_14():
     plan, p = run(buy, sell, pv, load, soc0_pct=73, p=params(wear_dkk_per_kwh=0.25))
     assert plan.bat_load[5:9].sum() > 3.0              # 17:00-21:00
     assert plan.grid_load[5:8].sum() < plan.load[5:8].sum() * 0.5
+
+
+def test_battery_is_used_at_moderate_prices():
+    """0.1.0 valued leftover energy above what using it could return and held 80 % all evening."""
+    plan, _ = run([2.1] * 3 + [2.0] * 3, [1.2] * 6, [0.0] * 6, [1.0] * 6, soc0_pct=80,
+                  p=params(wear_dkk_per_kwh=0.25))
+    assert plan.bat_load.sum() > 5.0
+
+
+def test_terminal_value_never_exceeds_what_a_stored_kwh_can_save():
+    p = params()
+    buy = [1.5, 2.0, 3.0]
+    assert terminal_value_for(buy, p) == pytest.approx(min(buy) * p.eta_discharge)
