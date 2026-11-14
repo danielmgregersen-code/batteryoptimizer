@@ -15,7 +15,11 @@ DEFAULTS = {
     ),
     "battery_soc_entity": "sensor.growatt_battery_soc",
     "house_load_entity": "sensor.growatt_total_house_load",
-    "car_power_entity": "sensor.garage_growatt_thor_ev_charger_charging_power",
+    # Car charging for the base-load profile: needs long-term statistics. A power sensor (W/kW,
+    # hourly mean) or an energy sensor (kWh, total/total_increasing: hourly change) both work.
+    "car_power_entity": "sensor.ioniq_9_ladeeffekt",
+    # The charger's live power (W) for the car controller's surplus calculation.
+    "charger_power_entity": "sensor.garage_growatt_thor_ev_charger_charging_power",
     "reg_battery_first": "select.growatt_battery_first_time_2",
     "reg_max_soc": "number.growatt_battery_first_maximum_soc",
     "reg_min_soc": "number.growatt_load_first_battery_minimum_soc",

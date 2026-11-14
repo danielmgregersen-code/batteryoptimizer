@@ -54,7 +54,7 @@ class FakeHA:
             DEFAULTS["price_buy_entity"]: str(BUY_TODAY[hour]),
             DEFAULTS["price_sell_entity"]: str(SELL_TODAY[hour]),
             DEFAULTS["house_load_entity"]: "820",
-            DEFAULTS["car_power_entity"]: "0",
+            DEFAULTS["charger_power_entity"]: "0",
             DEFAULTS["pv_power_entity"]: "1150",
             DEFAULTS["battery_charge_power_entity"]: "300",
             "select.growatt_battery_first_time_2": "Enabled",

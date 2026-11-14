@@ -104,7 +104,7 @@ class Planner:
     def _check_entities(self, opts: dict) -> dict:
         """Which configured entities are missing or unavailable (shown in the UI)."""
         ids = [opts[k] for k in ("price_buy_entity", "price_sell_entity", "battery_soc_entity",
-                                 "house_load_entity", "car_power_entity") if opts.get(k)]
+                                 "house_load_entity", "car_power_entity", "charger_power_entity") if opts.get(k)]
         ids += split_csv(opts.get("solcast_entities", ""))
         ids += [opts[k] for k in REGISTER_KEYS if opts.get(k)]
         ids += split_csv(opts.get("counter_entities", ""))
@@ -231,7 +231,7 @@ class Planner:
             "load_kw": round(float(plan.load[0]) / dt0, 3),
         }
         samples = {"house_load_w": self.ha.number(opts["house_load_entity"]),
-                   "car_w": self.ha.number(opts["car_power_entity"]) if opts.get("car_power_entity") else None}
+                   "car_w": self.ha.number(opts["charger_power_entity"]) if opts.get("charger_power_entity") else None}
         snapshot = {
             "updated": now.astimezone(self.tz).isoformat(timespec="seconds"),
             "dry_run": True,
@@ -323,7 +323,7 @@ class Planner:
             "status": st.get("state"),
             "car_soc": self.ha.number(opts["car_soc_entity"]),
             "pv_w": num("pv_power_entity"), "load_w": num("house_load_entity"),
-            "charger_w": num("car_power_entity"), "house_soc": num("battery_soc_entity"),
+            "charger_w": num("charger_power_entity"), "house_soc": num("battery_soc_entity"),
             "bat_charge_w": num("battery_charge_power_entity"),
             "amps": self.ha.number(opts["charger_current_entity"]),
             "secs_since_status": secs, "sell": self.ha.number(opts["price_sell_entity"]),

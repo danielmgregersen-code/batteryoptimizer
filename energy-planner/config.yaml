@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning of a Growatt hybrid inverter, home battery and EV charging (dry-run)."
-version: "0.3.3"
+version: "0.3.4"
 slug: "energy_planner"
 init: false
 arch:
@@ -20,7 +20,8 @@ options:
   solcast_entities: "sensor.solcast_pv_forecast_forecast_today,sensor.solcast_pv_forecast_forecast_tomorrow,sensor.solcast_pv_forecast_forecast_day_3"
   battery_soc_entity: "sensor.growatt_battery_soc"
   house_load_entity: "sensor.growatt_total_house_load"
-  car_power_entity: "sensor.garage_growatt_thor_ev_charger_charging_power"
+  car_power_entity: "sensor.ioniq_9_ladeeffekt"
+  charger_power_entity: "sensor.garage_growatt_thor_ev_charger_charging_power"
   reg_battery_first: "select.growatt_battery_first_time_2"
   reg_max_soc: "number.growatt_battery_first_maximum_soc"
   reg_min_soc: "number.growatt_load_first_battery_minimum_soc"
@@ -84,6 +85,7 @@ schema:
   battery_soc_entity: str
   house_load_entity: str
   car_power_entity: str
+  charger_power_entity: str
   reg_battery_first: str
   reg_max_soc: str
   reg_min_soc: str

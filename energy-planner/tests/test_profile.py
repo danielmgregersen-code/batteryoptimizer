@@ -101,6 +101,16 @@ def test_detection_needs_enough_night_hours():
     assert not prof["diagnostics"]["battery_subtracted"]
 
 
+def test_car_energy_counter_is_converted_to_average_power():
+    """sensor.ioniq_9_ladeeffekt may be a kWh counter: its hourly change is the average kW."""
+    start = datetime(2026, 10, 19, 0, tzinfo=UTC)
+    load = rows(start, 24 * 14, lambda t: 11500.0 if t.astimezone(TZ).hour == 3 else 500.0)
+    car = [{"start": r["start"], "change": 11.0 if r["mean"] > 5000 else 0.0} for r in load]
+    prof = build_profile(load, car, TZ, 0.8)
+    assert prof["diagnostics"]["car_kind"] == "energy" and prof["diagnostics"]["car_hours"] == 14
+    assert prof["table"][(False, 3)] == pytest.approx(0.5)
+
+
 def test_missing_car_statistics_blocks_detection_and_is_not_mistaken_for_battery():
     """Car and battery both charge in the cheapest night hours. Without the car's statistics the car
     looks like battery charging in the house load - the detection must not draw that conclusion."""

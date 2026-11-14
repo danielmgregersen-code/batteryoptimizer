@@ -81,9 +81,10 @@ class HomeAssistant:
                 "end_time": end.isoformat(),
                 "statistic_ids": statistic_ids,
                 "period": period,
-                "types": ["mean"],
-                # Convert on the HA side, so a charger reporting kW is not subtracted from watts.
-                "units": {"power": "W"},
+                # mean for power sensors, change for energy counters (kWh per hour = average kW)
+                "types": ["mean", "change"],
+                # Convert on the HA side, so a sensor reporting kW / Wh lines up with W / kWh.
+                "units": {"power": "W", "energy": "kWh"},
             }))
             while True:
                 msg = json.loads(ws.recv())
