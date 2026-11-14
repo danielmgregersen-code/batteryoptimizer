@@ -47,6 +47,9 @@ DEFAULTS = {
     ),
     "grid_import_counter": "sensor.growatt_total_grid_import",
     "grid_export_counter": "sensor.growatt_total_grid_export",
+    "battery_input_counter": "sensor.growatt_total_battery_input_energy",
+    "battery_output_counter": "sensor.growatt_total_battery_output_energy",
+    "solar_counter": "sensor.growatt_total_solar_energy",
     # --- car (replaces the "Solcelle- & Prisstyret ladning: IONIQ 9" automation; dry-run) ---
     "car_enabled": True,
     "car_soc_entity": "sensor.ioniq_9_ev_battery_level",
@@ -110,3 +113,9 @@ def local_tz(name: str = None):
         except (ZoneInfoNotFoundError, ValueError):
             continue
     return ZoneInfo("UTC")
+
+
+def counter_ids(opts: dict) -> dict:
+    return {"import": opts["grid_import_counter"], "export": opts["grid_export_counter"],
+            "battery_in": opts["battery_input_counter"], "battery_out": opts["battery_output_counter"],
+            "solar": opts["solar_counter"]}

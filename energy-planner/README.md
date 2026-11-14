@@ -65,6 +65,24 @@ start button from `preparing`, `kia_uvo.start_charge` / `stop_charge` to resume/
 `sensor.energy_planner_car` shows the decision (`charge` / `pause` / `idle` / `none`) with
 `target_amps`, `reason` and the service calls it would make. `/api/car` has the log of changes.
 
+## The panel
+
+Opens from the sidebar (*Energy Planner*), through ingress.
+
+- **Plan**: what the planner would do now and over the horizon. Chart: prices (estimated hours
+  hatched), energy per hour (charging above the line, discharging and export below, the mode as a
+  strip on top, the car's ~11 kWh bars cut with a break mark so the house flows stay readable) and
+  the SoC of the house battery and the car. Hover or use the arrow keys for every value of an hour.
+  "Planner mod inverteren nu" shows each register the planner would set next to its current value.
+- **Bil**: the car controller's decision and the calls it would make, the car plan, and its log.
+- **Evaluering**: what actually happened over 7/14/30 days. Daily grid cost, price paid per kWh,
+  how often the planner agreed with Node-RED (a strip of both over time), solar actual vs. forecast
+  with the least-squares best `pv_p10_weight`, consumption actual vs. forecast.
+
+To work on the panel without Home Assistant: `python tools/dev_server.py` and open
+`http://127.0.0.1:8010/` (real 2026-11-14 prices and forecast, a connected car, 14 days of
+synthetic log).
+
 ## Inputs
 
 | What | Source (default entity) |
@@ -139,4 +157,5 @@ These are starting values in the add-on options, not measurements:
 ```
 cd energy-planner/tests && python -m pytest -q
 python tools/simulate.py --shaped      # optimiser on real prices/forecast, no Home Assistant needed
+python tools/dev_server.py             # the panel against a fake Home Assistant
 ```

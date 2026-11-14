@@ -36,6 +36,19 @@ def _rate_pct(kw: float, inverter_kw: float) -> int:
     return int(min(max(rate, 10), 100))
 
 
+def step_mode(plan, j: int) -> str:
+    """The mode of step j by the same thresholds the setpoints use (for the plan table and chart)."""
+    dt = plan.dt[j]
+    bat_car = plan.bat_car[j] if plan.bat_car is not None else 0.0
+    if _kw(plan.grid_bat[j], dt) > GRID_CHARGE_KW_MIN:
+        return "grid_charge"
+    if _kw(plan.pv_bat[j], dt) > CHARGE_KW_MIN:
+        return "solar_charge"
+    if _kw(plan.bat_load[j] + bat_car, dt) > DISCHARGE_KW_MIN:
+        return "discharge"
+    return "hold"
+
+
 def derive_setpoints(plan, soc_now_pct: float, battery, inverter_kw: float,
                      soc_floor_pct: float, soc_ceiling_pct: float) -> dict:
     T = len(plan)

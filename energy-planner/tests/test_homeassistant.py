@@ -89,3 +89,9 @@ def test_web_app_smoke():
     assert "Energy Planner" in client.get("/").text
     assert client.get("/api/plan").status_code == 503
     assert client.get("/api/decisions").json() == [] or isinstance(client.get("/api/decisions").json(), list)
+    page = client.get("/").text
+    assert "{{VERSION}}" not in page and "static/app.js?v=" in page   # relative URLs: works under ingress
+    assert client.get("/static/app.js").status_code == 200
+    assert client.get("/static/style.css").status_code == 200
+    ev = client.get("/api/evaluation?days=7").json()
+    assert set(ev) >= {"days", "summary", "timeline", "decisions"}

@@ -42,8 +42,8 @@ def parse_prices(attrs: dict) -> dict:
     return {h: sum(v) / len(v) for h, v in buckets.items()}
 
 
-def parse_solcast(attrs_list: list, p10_weight: float = 0.0) -> tuple:
-    """Solcast forecast sensors -> ({hour: kWh blended}, {hour: kWh p50}, {hour: kWh p10}).
+def parse_solcast(attrs_list: list, p10_weight: float = 0.0, with_p90: bool = False) -> tuple:
+    """Solcast forecast sensors -> ({hour: kWh blended}, {hour: kWh p50}, {hour: kWh p10}[, {hour: p90}]).
 
     `detailedHourly` values are average kW over the hour, i.e. numerically kWh per
     hour (the 24 values sum to the sensor's daily kWh total). `detailedForecast` is
@@ -51,6 +51,7 @@ def parse_solcast(attrs_list: list, p10_weight: float = 0.0) -> tuple:
     """
     p50: dict = {}
     p10: dict = {}
+    p90: dict = {}
     for attrs in attrs_list:
         if not attrs:
             continue
@@ -60,19 +61,25 @@ def parse_solcast(attrs_list: list, p10_weight: float = 0.0) -> tuple:
                 h = hour_floor(parse_ts(e["period_start"]))
                 p50[h] = float(e.get("pv_estimate", 0.0))
                 p10[h] = float(e.get("pv_estimate10", e.get("pv_estimate", 0.0)))
+                p90[h] = float(e.get("pv_estimate90", e.get("pv_estimate", 0.0)))
             continue
         half = attrs.get("detailedForecast")
         if half:
             a50: dict = {}
             a10: dict = {}
+            a90: dict = {}
             for e in half:
                 h = hour_floor(parse_ts(e["period_start"]))
                 a50[h] = a50.get(h, 0.0) + float(e.get("pv_estimate", 0.0)) * 0.5
                 a10[h] = a10.get(h, 0.0) + float(e.get("pv_estimate10", e.get("pv_estimate", 0.0))) * 0.5
+                a90[h] = a90.get(h, 0.0) + float(e.get("pv_estimate90", e.get("pv_estimate", 0.0))) * 0.5
             p50.update(a50)
             p10.update(a10)
+            p90.update(a90)
     w = min(max(p10_weight, 0.0), 1.0)
     blended = {h: (1 - w) * p50[h] + w * p10.get(h, p50[h]) for h in p50}
+    if with_p90:
+        return blended, p50, p10, p90
     return blended, p50, p10
 
 

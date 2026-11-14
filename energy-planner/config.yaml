@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning of a Growatt hybrid inverter, home battery and EV charging (dry-run)."
-version: "0.2.0"
+version: "0.3.0"
 slug: "energy_planner"
 init: false
 arch:
@@ -44,6 +44,9 @@ options:
   counter_entities: "sensor.growatt_total_grid_import,sensor.growatt_total_grid_export,sensor.growatt_total_battery_input_energy,sensor.growatt_total_battery_output_energy,sensor.growatt_total_solar_energy"
   grid_import_counter: "sensor.growatt_total_grid_import"
   grid_export_counter: "sensor.growatt_total_grid_export"
+  battery_input_counter: "sensor.growatt_total_battery_input_energy"
+  battery_output_counter: "sensor.growatt_total_battery_output_energy"
+  solar_counter: "sensor.growatt_total_solar_energy"
   car_enabled: true
   car_soc_entity: "sensor.ioniq_9_ev_battery_level"
   charger_status_entity: "sensor.garage_growatt_thor_ev_charger_status"
@@ -103,6 +106,9 @@ schema:
   counter_entities: str
   grid_import_counter: str
   grid_export_counter: str
+  battery_input_counter: str
+  battery_output_counter: str
+  solar_counter: str
   car_enabled: bool
   car_soc_entity: str
   charger_status_entity: str
