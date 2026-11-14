@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.6
+
+- `car_power_entity` and `charger_power_entity` default to `sensor.ioniq_9_ladeeffekt` (W,
+  measurement, long history; now a mirror of the THOR's charging power). The car is subtracted from
+  the base-load profile hour by hour again; the 4 kW rule of thumb only covers hours the sensor
+  has no statistics for.
+
 ## 0.3.5
 
 - `car_power_entity` back to the THOR's charging power: `sensor.ioniq_9_ladeeffekt` changed meaning
