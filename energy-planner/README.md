@@ -101,12 +101,13 @@ Non-persistent sensors, rewritten every cycle:
 
 | Entity | Meaning |
 | --- | --- |
-| `sensor.energy_planner_mode` | `grid_charge`, `solar_charge`, `discharge` or `hold` for the current hour (attributes: all setpoints, saving vs. solar-only) |
+| `sensor.energy_planner_mode` | `grid_charge`, `solar_charge`, `discharge` or `hold` for the current hour. Attributes: all setpoints, saving vs. solar-only, and in Danish `label`, `detail`, `summary`, `next_action`, `next_change`, `upcoming` (list of `label` / `when` / `text`) |
 | `sensor.energy_planner_soc_target` | Battery-first max SoC: charging target, or the current SoC in `hold`; `unknown` while discharging |
 | `sensor.energy_planner_soc_floor` | Load-first minimum SoC: the SoC planned at the end of the current step while discharging, otherwise the current SoC |
 | `sensor.energy_planner_charge_rate` | Battery-first charge rate in % of the inverter |
 | `sensor.energy_planner_plan` | Plan table as an attribute (`plan` / `columns`, incl. car energy and SoC) — usable from an ApexCharts card |
-| `sensor.energy_planner_car` | What the car controller would do now (attributes: `target_amps`, `reason`, `calls`) |
+| `sensor.energy_planner_car` | What the car controller would do now. Attributes: `label`, `target_amps`, `reason` / `reason_da`, `calls`, `next_window`, `next_start`, `planned_kwh`, `deadline` |
+| `sensor.energy_planner_cost_today` | Realised grid cost today in DKK. Attributes: `import_kwh`, `export_kwh`, `avg_buy_paid`, `avg_buy_market`, `agreement_pct`, `yesterday_dkk` |
 
 The sidebar panel shows the same plan hour by hour, plus the register values currently in use.
 

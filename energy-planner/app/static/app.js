@@ -512,55 +512,12 @@
     return m;
   }
 
-  function segments(rows, keyFn) {
-    const out = [];
-    rows.forEach((r, i) => {
-      const k = keyFn(r);
-      const last = out[out.length - 1];
-      if (last && last.key === k) { last.end = i; } else out.push({ key: k, start: i, end: i });
-    });
-    return out;
-  }
-
+  // "Kommende" is computed by the add-on (same text as the sensor attributes for dashboards).
   function upcoming(p) {
-    const rows = p.plan;
-    const items = [];
-    const span = (s) => {
-      const a = rows[s.start], b = rows[s.end];
-      const endsNextDay = dayKey(a.t) !== dayKey(b.t);
-      return relDay(dayKey(a.t)) + hhmm(a.t) + '–' + addHour(b.t) + (endsNextDay ? ' ' + relDay(dayKey(b.t)).trim() : '');
-    };
-    const sum = (s, f) => rows.slice(s.start, s.end + 1).reduce((a, r) => a + f(r), 0);
-    const avg = (s, f, w) => { const W = sum(s, w); return W > 0 ? sum(s, (r) => f(r) * w(r)) / W : null; };
-    for (const s of segments(rows, (r) => r.mode)) {
-      const m = MODES[s.key] || MODES.hold;
-      const end = rows[s.end];
-      let why = '';
-      if (s.key === 'grid_charge') {
-        const kwh = sum(s, (r) => r.grid_bat);
-        why = `til ${fmt(end.soc_pct, 0)} % · ${fmt(kwh, 1)} kWh fra nettet à ${fmt(avg(s, (r) => r.buy, (r) => r.grid_bat), 2)} kr`;
-      } else if (s.key === 'solar_charge') {
-        why = `til ${fmt(end.soc_pct, 0)} % · ${fmt(sum(s, (r) => r.pv_bat), 1)} kWh sol`;
-      } else if (s.key === 'discharge') {
-        const kwh = sum(s, (r) => r.bat_load + (r.car_bat || 0));
-        why = `${fmt(kwh, 1)} kWh til huset, sparer køb à ${fmt(avg(s, (r) => r.buy, (r) => r.bat_load + 1e-9), 2)} kr · ned til ${fmt(end.soc_pct, 0)} %`;
-      } else {
-        const exp = sum(s, (r) => r.pv_exp);
-        why = `batteriet står på ${fmt(end.soc_pct, 0)} %` + (exp > 0.05 ? ` · sælger ${fmt(exp, 1)} kWh sol` : '');
-      }
-      items.push({ start: s.start, when: span(s), color: m.color, what: m.label, why });
-    }
-    if (p.car && p.car.connected) {
-      for (const s of segments(rows, (r) => carIn(r) > 0.05)) {
-        if (!s.key) continue;
-        const kwh = sum(s, carIn);
-        const cost = sum(s, (r) => (r.car_grid || 0) * r.buy);
-        const src = sum(s, (r) => r.car_pv || 0) > kwh / 2 ? 'mest sol' : `à ${fmt(cost / Math.max(kwh, 1e-9), 2)} kr`;
-        items.push({ start: s.start, when: span(s), color: C.car, what: 'Lader bilen', why: `${fmt(kwh, 1)} kWh, ${src} · til ${fmt(rows[s.end].car_soc, 0)} %` });
-      }
-    }
-    items.sort((a, b) => a.start - b.start);
-    return items.slice(0, 9);
+    return (p.upcoming || []).map((it) => ({
+      when: it.when, what: it.label, why: it.text,
+      color: it.kind === 'car' ? C.car : (MODES[it.mode] || MODES.hold).color,
+    }));
   }
 
   function registerRows(p) {
@@ -762,7 +719,7 @@
         'minimum 42 % kl. 06 · maks 90 %', meter(live.car_soc, [{ v: 42, title: 'Minimum' }, { v: 90, ghost: true, title: 'Maks' }], 'car')),
       tile('Lader', h('span', { style: { fontSize: '20px' } }, CHARGER_STATUS[status] || status || '–'),
         live.charger_w != null ? `${fmt((live.charger_w || 0) / 1000, 1)} kW · ${live.amps != null ? fmt(live.amps, 0) + ' A sat' : ''}` : ''),
-      tile('Styringen ville', h('span', { style: { fontSize: '20px' } }, action + (c && c.target_amps ? ` · ${c.target_amps} A` : '')), c ? translateReason(c.reason) : 'venter på første cyklus'),
+      tile('Styringen ville', h('span', { style: { fontSize: '20px' } }, action + (c && c.target_amps ? ` · ${c.target_amps} A` : '')), c ? (c.reason_da || translateReason(c.reason)) : 'venter på første cyklus'),
       tile('Planlagt', carInfo && carInfo.connected ? h('span', {}, fmt(carInfo.planned_kwh, 1), h('small', {}, ' kWh')) : '–',
         carInfo && carInfo.connected ? `frem til kl. ${carInfo.deadline.slice(11, 16)} · net-del ca. ${fmt(carInfo.planned_cost_dkk, 0)} kr` + (carInfo.shortfall_kwh > 0.05 ? ` · mangler ${fmt(carInfo.shortfall_kwh, 1)} kWh` : '') : 'bilen er ikke tilsluttet'));
 
@@ -799,7 +756,7 @@
         h('tbody', {}, log.slice().reverse().slice(0, 150).map((e) => h('tr', {},
           h('td', {}, e.updated ? dayName(e.updated.slice(0, 10), { weekday: 'short' }) + ' ' + e.updated.slice(11, 16) : ''),
           h('td', {}, CAR_ACTIONS[e.action] || e.action), h('td', {}, e.target_amps ?? ''),
-          h('td', { style: { textAlign: 'left', whiteSpace: 'normal', minWidth: '200px' } }, translateReason(e.reason)),
+          h('td', { style: { textAlign: 'left', whiteSpace: 'normal', minWidth: '200px' } }, e.reason_da || translateReason(e.reason)),
           h('td', {}, CHARGER_STATUS[e.live?.status] || e.live?.status || ''), h('td', {}, e.live?.amps ?? ''),
           h('td', {}, e.live?.car_soc != null ? fmt(e.live.car_soc, 0) : ''),
           h('td', { style: { textAlign: 'left' } }, (e.calls || []).map((x) => x.service.replace('kia_uvo.', '')).join(', ')))))))

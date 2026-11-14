@@ -11,6 +11,8 @@ from optimizer import BatteryParams, solve, terminal_value_for
 from loadprofile import build_profile, load_for_hour
 from settings import REGISTER_KEYS, counter_ids, load_options, local_tz, split_csv
 from setpoints import derive_setpoints, step_mode
+from evaluation import evaluate
+from summary import CAR_ACTION_LABEL, reason_da, summary_attributes, upcoming
 
 log = logging.getLogger("energy_planner")
 
@@ -237,11 +239,14 @@ class Planner:
             "car": car_info,
             "plan": rows,
         }
+        snapshot["upcoming"] = upcoming(rows, bool(car_params), now.astimezone(self.tz).date())
+        snapshot["summary"] = summary_attributes(sp, snapshot["upcoming"])
         with self._lock:
             self.latest = snapshot
             self.last_error = None
         self._publish(snapshot)
         self._log_decision(snapshot)
+        self._publish_cost(opts, now)
         return snapshot
 
     # ---- outputs -------------------------------------------------------------
@@ -249,7 +254,8 @@ class Planner:
         sp = snap["setpoints"]
         common = {"dry_run": True, "updated": snap["updated"]}
         self.ha.set_state("sensor.energy_planner_mode", snap["mode"], {
-            **common, "friendly_name": "Energy Planner mode", **sp,
+            **common, "friendly_name": "Energy Planner mode", "icon": "mdi:home-battery", **sp,
+            **snap.get("summary", {}),
             "savings_vs_solar_only_dkk": snap["savings_vs_solar_only_dkk"],
             "horizon_hours": snap["horizon_hours"], "car": snap.get("car"),
         })
@@ -315,16 +321,42 @@ class Planner:
                   "live": live, "plan_row": row})
         with self._lock:
             self.car_latest = d
+        d["reason_da"] = reason_da(d["reason"])
+        car_items = [it for it in (snap or {}).get("upcoming", []) if it["kind"] == "car"]
+        car_info = (snap or {}).get("car") or {}
+        nxt = car_items[0] if car_items else None
         self.ha.set_state("sensor.energy_planner_car", d["action"], {
-            "friendly_name": "Energy Planner car", "dry_run": True, "updated": d["updated"],
-            "target_amps": d["target_amps"], "reason": d["reason"], "calls": d["calls"],
-            "surplus_w": d.get("surplus_w")})
+            "friendly_name": "Energy Planner car", "icon": "mdi:car-electric", "dry_run": True, "updated": d["updated"],
+            "label": CAR_ACTION_LABEL.get(d["action"], d["action"]),
+            "target_amps": d["target_amps"], "reason": d["reason"], "reason_da": d["reason_da"], "calls": d["calls"],
+            "surplus_w": d.get("surplus_w"),
+            "next_window": f"{nxt['when']} · {nxt['text']}" if nxt else None,
+            "next_start": nxt["start"] if nxt else None,
+            "planned_kwh": car_info.get("planned_kwh"),
+            "deadline": car_info.get("deadline")})
         key = (d["action"], d["target_amps"], d["reason"].split(" (")[0], live["status"], live["amps"])
         if key != self._car_last_logged:          # log changes only, not every 2 minutes
             self._car_last_logged = key
             self._append(self.car_log_path, {k: d[k] for k in ("updated", "action", "target_amps", "reason",
-                                                                "calls", "live")})
+                                                                "reason_da", "calls", "live")})
         return d
+
+    def _publish_cost(self, opts: dict, now: datetime):
+        """sensor.energy_planner_cost_today: realised grid cost so far today (and yesterday's total)."""
+        try:
+            days = {d["day"]: d for d in evaluate(self.recent_decisions(240), counter_ids(opts), self.tz)["days"]}
+        except Exception as e:  # never let a reporting sensor break a planning cycle
+            log.warning("cost sensor: %s", e)
+            return
+        today = now.astimezone(self.tz).date()
+        t, y = days.get(today.isoformat()), days.get((today - timedelta(days=1)).isoformat())
+        self.ha.set_state("sensor.energy_planner_cost_today", t["cost_dkk"] if t else 0.0, {
+            "friendly_name": "Energy Planner netudgift i dag", "icon": "mdi:cash", "unit_of_measurement": "DKK",
+            "import_kwh": t and t["import_kwh"], "export_kwh": t and t["export_kwh"],
+            "avg_buy_paid": t and t["avg_buy_paid"], "avg_buy_market": t and t["avg_buy_market"],
+            "agreement_pct": t and t["agreement_pct"], "hours_covered": t and t["hours"],
+            "yesterday_dkk": y and y["cost_dkk"], "yesterday_import_kwh": y and y["import_kwh"],
+            "updated": now.astimezone(self.tz).isoformat(timespec="seconds")})
 
     def _append(self, path: str, entry: dict):
         try:
