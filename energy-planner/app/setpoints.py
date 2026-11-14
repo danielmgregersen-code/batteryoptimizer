@@ -55,7 +55,8 @@ def derive_setpoints(plan, soc_now_pct: float, battery, inverter_kw: float,
 
     chg_pv = _kw(plan.pv_bat[0], plan.dt[0])
     chg_grid = _kw(plan.grid_bat[0], plan.dt[0])
-    dis = _kw(plan.bat_load[0], plan.dt[0])
+    bat_car0 = plan.bat_car[0] if plan.bat_car is not None else 0.0
+    dis = _kw(plan.bat_load[0] + bat_car0, plan.dt[0])   # the car counts: on the inverter it is house load
     exp = _kw(plan.pv_exp[0], plan.dt[0])
 
     grid_charge = grid_charging(0)

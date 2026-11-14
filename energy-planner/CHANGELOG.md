@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.0
+
+The car is part of the plan (still dry-run: nothing is written to the inverter or the charger).
+
+- **Car in the optimisation.** While the THOR reports the car as connected, the Ioniq 9 is a
+  flexible load in the LP: it must reach 42 % by 06:00 if it is below 40 %, goes straight to 22 %
+  below 20 %, stops at 90 %, and is charged beyond the minimum only from energy that costs less
+  than `car_value_dkk_per_kwh` at the plug (sun that sells for less, or a cheap grid hour). This
+  replaces the fixed price rules of the HA automation "Solcelle- & Prisstyret ladning: IONIQ 9".
+  The house battery does not feed the car in the plan unless `car_from_house_battery` is on.
+- **Car controller** (every `car_interval_seconds`, 120 s): the automation's mechanics (6-16 A,
+  start button from `preparing`, pause/resume through `kia_uvo` with minimum charge time and
+  cooldown, solar-surplus following with the same thresholds), but driven by the plan for the
+  current hour. Publishes `sensor.energy_planner_car` (what it *would* do, with the service calls
+  it would make) and logs changes to `/data/car_decisions.jsonl` (`/api/car`) next to the
+  charger's actual status and current.
+- Plan table, `sensor.energy_planner_plan` and the panel show the car's planned energy and SoC.
+- `config.yaml` options are checked against the defaults in a test.
+
 ## 0.1.1
 
 Fixes from the first review (still dry-run):

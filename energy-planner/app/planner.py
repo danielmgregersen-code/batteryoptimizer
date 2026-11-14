@@ -5,6 +5,7 @@ import os
 import threading
 from datetime import datetime, timedelta, timezone
 
+import car as carmod
 from inputs import UTC, build_horizon, hour_floor, parse_prices, parse_solcast, persistence_forecast
 from optimizer import BatteryParams, solve, terminal_value_for
 from loadprofile import build_profile, load_for_hour
@@ -14,6 +15,7 @@ from setpoints import derive_setpoints
 log = logging.getLogger("energy_planner")
 
 DECISION_LOG = "/data/decisions.jsonl"
+CAR_LOG = "/data/car_decisions.jsonl"
 MAX_LOG_LINES = 4000
 KEEP_LOG_LINES = 2000
 PROFILE_MAX_AGE = timedelta(hours=6)
@@ -38,10 +40,14 @@ def battery_params(opts: dict) -> BatteryParams:
 
 
 class Planner:
-    def __init__(self, ha, tz=None, log_path: str = DECISION_LOG, options_fn=load_options):
+    def __init__(self, ha, tz=None, log_path: str = DECISION_LOG, options_fn=load_options,
+                 car_log_path: str = CAR_LOG):
         self.ha = ha
         self.tz = tz or local_tz()
         self.log_path = log_path
+        self.car_log_path = car_log_path
+        self.car_latest = None
+        self._car_last_logged = None
         self.options_fn = options_fn
         self._profile = None
         self._profile_at = None
@@ -89,6 +95,10 @@ class Planner:
         ids += split_csv(opts.get("solcast_entities", ""))
         ids += [opts[k] for k in REGISTER_KEYS if opts.get(k)]
         ids += split_csv(opts.get("counter_entities", ""))
+        if opts.get("car_enabled"):
+            ids += [opts[k] for k in ("car_soc_entity", "charger_status_entity", "charger_current_entity",
+                                      "charger_start_button", "pv_power_entity",
+                                      "battery_charge_power_entity") if opts.get(k)]
         result = {}
         for e in dict.fromkeys(ids):
             state = self.ha.text(e)
@@ -145,9 +155,26 @@ class Planner:
         params = battery_params(opts)
         soc0 = params.capacity_kwh * soc_pct / 100.0
         tv = terminal_value_for(horizon.buy, params)
-        plan = solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv)
+
+        car_params, car_info = None, {"enabled": bool(opts.get("car_enabled"))}
+        if opts.get("car_enabled"):
+            status = self.ha.text(opts["charger_status_entity"])
+            car_soc = self.ha.number(opts["car_soc_entity"])
+            car_params, info = carmod.build_car_params(horizon, now, self.tz, opts, status, car_soc)
+            car_info.update(info)
+            if status in carmod.CONNECTED and car_soc is None:
+                warnings.append("car is connected but its SoC is unavailable - car left out of the plan")
+
+        plan = solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
+                     car=car_params)
         solar_only = solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
-                           allow_grid_charge=False)
+                           allow_grid_charge=False, car=car_params)
+        if car_params:
+            car_info["planned_kwh"] = round(float((plan.pv_car + plan.bat_car + plan.grid_car).sum()), 2)
+            car_info["planned_cost_dkk"] = round(float((plan.grid_car * plan.buy).sum()), 2)
+            car_info["shortfall_kwh"] = round(plan.car_shortfall, 2)
+            if plan.car_shortfall > 0.05:
+                warnings.append(f"car minimum cannot be reached by the deadline ({plan.car_shortfall:.1f} kWh short)")
         savings = solar_only.net_cost - plan.net_cost
 
         sp = derive_setpoints(plan, soc_pct, params, float(opts["inverter_kw"]),
@@ -163,7 +190,14 @@ class Planner:
                 "bat_load": round(float(plan.bat_load[i]), 2), "pv_exp": round(float(plan.pv_exp[i]), 2),
                 "soc_pct": round(float(plan.soc_end[i]) / params.capacity_kwh * 100.0, 1),
                 "forecast_price": bool(horizon.forecast[i]),
+                "dt": round(float(plan.dt[i]), 3),
             })
+            if car_params:
+                rows[-1].update({
+                    "car_pv": round(float(plan.pv_car[i]), 2), "car_grid": round(float(plan.grid_car[i]), 2),
+                    "car_bat": round(float(plan.bat_car[i]), 2),
+                    "car_soc": round(float(plan.car_end[i]) / float(opts["car_battery_kwh"]) * 100.0, 1),
+                })
 
         actual = {k: self.ha.text(opts[k]) for k in REGISTER_KEYS if opts.get(k)}
         counters = {e: self.ha.number(e) for e in split_csv(opts.get("counter_entities", ""))}
@@ -182,6 +216,7 @@ class Planner:
             "profile_hours_of_data": profile["hours_of_data"],
             "entity_check": self.entity_check,
             "warnings": warnings,
+            "car": car_info,
             "plan": rows,
         }
         with self._lock:
@@ -198,7 +233,7 @@ class Planner:
         self.ha.set_state("sensor.energy_planner_mode", snap["mode"], {
             **common, "friendly_name": "Energy Planner mode", **sp,
             "savings_vs_solar_only_dkk": snap["savings_vs_solar_only_dkk"],
-            "horizon_hours": snap["horizon_hours"],
+            "horizon_hours": snap["horizon_hours"], "car": snap.get("car"),
         })
         self.ha.set_state("sensor.energy_planner_soc_floor", sp["min_soc_pct"], {
             **common, "friendly_name": "Energy Planner SoC floor", "unit_of_measurement": "%"})
@@ -212,27 +247,87 @@ class Planner:
             **common, "friendly_name": "Energy Planner charge rate", "unit_of_measurement": "%"})
         self.ha.set_state("sensor.energy_planner_plan", snap["net_cost_dkk"], {
             **common, "friendly_name": "Energy Planner plan", "unit_of_measurement": "DKK",
-            "plan": [[r["t"], r["grid_bat"], r["pv_bat"], r["bat_load"], r["pv_exp"], r["soc_pct"]]
+            "plan": [[r["t"], r["grid_bat"], r["pv_bat"], r["bat_load"], r["pv_exp"], r["soc_pct"],
+                      round(r.get("car_grid", 0.0) + r.get("car_pv", 0.0) + r.get("car_bat", 0.0), 2),
+                      r.get("car_soc")]
                      for r in snap["plan"]],
             "columns": ["t", "grid_to_battery_kwh", "pv_to_battery_kwh", "battery_to_load_kwh",
-                        "pv_export_kwh", "soc_end_pct"],
+                        "pv_export_kwh", "soc_end_pct", "car_kwh", "car_soc_end_pct"],
         })
 
     def _log_decision(self, snap: dict):
         entry = {k: snap.get(k) for k in ("updated", "soc_pct", "mode", "setpoints", "actual_registers",
                                           "counters", "price_now", "savings_vs_solar_only_dkk",
                                           "horizon_hours", "car")}
+        self._append(self.log_path, entry)
+
+    # ---- car control (fast loop, dry-run) --------------------------------------
+    def car_cycle(self, now: datetime = None) -> dict:
+        """What the car charger *would* be told now. Publishes and logs; calls nothing."""
+        opts = self.options_fn()
+        if not opts.get("car_enabled"):
+            return None
+        now = (now or datetime.now(UTC)).astimezone(UTC)
+        st = self.ha.state(opts["charger_status_entity"]) or {}
+        secs = 9999
+        if st.get("last_changed"):
+            try:
+                secs = int((now - datetime.fromisoformat(st["last_changed"].replace("Z", "+00:00"))).total_seconds())
+            except ValueError:
+                pass
+
+        def num(key, default=0.0):
+            v = self.ha.number(opts[key]) if opts.get(key) else None
+            return default if v is None else v
+
+        live = {
+            "status": st.get("state"),
+            "car_soc": self.ha.number(opts["car_soc_entity"]),
+            "pv_w": num("pv_power_entity"), "load_w": num("house_load_entity"),
+            "charger_w": num("car_power_entity"), "house_soc": num("battery_soc_entity"),
+            "bat_charge_w": num("battery_charge_power_entity"),
+            "amps": self.ha.number(opts["charger_current_entity"]),
+            "secs_since_status": secs, "sell": self.ha.number(opts["price_sell_entity"]),
+        }
+        with self._lock:
+            snap = self.latest
+        row = carmod.plan_for_now(snap, now, self.tz)
+        d = carmod.decide(live, row, opts)
+        d.update({"updated": now.astimezone(self.tz).isoformat(timespec="seconds"), "dry_run": True,
+                  "live": live, "plan_row": row})
+        with self._lock:
+            self.car_latest = d
+        self.ha.set_state("sensor.energy_planner_car", d["action"], {
+            "friendly_name": "Energy Planner car", "dry_run": True, "updated": d["updated"],
+            "target_amps": d["target_amps"], "reason": d["reason"], "calls": d["calls"],
+            "surplus_w": d.get("surplus_w")})
+        key = (d["action"], d["target_amps"], d["reason"].split(" (")[0], live["status"], live["amps"])
+        if key != self._car_last_logged:          # log changes only, not every 2 minutes
+            self._car_last_logged = key
+            self._append(self.car_log_path, {k: d[k] for k in ("updated", "action", "target_amps", "reason",
+                                                                "calls", "live")})
+        return d
+
+    def _append(self, path: str, entry: dict):
         try:
-            os.makedirs(os.path.dirname(self.log_path) or ".", exist_ok=True)
-            with open(self.log_path, "a") as f:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "a") as f:
                 f.write(json.dumps(entry) + "\n")
-            with open(self.log_path) as f:
+            with open(path) as f:
                 lines = f.readlines()
             if len(lines) > MAX_LOG_LINES:
-                with open(self.log_path, "w") as f:
+                with open(path, "w") as f:
                     f.writelines(lines[-KEEP_LOG_LINES:])
         except OSError as e:
-            log.warning("could not write decision log: %s", e)
+            log.warning("could not write %s: %s", path, e)
+
+    def recent_car_decisions(self, limit: int = 200) -> list:
+        try:
+            with open(self.car_log_path) as f:
+                lines = f.readlines()[-limit:]
+            return [json.loads(l) for l in lines if l.strip()]
+        except (OSError, ValueError):
+            return []
 
     def recent_decisions(self, limit: int = 200) -> list:
         try:

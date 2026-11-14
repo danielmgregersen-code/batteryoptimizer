@@ -26,6 +26,11 @@ class FakeHA:
     def text(self, e):
         return self.texts.get(e)
 
+    def state(self, e):
+        if e in self.texts:
+            return {"state": self.texts[e], "last_changed": getattr(self, "last_changed", "2026-11-14T10:00:00+00:00")}
+        return None
+
     def set_state(self, e, state, attributes=None):
         self.published[e] = (state, attributes or {})
 
@@ -148,3 +153,43 @@ def test_entity_check_reports_missing_entities(tmp_path):
     snap = p.run_once(datetime(2026, 11, 14, 11, 30, tzinfo=UTC))
     assert snap["entity_check"]["select.growatt_battery_first_time_2"] == "ok"
     assert snap["entity_check"]["number.growatt_grid_export_limit"] == "missing"
+
+
+def car_ha():
+    ha = make_ha()
+    ha.texts[DEFAULTS["charger_status_entity"]] = "suspended_evse"
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 30.0
+    return ha
+
+
+def test_connected_car_is_planned_to_the_minimum_by_06(tmp_path):
+    ha = car_ha()
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    snap = p.run_once(datetime(2026, 11, 14, 19, 30, tzinfo=UTC))      # 20:30 local
+    car = snap["car"]
+    assert car["connected"] and car["need_minimum"] and car["shortfall_kwh"] == 0
+    by_t = {r["t"][11:16]: r for r in snap["plan"]}
+    assert by_t["05:00"]["car_soc"] == pytest.approx(42.0, abs=0.1)
+    assert by_t["07:00"]["car_grid"] == 0                                # deadline passed
+    assert "car_kwh" in ha.published["sensor.energy_planner_plan"][1]["columns"]
+
+
+def test_car_cycle_publishes_and_logs_only_changes(tmp_path):
+    ha = car_ha()
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    now = datetime(2026, 11, 14, 19, 30, tzinfo=UTC)
+    p.run_once(now)
+    for minute in (30, 32, 34):
+        d = p.car_cycle(now.replace(minute=minute))
+    state, attrs = ha.published["sensor.energy_planner_car"]
+    assert attrs["dry_run"] is True and state == d["action"]
+    assert len(p.recent_car_decisions()) == 1
+
+
+def test_car_disabled_leaves_the_car_out(tmp_path):
+    ha = car_ha()
+    opts = {**DEFAULTS, "car_enabled": False}
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), options_fn=lambda: opts)
+    snap = p.run_once(datetime(2026, 11, 14, 19, 30, tzinfo=UTC))
+    assert snap["car"] == {"enabled": False} and "car_grid" not in snap["plan"][0]
+    assert p.car_cycle() is None
