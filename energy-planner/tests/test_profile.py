@@ -101,6 +101,23 @@ def test_detection_needs_enough_night_hours():
     assert not prof["diagnostics"]["battery_subtracted"]
 
 
+def test_without_car_statistics_car_hours_are_left_out():
+    """The THOR has no statistics before its state_class was set: >4 kW hours are taken as the car."""
+    start = datetime(2026, 10, 19, 0, tzinfo=UTC)
+    load = rows(start, 24 * 14, lambda t: 11500.0 if t.astimezone(TZ).hour == 3 and t.day % 2 else 500.0)
+    prof = build_profile(load, [], TZ, 0.8)
+    assert prof["table"][(False, 3)] == pytest.approx(0.5)          # not (11.5 + 0.5) / 2
+    assert prof["diagnostics"]["car_excluded_hours"] == 8           # odd days 19.10-1.11
+
+
+def test_car_statistics_win_over_the_rule_of_thumb():
+    start = datetime(2026, 10, 19, 0, tzinfo=UTC)
+    load = rows(start, 24 * 14, lambda t: 4500.0 if t.astimezone(TZ).hour == 18 else 500.0)  # a real 4.5 kW hour
+    car = rows(start, 24 * 14, lambda t: 0.0)                                                # car data says: not the car
+    prof = build_profile(load, car, TZ, 0.8)
+    assert prof["table"][(False, 18)] == pytest.approx(4.5) and prof["diagnostics"]["car_excluded_hours"] == 0
+
+
 def test_car_energy_counter_is_converted_to_average_power():
     """sensor.ioniq_9_ladeeffekt may be a kWh counter: its hourly change is the average kW."""
     start = datetime(2026, 10, 19, 0, tzinfo=UTC)

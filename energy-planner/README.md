@@ -90,12 +90,15 @@ synthetic log).
 | Buy / sell price per hour | `sensor.kob_af_el`, `sensor.salg_af_el` (`raw_today`, `raw_tomorrow`) |
 | Solar forecast per hour | Solcast `detailedHourly` of `…forecast_today`, `_tomorrow`, `_day_3` — p50 blended with p10 (`pv_p10_weight`) |
 | Battery SoC | `sensor.growatt_battery_soc` |
-| Base load | Hourly means of `sensor.growatt_total_house_load` **minus** EV charging (`car_power_entity`, default `sensor.ioniq_9_ladeeffekt`: a power sensor or a kWh counter with long-term statistics) (and minus grid charging of the battery if the sensor includes it), trimmed mean per (weekday/weekend, hour) over `profile_days` |
+| Base load | Hourly means of `sensor.growatt_total_house_load` **minus** EV charging (`car_power_entity`, the THOR's charging power; hours without its statistics and above `car_detect_kw` are left out as car charging) (and minus grid charging of the battery if the sensor includes it), trimmed mean per (weekday/weekend, hour) over `profile_days` |
 
 Until statistics are available (or if the query fails) it plans with `default_load_kw` and says so in
 the UI.
 
-If `car_power_entity` has no long-term statistics, the car cannot be subtracted and its night charging shows up as 3-4 kW of base load; the panel warns about it.
+If `car_power_entity` has no long-term statistics for an hour, the car cannot be subtracted; such
+hours with more than `car_detect_kw` (4 kW) of load are taken to be car charging and left out, so the
+car's night charging does not become 3-4 kW of base load. Give the THOR's power sensor
+`state_class: measurement` so it gets statistics.
 
 On the SPH10000TL3 the house load does not include the battery's charging, so
 `load_includes_battery_charging` defaults to `no`. For integrations that do count it, `auto` checks
