@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0
+
+- **New "Økonomi" tab**: what the installation cost and earned, hour by hour from HA's long-term
+  statistics of the energy counters and the price sensors, so it has history from before the add-on.
+  Periods today / 7 / 30 / 90 days / 1 year.
+  - Tiles: system value (saved compared with buying everything from the grid), net cost, the sun's
+    and the battery's contribution, sold for, bought for (price paid vs. average), the car at the
+    buy price, self-sufficiency.
+  - Charts: system value per hour/day stacked sun + battery (negative while charging from the grid),
+    money in and out, cumulative system value, energy (solar, bought, sold); table per day.
+  - Hours without price statistics fall back to the prices in the add-on's log; missing entities and
+    skipped hours are shown.
+- `GET /api/economy?days=N` (cached 10 minutes). The statistics websocket accepts large responses.
+
 ## 0.4.2
 
 - **No SoC floor in the dearest hours.** While discharging, the load-first minimum SoC was the SoC

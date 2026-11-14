@@ -94,7 +94,8 @@ class HomeAssistant:
         """recorder/statistics_during_period over the WebSocket API -> {statistic_id: [rows]}."""
         from websockets.sync.client import connect
 
-        with connect(self.ws_url, open_timeout=15, close_timeout=5) as ws:
+        # max_size=None: a year of hourly statistics for several entities is several MB.
+        with connect(self.ws_url, open_timeout=15, close_timeout=5, max_size=None) as ws:
             json.loads(ws.recv())  # auth_required
             ws.send(json.dumps({"type": "auth", "access_token": self.token}))
             auth = json.loads(ws.recv())

@@ -150,8 +150,29 @@ class FakeHA:
                 rows[bat_id].append({"start": ms, "mean": bat})
             if pv_id in rows:
                 rows[pv_id].append({"start": ms, "mean": pv})
+            self._economy_rows(rows, t, ms, hl, (base + car) / 1000.0, pv / 1000.0, bat / 1000.0)
             t += timedelta(hours=1)
         return rows
+
+    @staticmethod
+    def _economy_rows(rows, t, ms, hl, load, pv, grid_bat):
+        """Counters (hourly change, kWh) and prices (hourly mean) for the economy tab."""
+        ids = counter_ids(DEFAULTS)
+        pv_load = min(pv, load)
+        surplus = pv - pv_load
+        pv_bat = surplus * 0.6
+        bat_out = min(max(0.0, load - pv_load), 1.9) if 17 <= hl < 21 else 0.0
+        imp = max(0.0, load - pv_load - bat_out) + grid_bat
+        exp = surplus - pv_bat
+        shift = 0.25 * math.sin(t.toordinal())
+        change = {ids["import"]: imp, ids["export"]: exp, ids["solar"]: pv,
+                  ids["battery_in"]: pv_bat + grid_bat, ids["battery_out"]: bat_out}
+        for sid, v in change.items():
+            if sid in rows:
+                rows[sid].append({"start": ms, "change": round(v, 4)})
+        for sid, base in ((DEFAULTS["price_buy_entity"], BUY_TODAY), (DEFAULTS["price_sell_entity"], SELL_TODAY)):
+            if sid in rows:
+                rows[sid].append({"start": ms, "mean": round(base[hl] + shift, 4)})
 
 
 def synthetic_log(path, days=14):
