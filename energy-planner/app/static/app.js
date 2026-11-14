@@ -399,7 +399,9 @@
       const pw = W - ml - mr, ph = H - top - axisH;
       const n = items.length, k = cfg.series.length;
       const band = pw / n;
-      const vals = items.flatMap((it) => it.values).filter((v) => v != null);
+      const vals = cfg.stacked
+        ? items.flatMap((it) => [it.values.reduce((a, v) => a + Math.max(0, v || 0), 0), it.values.reduce((a, v) => a + Math.min(0, v || 0), 0)])
+        : items.flatMap((it) => it.values).filter((v) => v != null);
       const nt = niceTicks(Math.min(0, ...vals), Math.max(0, ...vals, 0.1), 4);
       const yv = (v) => top + ph - ((v - nt.lo) / (nt.hi - nt.lo)) * ph;
       const root = svg('svg', { viewBox: `0 0 ${W} ${H}`, height: H, role: 'img', 'aria-label': cfg.label || '' });
@@ -407,30 +409,108 @@
         svg('line', { x1: ml, x2: ml + pw, y1: yv(t), y2: yv(t), class: t === 0 ? 'baseline' : 'gridline' }, root);
         svg('text', { x: ml - 6, y: yv(t) + 4, class: 'tick', 'text-anchor': 'end' }, root, fmt(t, Number.isInteger(nt.step) ? 0 : 1));
       }
-      const barW = Math.max(3, Math.min(24, (band * 0.72 - (k - 1) * 2) / k));
-      const groupW = barW * k + (k - 1) * 2;
-      const labelEvery = Math.ceil(36 / band);
+      const kk = cfg.stacked ? 1 : k;
+      const barW = Math.max(cfg.stacked ? 1.5 : 3, Math.min(24, (band * 0.72 - (kk - 1) * 2) / kk));
+      const groupW = barW * kk + (kk - 1) * 2;
+      const labelEvery = cfg.labelEvery || Math.ceil(36 / band);
       items.forEach((it, i) => {
         const gx = ml + i * band + band / 2 - groupW / 2;
         const g = svg('g', { tabindex: 0, class: 'plot' }, root);
         svg('rect', { x: ml + i * band, y: top, width: band, height: ph, fill: 'transparent' }, g);
-        it.values.forEach((v, j) => {
-          if (v == null) return;
-          const y0 = yv(0), y1 = yv(v);
-          const hgt = Math.abs(y1 - y0);
-          if (hgt < 0.5) return;
-          svg('path', { d: barPath(gx + j * (barW + 2), Math.min(y0, y1), barW, hgt, v > 0, v < 0), style: { fill: cfg.series[j].color } }, g);
-        });
+        if (cfg.stacked) {
+          // positives stack up, negatives down, in series order; 2 px gap between segments,
+          // rounded only at the outer end of each side
+          for (const dir of [1, -1]) {
+            const segs = it.values.map((v, j) => ({ v: v || 0, j })).filter((x) => x.v * dir > 0);
+            let acc = 0;
+            segs.forEach((x, idx) => {
+              const a = yv(acc), b = yv(acc + x.v);
+              acc += x.v;
+              let top = Math.min(a, b), bot = Math.max(a, b);
+              const outer = idx === segs.length - 1;
+              if (dir > 0) { if (idx > 0) bot -= 1; if (!outer) top += 1; } else { if (idx > 0) top += 1; if (!outer) bot -= 1; }
+              if (bot - top < 0.5) return;
+              svg('path', { d: barPath(gx, top, barW, bot - top, dir > 0 && outer, dir < 0 && outer), style: { fill: cfg.series[x.j].color } }, g);
+            });
+          }
+        } else {
+          it.values.forEach((v, j) => {
+            if (v == null) return;
+            const y0 = yv(0), y1 = yv(v);
+            const hgt = Math.abs(y1 - y0);
+            if (hgt < 0.5) return;
+            svg('path', { d: barPath(gx + j * (barW + 2), Math.min(y0, y1), barW, hgt, v > 0, v < 0), style: { fill: cfg.series[j].color } }, g);
+          });
+        }
         if (cfg.valueLabels && k === 1 && it.values[0] != null && band >= 34) {
           const v = it.values[0];
           svg('text', { x: ml + i * band + band / 2, y: v >= 0 ? yv(v) - 5 : yv(v) + 13, class: 'tick', 'text-anchor': 'middle' }, root, fmt(v, cfg.valueDigits ?? 0));
         }
-        if (i % labelEvery === 0) svg('text', { x: ml + i * band + band / 2, y: H - 6, class: 'tick', 'text-anchor': 'middle' }, root, it.label);
+        if (i % labelEvery === 0 && it.label) svg('text', { x: ml + i * band + band / 2, y: H - 6, class: 'tick', 'text-anchor': 'middle' }, root, it.label);
         const show = (cx, cy) => { g.style.opacity = 0.85; tip.show(cfg.tooltip(it, i), cx, cy); };
         g.addEventListener('pointermove', (e) => show(e.clientX, e.clientY));
         g.addEventListener('pointerleave', () => { g.style.opacity = ''; tip.hide(); });
         g.addEventListener('focus', () => { const b = g.getBoundingClientRect(); show(b.right, b.top); });
         g.addEventListener('blur', () => { g.style.opacity = ''; tip.hide(); });
+      });
+      container.replaceChildren(root);
+    });
+  }
+
+  /* Line over categories (one series): area wash, end dot with label, crosshair + tooltip. */
+  function lineChart(container, cfg) {
+    container.replaceChildren();
+    const items = cfg.items;
+    if (items.length < 2) { container.appendChild(h('div', { class: 'empty' }, cfg.empty || 'For lidt data til en kurve.')); return; }
+    observe(container, (W) => {
+      const H = cfg.height || 180, ml = 46, mr = 64, top = 14, axisH = 22;
+      const pw = W - ml - mr, ph = H - top - axisH;
+      const n = items.length;
+      const xs = (i) => ml + (i / (n - 1)) * pw;
+      const vals = items.map((it) => it.value);
+      const nt = niceTicks(Math.min(0, ...vals), Math.max(0, ...vals, 0.1), 4);
+      const yv = (v) => top + ph - ((v - nt.lo) / (nt.hi - nt.lo)) * ph;
+      const root = svg('svg', { viewBox: `0 0 ${W} ${H}`, height: H, role: 'img', 'aria-label': cfg.label || '' });
+      for (const t of nt.ticks) {
+        svg('line', { x1: ml, x2: ml + pw, y1: yv(t), y2: yv(t), class: t === 0 ? 'baseline' : 'gridline' }, root);
+        svg('text', { x: ml - 6, y: yv(t) + 4, class: 'tick', 'text-anchor': 'end' }, root, fmt(t, Number.isInteger(nt.step) ? 0 : 1));
+      }
+      const pts = items.map((it, i) => [xs(i), yv(it.value)]);
+      const line = pts.map(([x, y], i) => (i ? 'L' : 'M') + x + ',' + y).join('');
+      svg('path', { d: line + `L${xs(n - 1)},${yv(0)}L${xs(0)},${yv(0)}Z`, style: { fill: cfg.color, opacity: 0.1 } }, root);
+      svg('path', { d: line, style: { fill: 'none', stroke: cfg.color, strokeWidth: 2, strokeLinejoin: 'round', strokeLinecap: 'round' } }, root);
+      const [ex, ey] = pts[n - 1];
+      svg('circle', { cx: ex, cy: ey, r: 4, style: { fill: cfg.color, stroke: 'var(--surface)', strokeWidth: 2 } }, root);
+      svg('text', { x: ex + 8, y: ey + 4, class: 'endlabel' }, root, fmt(vals[n - 1], 0) + (cfg.unit ? ' ' + cfg.unit : ''));
+      const labelEvery = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(pw / 56))));
+      items.forEach((it, i) => {
+        if (i % labelEvery === 0 && it.label) svg('text', { x: xs(i), y: H - 6, class: 'tick', 'text-anchor': 'middle' }, root, it.label);
+      });
+      const cross = svg('line', { x1: 0, x2: 0, y1: top, y2: top + ph, class: 'crosshair', visibility: 'hidden' }, root);
+      const dot = svg('circle', { r: 4, style: { fill: cfg.color, stroke: 'var(--surface)', strokeWidth: 2 }, visibility: 'hidden' }, root);
+      const overlay = svg('rect', { x: ml, y: top, width: pw, height: ph, fill: 'transparent', class: 'plot', tabindex: 0 }, root);
+      let cur = -1;
+      const showAt = (i, cx, cy) => {
+        cur = Math.max(0, Math.min(n - 1, i));
+        const [x, y] = pts[cur];
+        cross.setAttribute('x1', x); cross.setAttribute('x2', x); cross.setAttribute('visibility', 'visible');
+        dot.setAttribute('cx', x); dot.setAttribute('cy', y); dot.setAttribute('visibility', 'visible');
+        tip.show(cfg.tooltip(items[cur], cur), cx, cy);
+      };
+      const hide = () => { cross.setAttribute('visibility', 'hidden'); dot.setAttribute('visibility', 'hidden'); tip.hide(); };
+      overlay.addEventListener('pointermove', (e) => {
+        const box = root.getBoundingClientRect();
+        const x = (e.clientX - box.left) * (W / box.width);
+        showAt(Math.round(((x - ml) / pw) * (n - 1)), e.clientX, e.clientY);
+      });
+      overlay.addEventListener('pointerleave', hide);
+      overlay.addEventListener('blur', hide);
+      overlay.addEventListener('keydown', (e) => {
+        if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+        e.preventDefault();
+        const box = root.getBoundingClientRect();
+        const i = cur < 0 ? 0 : cur + (e.key === 'ArrowRight' ? 1 : -1);
+        showAt(i, box.left + pts[Math.max(0, Math.min(n - 1, i))][0] * (box.width / W), box.top + 30);
       });
       container.replaceChildren(root);
     });
@@ -497,7 +577,8 @@
     items.map((it) => h('span', {}, h('span', { class: 'key' + (it.line ? ' line' : '') + (it.wash ? ' wash' : ''), style: { background: it.color } }), it.label)));
 
   // ---------------------------------------------------------------- data access
-  const state = { plan: null, planError: null, car: null, evalDays: parseInt(store.get('evalDays') || '14', 10), evalData: null, tab: 'plan' };
+  const state = { plan: null, planError: null, car: null, evalDays: parseInt(store.get('evalDays') || '14', 10), evalData: null, tab: 'plan',
+    econDays: parseInt(store.get('econDays') || '30', 10), econData: null, econError: null };
   const perH = (r, v) => (v || 0) / (r.dt || 1);   // energy per step -> per hour (step 0 is partial)
   const carIn = (r) => (r.car_grid || 0) + (r.car_pv || 0) + (r.car_bat || 0);
 
@@ -972,6 +1053,120 @@
     });
   }
 
+  // ---------------------------------------------------------------- Economy tab
+  const ECON_PERIODS = [[1, 'I dag'], [7, '7 dage'], [30, '30 dage'], [90, '90 dage'], [365, '1 år']];
+
+  function econLabel(t, days, i) {
+    const hh = t.slice(11, 13);
+    if (days <= 1) return parseInt(hh, 10) % 3 === 0 ? hh : '';
+    if (!(hh === '00' || i === 0)) return '';
+    const d = new Date(t.slice(0, 10) + 'T12:00:00');
+    return ['søn', 'man', 'tir', 'ons', 'tor', 'fre', 'lør'][d.getDay()] + ' ' + d.getDate() + '.';
+  }
+
+  function renderEconomy() {
+    const root = $('#tab-okonomi');
+    const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Periode' },
+      ECON_PERIODS.map(([d, l]) => h('button', { type: 'button', 'aria-pressed': String(state.econDays === d),
+        onclick: () => { state.econDays = d; store.set('econDays', d); loadEcon(true); } }, l)));
+    const filters = h('div', { class: 'filters' }, seg, h('span', { class: 'hint' }, 'Fra HA’s statistik · gælder alt herunder'));
+    const ev = state.econData;
+    if (!ev) {
+      root.replaceChildren(h('div', { class: 'stack' }, filters, h('div', { class: 'card' },
+        h('div', { class: 'empty' }, state.econError ? 'Kunne ikke hente statistik: ' + state.econError : 'Henter statistik…'))));
+      return;
+    }
+    const t = ev.totals || {};
+    const banners = [];
+    const warns = [];
+    if ((ev.missing || []).length) warns.push('Ingen statistik for: ' + ev.missing.join(', ') + '. Tallene er ufuldstændige.');
+    if (ev.skipped_hours) warns.push(`${ev.skipped_hours} timer mangler tællere eller pris og er ikke talt med.`);
+    if (t.fallback_price_hours) warns.push(`${t.fallback_price_hours} timer bruger priser fra add-on’ens log (prisstatistik manglede).`);
+    if (warns.length) banners.push(h('div', { class: 'banner' }, icon.warn(), h('ul', {}, warns.map((w) => h('li', {}, w)))));
+    if (!t.hours) {
+      root.replaceChildren(h('div', { class: 'stack' }, filters, banners, h('div', { class: 'card' }, h('div', { class: 'empty' }, 'Ingen timer med data i perioden.'))));
+      return;
+    }
+    const kr = (v) => h('span', {}, fmt(v, Math.abs(v) < 10 ? 2 : 0), h('small', {}, ' kr'));
+    const tiles = h('div', { class: 'tiles four' },
+      tile('Anlægsværdi', kr(t.value_dkk), `sparet: uden anlæg ${fmt(t.without_dkk, 0)} kr, betalt ${fmt(t.net_dkk, 0)} kr`),
+      tile('Netudgift', kr(t.net_dkk), `købt for ${fmt(t.bought_dkk, 0)} kr · solgt for ${fmt(t.sold_dkk, 0)} kr`),
+      tile('Solens bidrag', kr(t.solar_value_dkk), `${fmt(t.solar_kwh, 0)} kWh produceret · ${t.solar_self_use_pct != null ? fmt(t.solar_self_use_pct, 0) + ' % brugt selv' : ''}`),
+      tile('Batteriets bidrag', kr(t.battery_value_dkk), `${fmt(t.battery_out_kwh, 0)} kWh brugt · ${fmt(t.battery_in_kwh, 0)} kWh ladet`),
+      tile('Solgt for', kr(t.sold_dkk), `${fmt(t.export_kwh, 0)} kWh${t.export_kwh > 0.05 ? ' à ' + fmt(t.sold_dkk / t.export_kwh, 2) + ' kr' : ''}`),
+      tile('Købt for', kr(t.bought_dkk), `${fmt(t.import_kwh, 0)} kWh · betalt ${fmt(t.avg_buy_paid, 2)} kr/kWh mod gns. ${fmt(t.avg_buy_market, 2)}`),
+      tile('Bilen', kr(t.car_dkk), `${fmt(t.car_kwh, 0)} kWh, regnet ved købsprisen`),
+      tile('Selvforsyning', h('span', {}, fmt(t.self_sufficiency_pct, 0), h('small', {}, ' %')), `af ${fmt(t.consumption_kwh, 0)} kWh forbrug dækket af sol og batteri`));
+
+    const hourly = !!ev.hours;
+    const series = hourly ? ev.hours : ev.days;
+    const unit = hourly ? 'time' : 'dag';
+    const when = (r, i) => hourly ? econLabel(r.t, ev.period_days, i) : dayName(r.day, ev.period_days > 31 ? { day: 'numeric', month: 'numeric' } : { day: 'numeric', month: 'numeric' });
+    const head = (r) => hourly ? `${dayName(r.t.slice(0, 10))} · ${r.t.slice(11, 16)}–${addHour(r.t)}` : dayName(r.day, { weekday: 'long', day: 'numeric', month: 'long' });
+
+    const valueBox = h('div', { class: 'chart' }), moneyBox = h('div', { class: 'chart' });
+    const cumBox = h('div', { class: 'chart' }), energyBox = h('div', { class: 'chart' });
+    const card = (title, hint, box, leg) => h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', {}, title), hint ? h('span', { class: 'hint' }, hint) : null), box,
+      leg ? h('div', { style: { marginTop: '10px' } }, legend(leg)) : null);
+
+    const days = ev.days || [];
+    const table = h('table', {},
+      h('thead', {}, h('tr', {}, ['Dag', 'Anlægsværdi', 'Sol', 'Batteri', 'Netudgift', 'Købt for', 'Solgt for', 'Købt kWh', 'Solgt kWh', 'Sol kWh', 'Bil kr', 'Selvforsyning'].map((x) => h('th', {}, x)))),
+      h('tbody', {}, days.slice().reverse().map((d) => h('tr', {},
+        h('td', {}, dayName(d.day)), h('td', {}, fmt(d.value_dkk, 2)), h('td', {}, fmt(d.solar_value_dkk, 2)), h('td', {}, fmt(d.battery_value_dkk, 2)),
+        h('td', {}, fmt(d.net_dkk, 2)), h('td', {}, fmt(d.bought_dkk, 2)), h('td', {}, fmt(d.sold_dkk, 2)),
+        h('td', {}, fmt(d.import_kwh, 1)), h('td', {}, fmt(d.export_kwh, 1)), h('td', {}, fmt(d.solar_kwh, 1)), h('td', {}, fmt(d.car_dkk, 2)),
+        h('td', {}, d.self_sufficiency_pct != null ? fmt(d.self_sufficiency_pct, 0) + ' %' : '–')))));
+
+    root.replaceChildren(h('div', { class: 'stack' }, filters, banners, tiles,
+      card(`Anlægsværdi pr. ${unit} (kr)`, 'Hvad sol og batteri sparede i forhold til at købe alt fra nettet', valueBox,
+        [{ color: C.sun, label: 'Sol' }, { color: C.batt, label: 'Batteri (negativ når det lader fra nettet)' }]),
+      h('div', { class: 'grid-2' },
+        card(`Penge ind og ud pr. ${unit} (kr)`, 'Solgt op, købt ned', moneyBox, [{ color: C.export, label: 'Solgt for' }, { color: C.gridbat, label: 'Købt for' }]),
+        card('Anlægsværdi akkumuleret (kr)', '', cumBox, null)),
+      card(`Energi pr. ${unit} (kWh)`, '', energyBox, [{ color: C.sun, label: 'Sol produceret' }, { color: C.gridbat, label: 'Købt' }, { color: C.export, label: 'Solgt' }]),
+      h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', {}, 'Pr. dag'), h('span', { class: 'hint' }, 'kr og kWh · bilen regnet ved købspris')),
+        h('div', { class: 'table-wrap' }, table))));
+
+    const valueTip = (r) => h('div', {}, h('div', { class: 'tt-head' }, head(r)),
+      ttRow(C.sun, 'Sol', fmt(r.solar_value_dkk, 2) + ' kr', ''), ttRow(C.batt, 'Batteri', fmt(r.battery_value_dkk, 2) + ' kr', ''),
+      ttSec('I alt'), ttRow(C.ink2, 'Anlægsværdi', fmt(r.value_dkk, 2) + ' kr'), ttRow(C.ink2, 'Uden anlæg', fmt(r.without_dkk, 2) + ' kr'),
+      ttRow(C.ink2, 'Betalt (netto)', fmt(r.net_dkk, 2) + ' kr'),
+      hourly ? ttRow(C.ink2, 'Pris køb / salg', `${fmt(r.buy, 2)} / ${fmt(r.sell, 2)}`) : null);
+    const opts = { labelEvery: hourly ? 1 : undefined };
+    columnChart(valueBox, { ...opts, label: 'Anlægsværdi', height: 220, stacked: true,
+      items: series.map((r, i) => ({ label: when(r, i), values: [r.solar_value_dkk, r.battery_value_dkk], r })),
+      series: [{ label: 'Sol', color: C.sun }, { label: 'Batteri', color: C.batt }], tooltip: (it) => valueTip(it.r) });
+    columnChart(moneyBox, { ...opts, label: 'Penge ind og ud', height: 190, stacked: true,
+      items: series.map((r, i) => ({ label: when(r, i), values: [r.sold_dkk, -r.bought_dkk], r })),
+      series: [{ label: 'Solgt for', color: C.export }, { label: 'Købt for', color: C.gridbat }],
+      tooltip: (it) => h('div', {}, h('div', { class: 'tt-head' }, head(it.r)),
+        ttRow(C.export, 'Solgt for', fmt(it.r.sold_dkk, 2) + ' kr', ''), ttRow(C.gridbat, 'Købt for', fmt(it.r.bought_dkk, 2) + ' kr', ''),
+        ttRow(C.ink2, 'Netto', fmt(it.r.net_dkk, 2) + ' kr')) });
+    let acc = 0;
+    lineChart(cumBox, { label: 'Anlægsværdi akkumuleret', height: 190, color: C.batt, unit: 'kr',
+      items: series.map((r, i) => { acc += r.value_dkk; return { label: when(r, i), value: acc, r }; }),
+      tooltip: (it) => h('div', {}, h('div', { class: 'tt-head' }, head(it.r)), ttRow(C.batt, 'Akkumuleret', fmt(it.value, 2) + ' kr'),
+        ttRow(C.ink2, `Denne ${unit}`, fmt(it.r.value_dkk, 2) + ' kr')) });
+    columnChart(energyBox, { ...opts, label: 'Energi', height: 190,
+      items: series.map((r, i) => ({ label: when(r, i), values: [r.solar_kwh, r.import_kwh, r.export_kwh], r })),
+      series: [{ label: 'Sol', color: C.sun }, { label: 'Købt', color: C.gridbat }, { label: 'Solgt', color: C.export }],
+      tooltip: (it) => h('div', {}, h('div', { class: 'tt-head' }, head(it.r)),
+        ttRow(C.sun, 'Sol produceret', fmt(it.r.solar_kwh, 2) + ' kWh', ''), ttRow(C.gridbat, 'Købt', fmt(it.r.import_kwh, 2) + ' kWh', ''),
+        ttRow(C.export, 'Solgt', fmt(it.r.export_kwh, 2) + ' kWh', ''), ttRow(C.ink2, 'Forbrug', fmt(it.r.consumption_kwh, 2) + ' kWh'),
+        it.r.car_kwh > 0.05 ? ttRow(C.ink2, 'Heraf bil', fmt(it.r.car_kwh, 2) + ' kWh') : null) });
+  }
+
+  async function loadEcon(dim) {
+    const root = $('#tab-okonomi');
+    if (dim) root.classList.add('loading');
+    try { state.econData = await getJSON('api/economy?days=' + state.econDays); state.econError = null; }
+    catch (e) { state.econError = e.message; if (!state.econData) state.econData = null; }
+    root.classList.remove('loading');
+    if (state.tab === 'okonomi') renderEconomy();
+  }
+
   // ---------------------------------------------------------------- loading & tabs
   function setUpdated() {
     const p = state.plan;
@@ -995,7 +1190,7 @@
     if (state.tab === 'evaluering') renderEval();
   }
   function selectTab(name, push) {
-    if (!['plan', 'bil', 'evaluering'].includes(name)) name = 'plan';
+    if (!['plan', 'bil', 'evaluering', 'okonomi'].includes(name)) name = 'plan';
     state.tab = name;
     document.querySelectorAll('.tabs button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
     document.querySelectorAll('.tab').forEach((s) => { s.hidden = s.id !== 'tab-' + name; });
@@ -1004,6 +1199,7 @@
     if (name === 'plan') renderPlan();
     if (name === 'bil') { renderCar(); loadCar(); }
     if (name === 'evaluering') { renderEval(); loadEval(!!state.evalData); }
+    if (name === 'okonomi') { renderEconomy(); loadEcon(!!state.econData); }
   }
   document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => selectTab(b.dataset.tab, true)));
   $('#run').addEventListener('click', async () => {

@@ -96,3 +96,11 @@ def test_web_app_smoke():
     assert client.get("/static/style.css").status_code == 200
     ev = client.get("/api/evaluation?days=7").json()
     assert set(ev) >= {"days", "summary", "timeline", "decisions"}
+    import main as m
+
+    class _NoStats:
+        def statistics(self, *a, **k):
+            raise RuntimeError("no websocket")
+    m.planner.ha = _NoStats()
+    m._economy_cache.clear()
+    assert client.get("/api/economy?days=30").status_code == 503

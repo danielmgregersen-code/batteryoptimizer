@@ -77,6 +77,12 @@ Opens from the sidebar (*Energy Planner*), through ingress.
   the SoC of the house battery and the car. Hover or use the arrow keys for every value of an hour.
   "Planner mod inverteren nu" shows each register the planner would set next to its current value.
 - **Bil**: the car controller's decision and the calls it would make, the car plan, and its log.
+- **Økonomi**: what the installation cost and earned, from HA's long-term statistics (so with history
+  from before the add-on): today / 7 / 30 / 90 days / 1 year. System value (what the panels and
+  battery saved compared with buying everything), split into the sun's and the battery's part;
+  net cost, bought and sold for; the car at the buy price; self-sufficiency. Charts per hour (up to
+  7 days) or day: system value (sun + battery, the battery negative when it charges from the grid),
+  money in and out, cumulative value, energy; and a table per day. Formulas in `app/economy.py`.
 - **Evaluering**: what actually happened over 7/14/30 days. Daily grid cost, price paid per kWh,
   how often the planner agreed with Node-RED (a strip of both over time), solar actual vs. forecast
   with the least-squares best `pv_p10_weight`, consumption actual vs. forecast.

@@ -2,13 +2,15 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+import economy
 from evaluation import evaluate
 from homeassistant import HomeAssistant
 from planner import Planner, PlannerError
@@ -110,6 +112,27 @@ def get_evaluation(days: int = 14):
     result = evaluate(decisions, counter_ids(load_options()), planner.tz)
     result["decisions"] = decisions[-96:]
     return result
+
+
+_economy_cache: dict = {}
+ECONOMY_CACHE_S = 600
+ECONOMY_PERIODS = (1, 7, 30, 90, 365)
+
+
+@app.get("/api/economy")
+async def get_economy(days: int = 30):
+    """What the installation cost and earned over the last `days` days (HA long-term statistics)."""
+    days = min(ECONOMY_PERIODS, key=lambda p: abs(p - days))
+    hit = _economy_cache.get(days)
+    if hit and time.monotonic() - hit[0] < ECONOMY_CACHE_S:
+        return hit[1]
+    try:
+        res = await asyncio.to_thread(economy.report, planner.ha, load_options(), planner.tz, days,
+                                      datetime.now(timezone.utc), planner.recent_decisions(4000))
+    except Exception as e:  # statistics unavailable (no websocket, HA restarting)
+        raise HTTPException(status_code=503, detail=f"statistics unavailable: {e}")
+    _economy_cache[days] = (time.monotonic(), res)
+    return res
 
 
 @app.post("/api/run")
