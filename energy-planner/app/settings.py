@@ -47,6 +47,35 @@ DEFAULTS = {
     ),
     "grid_import_counter": "sensor.growatt_total_grid_import",
     "grid_export_counter": "sensor.growatt_total_grid_export",
+    # --- car (replaces the "Solcelle- & Prisstyret ladning: IONIQ 9" automation; dry-run) ---
+    "car_enabled": True,
+    "car_soc_entity": "sensor.ioniq_9_ev_battery_level",
+    "charger_status_entity": "sensor.garage_growatt_thor_ev_charger_status",
+    "charger_current_entity": "number.garage_growatt_thor_ev_charger_maximum_current",
+    "charger_start_button": "button.garage_growatt_thor_ev_charger_start_charging",
+    "pv_power_entity": "sensor.growatt_pv_power_total",
+    "battery_charge_power_entity": "sensor.growatt_battery_charge_power",
+    "car_battery_kwh": 110.0,
+    "car_phases": 3,
+    "car_min_amps": 6,
+    "car_max_amps": 16,
+    "car_eta": 0.92,                 # 10.2 kW into the car of 11.04 kW at the plug
+    "car_critical_start_pct": 20,
+    "car_critical_stop_pct": 22,
+    "car_min_start_pct": 40,
+    "car_min_stop_pct": 42,
+    "car_max_soc_pct": 90,
+    "car_deadline_hour": 6,
+    "car_value_dkk_per_kwh": 1.25,   # max price at the plug for charging beyond the minimum
+    "car_from_house_battery": False, # let the plan feed the car from the house battery
+    "car_start_surplus_w": 4200,
+    "car_stop_surplus_w": 1500,      # stop threshold while the house battery is below car_buffer_soc
+    "car_buffer_soc": 50,            # at/above this the house battery may buffer the car (stop at 0 W)
+    "car_house_priority_soc": 80,    # below this the house battery's charging is reserved
+    "car_house_min_soc": 30,         # never solar-charge the car with the house battery below this
+    "car_min_charge_s": 1200,
+    "car_cooldown_s": 1800,
+    "car_interval_seconds": 120,
 }
 
 REGISTER_KEYS = [

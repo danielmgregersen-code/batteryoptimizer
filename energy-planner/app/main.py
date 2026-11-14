@@ -32,10 +32,24 @@ def _loop():
         _stop.wait(int(load_options()["interval_minutes"]) * 60)
 
 
+def _car_loop():
+    _stop.wait(20)   # let the first plan land
+    while not _stop.is_set():
+        opts = load_options()
+        try:
+            d = planner.car_cycle()
+            if d:
+                log.debug("car: %s %s (%s)", d["action"], d["target_amps"], d["reason"])
+        except Exception as e:  # never let the loop die
+            log.exception("car control failed: %s", e)
+        _stop.wait(max(30, int(opts.get("car_interval_seconds", 120))))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     t = threading.Thread(target=_loop, daemon=True, name="planner-loop")
     t.start()
+    threading.Thread(target=_car_loop, daemon=True, name="car-loop").start()
     yield
     _stop.set()
 
@@ -53,6 +67,12 @@ def get_plan():
 @app.get("/api/decisions")
 def get_decisions(limit: int = 200):
     return planner.recent_decisions(min(limit, 2000))
+
+
+@app.get("/api/car")
+def get_car(limit: int = 200):
+    """Latest car decision and the log of changes (what the controller would have done)."""
+    return {"latest": planner.car_latest, "log": planner.recent_car_decisions(min(limit, 2000))}
 
 
 @app.get("/api/evaluation")
@@ -85,6 +105,7 @@ INDEX_HTML = """<!doctype html>
 </style></head><body>
 <h1>Energy Planner <span class="muted">(dry-run — skriver ikke til inverteren)</span></h1>
 <div id="status" class="box">Henter plan…</div>
+<div id="car" class="box" style="display:none"></div>
 <div class="wrap"><table id="t"></table></div>
 <p class="muted">Priser i DKK/kWh, energi i kWh pr. time. <i>Kursiv pris</i> = estimeret (samme time som sidste kendte dag). <button onclick="run()">Kør planlægning nu</button></p>
 <script>
@@ -100,14 +121,24 @@ async function load(){
     (p.warnings.length?'<br>⚠ '+p.warnings.join('; '):'')+
     '<br><span class="muted">Nuværende registre: '+Object.entries(p.actual_registers).map(([k,v])=>k.replace('reg_','')+'='+v).join(', ')+'</span>'+
     (()=>{const bad=Object.entries(p.entity_check||{}).filter(([e,v])=>v!='ok');return bad.length?'<br>⚠ Entiteter: '+bad.map(([e,v])=>e+' ('+v+')').join(', '):'';})();
-  let h='<tr><th>Time</th><th>Køb</th><th>Salg</th><th>Sol</th><th>Forbrug</th><th>Sol→bat</th><th>Net→bat</th><th>Bat→hus</th><th>Eksport</th><th>SoC %</th></tr>';
+  const car=p.car&&p.car.connected;
+  let h='<tr><th>Time</th><th>Køb</th><th>Salg</th><th>Sol</th><th>Forbrug</th><th>Sol→bat</th><th>Net→bat</th><th>Bat→hus</th><th>Eksport</th><th>SoC %</th>'+
+    (car?'<th>Sol→bil</th><th>Net→bil</th><th>Bat→bil</th><th>Bil %</th>':'')+'</tr>';
   for(const r of p.plan){
     const c=r.grid_bat>0.05?'grid_charge':r.pv_bat>0.05?'solar_charge':r.bat_load>0.05?'discharge':'';
     const fc=r.forecast_price?' class="fc"':'';
     h+='<tr class="'+c+'"><td>'+r.t.slice(5,16).replace('T',' ')+'</td><td'+fc+'>'+f(r.buy)+'</td><td'+fc+'>'+f(r.sell)+'</td><td>'+f(r.pv)+'</td><td>'+f(r.load)+
-       '</td><td>'+f(r.pv_bat)+'</td><td>'+f(r.grid_bat)+'</td><td>'+f(r.bat_load)+'</td><td>'+f(r.pv_exp)+'</td><td>'+f(r.soc_pct,0)+'</td></tr>';
+       '</td><td>'+f(r.pv_bat)+'</td><td>'+f(r.grid_bat)+'</td><td>'+f(r.bat_load)+'</td><td>'+f(r.pv_exp)+'</td><td>'+f(r.soc_pct,0)+'</td>'+
+       (car?'<td>'+f(r.car_pv)+'</td><td>'+f(r.car_grid)+'</td><td>'+f(r.car_bat)+'</td><td>'+f(r.car_soc,0)+'</td>':'')+'</tr>';
   }
   document.getElementById('t').innerHTML=h;
+  const cr=await fetch('api/car'); const cb=document.getElementById('car');
+  if(cr.ok){const c=(await cr.json()).latest; const pc=p.car||{};
+    if(c||pc.enabled){cb.style.display='';
+      cb.innerHTML='<b>Bil: '+(c?c.action:'–')+'</b>'+(c&&c.target_amps?' · '+c.target_amps+' A':'')+(c?' · '+c.reason:'')+
+        (pc.connected?'<br>SoC '+f(pc.soc_pct,0)+' % · planlagt '+f(pc.planned_kwh,1)+' kWh frem til '+pc.deadline.slice(11,16)+
+          (pc.shortfall_kwh>0.05?' · ⚠ mangler '+f(pc.shortfall_kwh,1)+' kWh':''):'<br><span class="muted">Ikke tilsluttet</span>')+
+        (c&&c.calls.length?'<br><span class="muted">Ville kalde: '+c.calls.map(x=>x.service+(x.value!=null?'='+x.value:'')).join(', ')+'</span>':'');}}
 }
 async function run(){await fetch('api/run',{method:'POST'});load();}
 load(); setInterval(load,60000);

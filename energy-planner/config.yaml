@@ -1,6 +1,6 @@
 name: "Energy Planner"
-description: "Hour-by-hour battery and grid planning for a Growatt hybrid inverter (dry-run)."
-version: "0.1.1"
+description: "Hour-by-hour planning of a Growatt hybrid inverter, home battery and EV charging (dry-run)."
+version: "0.2.0"
 slug: "energy_planner"
 init: false
 arch:
@@ -44,6 +44,34 @@ options:
   counter_entities: "sensor.growatt_total_grid_import,sensor.growatt_total_grid_export,sensor.growatt_total_battery_input_energy,sensor.growatt_total_battery_output_energy,sensor.growatt_total_solar_energy"
   grid_import_counter: "sensor.growatt_total_grid_import"
   grid_export_counter: "sensor.growatt_total_grid_export"
+  car_enabled: true
+  car_soc_entity: "sensor.ioniq_9_ev_battery_level"
+  charger_status_entity: "sensor.garage_growatt_thor_ev_charger_status"
+  charger_current_entity: "number.garage_growatt_thor_ev_charger_maximum_current"
+  charger_start_button: "button.garage_growatt_thor_ev_charger_start_charging"
+  pv_power_entity: "sensor.growatt_pv_power_total"
+  battery_charge_power_entity: "sensor.growatt_battery_charge_power"
+  car_battery_kwh: 110.0
+  car_phases: 3
+  car_min_amps: 6
+  car_max_amps: 16
+  car_eta: 0.92
+  car_critical_start_pct: 20
+  car_critical_stop_pct: 22
+  car_min_start_pct: 40
+  car_min_stop_pct: 42
+  car_max_soc_pct: 90
+  car_deadline_hour: 6
+  car_value_dkk_per_kwh: 1.25
+  car_from_house_battery: false
+  car_start_surplus_w: 4200
+  car_stop_surplus_w: 1500
+  car_buffer_soc: 50
+  car_house_priority_soc: 80
+  car_house_min_soc: 30
+  car_min_charge_s: 1200
+  car_cooldown_s: 1800
+  car_interval_seconds: 120
 
 schema:
   price_buy_entity: str
@@ -75,6 +103,34 @@ schema:
   counter_entities: str
   grid_import_counter: str
   grid_export_counter: str
+  car_enabled: bool
+  car_soc_entity: str
+  charger_status_entity: str
+  charger_current_entity: str
+  charger_start_button: str
+  pv_power_entity: str
+  battery_charge_power_entity: str
+  car_battery_kwh: float(10,200)
+  car_phases: list(1|3)
+  car_min_amps: int(6,32)
+  car_max_amps: int(6,32)
+  car_eta: float(0.7,1)
+  car_critical_start_pct: int(0,100)
+  car_critical_stop_pct: int(0,100)
+  car_min_start_pct: int(0,100)
+  car_min_stop_pct: int(0,100)
+  car_max_soc_pct: int(50,100)
+  car_deadline_hour: int(0,23)
+  car_value_dkk_per_kwh: float(0,10)
+  car_from_house_battery: bool
+  car_start_surplus_w: int(0,22000)
+  car_stop_surplus_w: int(0,22000)
+  car_buffer_soc: int(0,100)
+  car_house_priority_soc: int(0,100)
+  car_house_min_soc: int(0,100)
+  car_min_charge_s: int(0,7200)
+  car_cooldown_s: int(0,7200)
+  car_interval_seconds: int(30,900)
 
 homeassistant_api: true
 
