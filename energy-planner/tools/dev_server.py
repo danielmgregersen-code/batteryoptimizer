@@ -81,6 +81,8 @@ class FakeHA:
             self.states[e] = "5.27"
         for e in counter_ids(DEFAULTS).values():
             self.states[e] = "1000"
+        for e, amps in zip(DEFAULTS["grid_current_entities"].split(","), ("21.4", "18.9", "19.6")):
+            self.states[e] = amps
         if car:
             self.states.update({
                 DEFAULTS["charger_status_entity"]: "suspended_evse",

@@ -106,6 +106,24 @@ start button from `preparing`, `kia_uvo.start_charge` / `stop_charge` to resume/
 `sensor.energy_planner_car` shows the decision (`charge` / `pause` / `idle` / `none`) with
 `target_amps`, `reason` and the service calls it would make. `/api/car` has the log of changes.
 
+## Main fuse
+
+The car (16 A = 11 kW over three phases) and grid charging of the house battery (4 kW ≈ 6 A per
+phase) on top of the house load can come close to a 25 A main fuse.
+
+- **The plan** keeps the worst phase below `main_fuse_amps` − `fuse_margin_amps` (25 − 3 = 22 A)
+  in every hour. Car and battery are three-phase; the house load is counted as if it were all on one
+  phase (conservative). The LP decides which of the two gets less. Example: car 16 A + house
+  0.8 kW (3.5 A) leaves about 2.5 A, i.e. ~1.7 kW, for the battery.
+- **The live guard** uses the grid current per phase (`grid_current_entities`, three sensors, the
+  sign is ignored). Must be the grid meter's currents, not the inverter's AC output. When the
+  highest phase would exceed the fuse − 1 A, the car controller lowers the car's amps (not below 6 A;
+  the reason says "begrænset af hovedsikringen"). If the car is at 6 A or not charging, the battery
+  check every minute lowers the grid charge rate (production only) and gives it back in 10 % steps
+  once there is 3 A of room. Without the sensors, only the plan's limit applies, and the panel
+  shows a warning.
+- The Plan tab shows the highest phase against the fuse.
+
 ## The panel
 
 Opens from the sidebar (*Energy Planner*), through ingress.

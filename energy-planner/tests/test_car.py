@@ -297,3 +297,24 @@ def test_last_full_from_statistics():
             for d, m in ((1, 100.0), (5, 98.0), (8, 99.4), (10, 60.0))]
     assert carmod.last_full_from_stats(rows) == datetime(2026, 11, 8, 4, tzinfo=UTC)
     assert carmod.last_full_from_stats([]) is None
+
+
+def test_fuse_guard_lowers_the_car_amps_and_never_below_6():
+    opts = {**OPTS, "main_fuse_amps": 25}
+    # charging at 16 A (11 kW), worst phase 27 A: without the car 11 A -> room 13 A
+    lv = live(status="charging", car_soc=30, charger_w=11040, amps=16, phase_amps=[27.0, 20.0, -21.0])
+    d = carmod.decide(lv, row(grid=11.0), opts)
+    assert d["target_amps"] == 13 and d["fuse"]["limited"] and "fuse limit" in d["reason"]
+    lv["phase_amps"] = [38.0, 30.0, 30.0]                     # house 22 A on a phase: room 2 A
+    d = carmod.decide(lv, row(grid=11.0), opts)
+    assert d["target_amps"] == 6 and d["fuse"]["at_minimum"]
+    lv["phase_amps"] = [18.0, 17.0, 17.0]                     # plenty of room: the plan's 16 A
+    d = carmod.decide(lv, row(grid=11.0), opts)
+    assert d["target_amps"] == 16 and not d["fuse"]["limited"]
+    lv.pop("phase_amps")                                      # no sensors: no guard
+    assert carmod.decide(lv, row(grid=11.0), opts)["target_amps"] == 16
+
+
+def test_fuse_reason_in_danish():
+    from summary import reason_da
+    assert "hovedsikringen, højeste fase 27 A" in reason_da("plan: 11.0 kW this hour (fuse limit, highest phase 27 A)")

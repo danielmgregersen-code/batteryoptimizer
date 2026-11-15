@@ -101,8 +101,15 @@ def terminal_value_for(buy, params: BatteryParams) -> float:
     return float(min(buy)) * params.eta_discharge
 
 
+PHASE_KV = 0.23          # kV per phase: 1 kW on one phase = 4.35 A, 1 kW over three phases = 1.45 A
+
+
 def solve(buy, sell, pv, load, dt, soc0_kwh, params: BatteryParams,
-          terminal_value: float, allow_grid_charge: bool = True, car: CarParams = None) -> Plan:
+          terminal_value: float, allow_grid_charge: bool = True, car: CarParams = None,
+          fuse_amps: float = None) -> Plan:
+    """fuse_amps: amps per phase available for the main fuse (fuse minus margin), or None.
+    Per step the worst phase is kept below it: car and grid charging of the battery are
+    three-phase, the house load is counted as if it were all on one phase (conservative)."""
     buy, sell, pv, load, dt = (np.asarray(a, dtype=float) for a in (buy, sell, pv, load, dt))
     T = len(buy)
     if T == 0:
@@ -161,6 +168,11 @@ def solve(buy, sell, pv, load, dt, soc0_kwh, params: BatteryParams,
             if t in car.targets:
                 # car_t + short_t >= target
                 ub({(t, CAR): -1.0, (t, SHORT): -1.0}, -float(car.targets[t]))
+        if fuse_amps is not None:
+            three, one = 1.0 / (3 * PHASE_KV), 1.0 / PHASE_KV          # A per kW
+            # never infeasible: the house load alone may exceed it (then car and battery get nothing)
+            rhs = max(float(fuse_amps) * dt[t], load[t] * one)
+            ub({(t, GRID_LOAD): one, (t, GRID_BAT): three, (t, GRID_CAR): three}, rhs)
 
     lo = min(params.soc_floor_kwh, soc0_kwh)
     hi = max(params.soc_ceiling_kwh, soc0_kwh)

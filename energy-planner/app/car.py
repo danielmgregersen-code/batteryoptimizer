@@ -239,6 +239,20 @@ def plan_for_now(snapshot: dict, now_utc: datetime, tz):
     return None
 
 
+def fuse_room_amps(live: dict, opts):
+    """Amps per phase the car may draw without the worst phase going above the main fuse minus 1 A.
+    live["phase_amps"]: the grid currents per phase (sign ignored: the fuse sees both directions).
+    The car's own draw is taken out of the measurement, so the result does not depend on the amps
+    set now. Returns (room, highest phase) or (None, None) without measurements."""
+    phases = live.get("phase_amps")
+    if not phases:
+        return None, None
+    imax = max(abs(float(a)) for a in phases)
+    car_draw = max(0.0, float(live.get("charger_w") or 0.0)) / watt_per_amp(opts) if live.get("status") == "charging" else 0.0
+    room = math.floor(float(opts["main_fuse_amps"]) - 1.0 - max(0.0, imax - car_draw))
+    return room, imax
+
+
 def decide(live: dict, plan_row, opts) -> dict:
     """One control step. live: status, car_soc, pv_w, load_w, charger_w, house_soc,
     bat_charge_w, amps, secs_since_status, sell. Returns the decision and the calls it implies."""
@@ -299,6 +313,14 @@ def decide(live: dict, plan_row, opts) -> dict:
         reason = "plan: no car charging this hour" if plan_row else "no plan"
 
     secs = live.get("secs_since_status", 9999)
+    room, imax = fuse_room_amps(live, opts) if opts.get("main_fuse_amps") else (None, None)
+    out["fuse"] = {"room_amps": room, "max_phase_amps": None if imax is None else round(imax, 1),
+                   "limited": False}
+    if want and room is not None and room < amps:
+        amps = max(amin, room)
+        out["fuse"]["limited"] = True
+        out["fuse"]["at_minimum"] = room < amin           # the car cannot go lower: the battery must
+        reason += f" (fuse limit, highest phase {imax:.0f} A)"
     if want:
         out.update(action="charge", target_amps=amps, reason=reason)
         if amps != live.get("amps"):

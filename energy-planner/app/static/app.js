@@ -583,6 +583,23 @@
   const carIn = (r) => (r.car_grid || 0) + (r.car_pv || 0) + (r.car_bat || 0);
 
   // ---------------------------------------------------------------- Plan tab
+  // Main fuse: the highest phase right now against the fuse, and what the plan keeps within.
+  function fuseTile(p, carLatest) {
+    const f = (p && p.fuse) || {};
+    if (!f.fuse_amps) return null;
+    const livePh = carLatest && carLatest.live && carLatest.live.phase_amps;
+    const ph = livePh || f.phase_amps;
+    const imax = ph ? Math.max(...ph.map((a) => Math.abs(a))) : null;
+    const limited = carLatest && carLatest.fuse && carLatest.fuse.limited;
+    const capped = p.setpoints_live && p.setpoints_live.fuse_capped;
+    let detail = `planen holder sig under ${fmt(f.plan_limit_amps, 0)} A pr. fase`;
+    if (limited) detail = `bilen er skruet ned til ${carLatest.target_amps} A for sikringens skyld`;
+    if (capped) detail = `batteriets ladehastighed er sat ned til ${p.setpoints_live.charge_rate_pct} % for sikringens skyld`;
+    if (!ph) detail = 'ingen fasestrøm-målinger (grid_current_entities) · ' + detail;
+    return tile('Hovedsikring', imax != null ? h('span', {}, fmt(imax, 0), h('small', {}, ` / ${f.fuse_amps} A`)) : h('span', { style: { fontSize: '20px' } }, `${f.fuse_amps} A`),
+      detail, imax != null ? meter(imax / f.fuse_amps * 100, [{ v: (f.fuse_amps - 1) / f.fuse_amps * 100, title: 'Vagtens grænse' }], imax > f.fuse_amps - 1 ? 'warn' : '') : null);
+  }
+
   function tile(label, value, detail, extra) {
     return h('div', { class: 'tile' }, h('div', { class: 'label' }, label), h('div', { class: 'value' }, value), extra || null, detail ? h('div', { class: 'detail' }, detail) : null);
   }
@@ -687,7 +704,8 @@
         `sparet over ${p.horizon_hours} timer ved at lade fra nettet når det betaler sig`),
       p.car && p.car.enabled ? tile('Bil', p.car.connected ? h('span', {}, fmt(p.car.soc_pct, 0), h('small', {}, ' %')) : h('span', { class: 'ink2', style: { fontSize: '18px' } }, 'Ikke tilsluttet'),
         p.car.connected ? `planlagt ${fmt(p.car.planned_kwh, 1)} kWh frem til kl. ${p.car.deadline.slice(11, 16)}` : 'planen tager bilen med, når den sættes til',
-        p.car.connected ? meter(p.car.soc_pct, [{ v: 42, title: 'Minimum' }, { v: 90, ghost: true, title: 'Maks' }], 'car') : null) : null);
+        p.car.connected ? meter(p.car.soc_pct, [{ v: 42, title: 'Minimum' }, { v: 90, ghost: true, title: 'Maks' }], 'car') : null) : null,
+      fuseTile(p, state.car && state.car.latest));
 
     const hasCar = rows.some((r) => carIn(r) > 0.005);
     const chartBox = h('div', { class: 'chart' });

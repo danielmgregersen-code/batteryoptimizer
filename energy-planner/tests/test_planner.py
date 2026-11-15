@@ -684,3 +684,49 @@ def test_battery_fast_cycle_hands_grid_charging_over_to_the_sun(tmp_path):
     assert p.latest["setpoints_live"]["handed_over"]
     ha.texts[DEFAULTS["production_switch_entity"]] = "off"
     assert p.battery_fast_cycle() is None
+
+
+def test_plan_respects_the_main_fuse_and_reports_it(tmp_path):
+    ha = car_ha()
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    snap = p.run_once(datetime(2026, 11, 14, 19, 30, tzinfo=UTC))
+    assert snap["fuse"]["plan_limit_amps"] == 22
+    assert any("phase current sensors" in w for w in snap["warnings"])    # configured but missing
+    for r in snap["plan"]:
+        dt = r.get("dt", 1.0) or 1.0
+        car_kw = (r.get("car_grid") or 0) / dt
+        assert car_kw / 0.69 <= 22 + 0.01
+
+
+def test_battery_fast_cycle_caps_the_charge_rate_when_a_phase_is_over_the_fuse(tmp_path):
+    ha = make_ha()
+    phases = [e for e in DEFAULTS["grid_current_entities"].split(",")]
+    ha.texts.update({DEFAULTS["production_switch_entity"]: "on"})
+    ha.numbers.update({DEFAULTS["reg_charge_rate"]: 40.0, DEFAULTS["reg_max_soc"]: 90.0, DEFAULTS["reg_min_soc"]: 10.0})
+    ha.texts.update({DEFAULTS["reg_battery_first"]: "Enabled", DEFAULTS["reg_grid_charge"]: "Enabled"})
+    ha.call_service = lambda domain, service, data=None, return_response=False: ha.numbers.__setitem__(
+        data["entity_id"], data["value"]) if domain == "number" else ha.texts.__setitem__(data["entity_id"], data["option"])
+    ha.state = lambda e: ({"state": str(ha.numbers.get(e, ha.texts.get(e))), "attributes": {}}
+                          if e in ha.numbers or e in ha.texts else None)
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    p.run_once(datetime(2026, 11, 14, 1, 40, tzinfo=UTC))
+    p.latest["setpoints"] = {"mode": "grid_charge", "battery_first": True, "grid_charge": True, "max_soc_pct": 90,
+                             "min_soc_pct": 10, "charge_rate_pct": 40, "grid_target_pct": 90, "run_target_pct": 90}
+    ha.numbers[DEFAULTS["reg_charge_rate"]] = 40.0
+    ha.numbers.update({phases[0]: 28.0, phases[1]: 15.0, phases[2]: 15.0})   # 4 A over 24 A
+    p.car_latest = None                                                       # car not charging
+    writes = p.battery_fast_cycle(datetime(2026, 11, 14, 1, 50, tzinfo=UTC))
+    rate = [w for w in writes if w["key"] == "reg_charge_rate"]
+    assert rate and rate[0]["to"] == 10                     # 4 A x 3 phases = 2.8 kW = 28 % of 10 kW -> -30 %
+    assert p.latest["setpoints_live"]["fuse_capped"]
+    # the car still has room to give: the car guard acts first, the battery is left alone
+    p._fuse_rate_cap = None
+    ha.numbers[DEFAULTS["reg_charge_rate"]] = 40.0
+    p.car_latest = {"action": "charge", "fuse": {"limited": True, "at_minimum": False}}
+    assert not [w for w in p.battery_fast_cycle(datetime(2026, 11, 14, 1, 51, tzinfo=UTC)) if w["key"] == "reg_charge_rate"]
+    # room again: recovers in 10 % steps back to the plan
+    p.car_latest = None
+    p._fuse_rate_cap = 30
+    ha.numbers.update({phases[0]: 12.0, phases[1]: 12.0, phases[2]: 12.0})
+    p.battery_fast_cycle(datetime(2026, 11, 14, 1, 52, tzinfo=UTC))
+    assert p._fuse_rate_cap is None and ha.numbers[DEFAULTS["reg_charge_rate"]] == 40
