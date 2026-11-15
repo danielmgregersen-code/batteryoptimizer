@@ -125,5 +125,5 @@ def allowed_entities(opts: dict) -> list:
     """Entities the entity services may act on: the written registers and the charger's controls."""
     from settings import WRITE_REGISTER_KEYS
     ids = [opts.get(k) for k in WRITE_REGISTER_KEYS]
-    ids += [opts.get("charger_current_entity"), opts.get("charger_start_button")]
+    ids += [opts.get("charger_current_entity"), opts.get("charger_start_button"), opts.get("charger_stop_button")]
     return [e for e in ids if e]

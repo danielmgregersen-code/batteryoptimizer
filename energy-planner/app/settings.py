@@ -100,6 +100,11 @@ DEFAULTS = {
     "production_switch_entity": "input_boolean.energy_planner_produktion",
     "car_production_switch_entity": "input_boolean.energy_planner_bil_produktion",
     "car_device_id": "",               # the IONIQ 9's device id for kia_uvo.start_charge / stop_charge
+    # Emergency stop on the charger when the car cannot be paused through Kia, only while charging
+    # from the grid (not on sun) and when nothing more is planned before the deadline. The THOR cannot
+    # be restarted from here afterwards (the cable has to be re-plugged), but the car is not overcharged.
+    "car_thor_stop_fallback": True,
+    "charger_stop_button": "button.garage_growatt_thor_ev_charger_stop_charging",
 }
 
 # Registers the planner writes in production. The export limit is deliberately not one of them.

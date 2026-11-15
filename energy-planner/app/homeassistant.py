@@ -29,6 +29,14 @@ class ServiceNotAllowed(Exception):
     pass
 
 
+class ServiceCallError(Exception):
+    """A service call HA rejected, with HA's message (and error code when given)."""
+
+    def __init__(self, message: str, code: str = None):
+        super().__init__(message)
+        self.code = code
+
+
 class HomeAssistant:
     def __init__(self, token: str = None, base_url: str = BASE_URL, ws_url: str = WS_URL):
         self.token = token or os.getenv("SUPERVISOR_TOKEN", "")
@@ -86,16 +94,42 @@ class HomeAssistant:
         except requests.RequestException as e:
             log.warning("set_state(%s) failed: %s", entity_id, e)
 
-    def call_service(self, domain: str, service: str, data: dict = None, return_response: bool = False):
-        """Call an allowlisted service. Returns the JSON response (with `service_response` when
-        return_response is set), or raises."""
+    def _check_allowed(self, domain: str, service: str, data: dict):
         if (domain, service) in ENTITY_SERVICES:
             entity = (data or {}).get("entity_id")
             if not entity or entity not in self.allowed_entities:
                 raise ServiceNotAllowed(f"{domain}.{service} on {entity} is not allowed")
         elif (domain, service) not in ALLOWED_SERVICES:
             raise ServiceNotAllowed(f"{domain}.{service} is not allowed")
-        url = f"{self.base_url}/services/{domain}/{service}" + ("?return_response" if return_response else "")
+
+    def call_service_ws(self, domain: str, service: str, data: dict = None):
+        """Call an allowlisted service over the WebSocket API. Unlike REST (which only answers
+        "500 Internal Server Error"), a failure raises ServiceCallError with HA's own message,
+        e.g. "Failed to stop charge: PIN verification failed ..."."""
+        from websockets.sync.client import connect
+
+        self._check_allowed(domain, service, data)
+        with connect(self.ws_url, open_timeout=15, close_timeout=5) as ws:
+            json.loads(ws.recv())  # auth_required
+            ws.send(json.dumps({"type": "auth", "access_token": self.token}))
+            auth = json.loads(ws.recv())
+            if auth.get("type") != "auth_ok":
+                raise RuntimeError(f"websocket auth failed: {auth}")
+            ws.send(json.dumps({"id": 1, "type": "call_service", "domain": domain, "service": service,
+                                "service_data": data or {}}))
+            while True:
+                msg = json.loads(ws.recv(timeout=90))   # remote car commands can take a while
+                if msg.get("id") == 1:
+                    if not msg.get("success"):
+                        err = msg.get("error") or {}
+                        raise ServiceCallError(err.get("message") or str(err), err.get("code"))
+                    return msg.get("result")
+
+    def call_service(self, domain: str, service: str, data: dict = None, return_response: bool = False):
+        """Call an allowlisted service. Returns the JSON response (with `service_response` when
+        return_response is set), or raises."""
+        self._check_allowed(domain, service, data)
+        url =f"{self.base_url}/services/{domain}/{service}" + ("?return_response" if return_response else "")
         r = requests.post(url, headers=self._headers, data=json.dumps(data or {}), timeout=30)
         r.raise_for_status()
         try:

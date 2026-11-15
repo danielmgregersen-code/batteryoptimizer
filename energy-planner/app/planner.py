@@ -21,6 +21,10 @@ log = logging.getLogger("energy_planner")
 DECISION_LOG = "/data/decisions.jsonl"
 CAR_LOG = "/data/car_decisions.jsonl"
 KIA_REPEAT_S = 600     # the same Kia cloud call is not repeated within this while the status is unchanged
+KIA_BACKOFF_MIN = (2, 4, 8, 15)      # minutes between retries after failed Kia calls
+KIA_BLOCK = timedelta(hours=6)       # after a PIN / access error: no Kia calls for this long
+KIA_STOP_IGNORED = timedelta(minutes=10)   # a successful stop the car has not followed after this
+NON_RETRYABLE = ("pin", "unauthorized", "unauthorised", "locked", "token", "forbidden", "401", "403")
 MAX_LOG_LINES = 4000
 KEEP_LOG_LINES = 2000
 PROFILE_MAX_AGE = timedelta(hours=6)
@@ -56,6 +60,13 @@ class Planner:
         self.car_latest = None
         self._car_last_logged = None
         self._last_kia = None          # (service, charger status, time) of the last Kia call
+        self._kia_block_until = None   # PIN / access error: no Kia calls before this
+        self._kia_fails = 0            # consecutive failed Kia calls (backoff)
+        self._kia_next_try = None
+        self._kia_last_error = None
+        self._stop_ok_at = None        # last successful kia stop while the car was charging
+        self._thor_stopped = False     # emergency stop on the charger done: no restart from here
+        self._car_prod_prev = False
         self.options_fn = options_fn
         self._profile = None
         self._profile_at = None
@@ -380,9 +391,16 @@ class Planner:
         d = carmod.decide(live, row, opts)
         car_production = writer.switch_on(self.ha, opts.get("car_production_switch_entity"))
         d.update({"updated": now.astimezone(self.tz).isoformat(timespec="seconds"), "dry_run": not car_production,
-                  "live": live, "plan_row": row, "executed": []})
-        if car_production and d["calls"]:
-            d["executed"] = self._execute_car_calls(d["calls"], opts, live.get("status"), now)
+                  "live": live, "plan_row": row, "executed": [], "warning": None})
+        if car_production and not self._car_prod_prev:
+            # switching the car helper on (again) clears a Kia block and an earlier charger stop
+            self._kia_block_until = self._kia_next_try = self._stop_ok_at = None
+            self._kia_fails, self._thor_stopped = 0, False
+        self._car_prod_prev = car_production
+        if live.get("status") not in carmod.CONNECTED:
+            self._thor_stopped = False            # cable out: the next plug-in starts fresh
+        if car_production:
+            d["executed"], d["warning"] = self._car_production_step(d, opts, live, snap, now)
         with self._lock:
             self.car_latest = d
         d["reason_da"] = reason_da(d["reason"])
@@ -393,7 +411,7 @@ class Planner:
             "friendly_name": "Energy Planner car", "icon": "mdi:car-electric", "dry_run": d["dry_run"], "updated": d["updated"],
             "label": CAR_ACTION_LABEL.get(d["action"], d["action"]),
             "target_amps": d["target_amps"], "reason": d["reason"], "reason_da": d["reason_da"], "calls": d["calls"],
-            "executed": d["executed"],
+            "executed": d["executed"], "warning": d.get("warning"),
             "surplus_w": d.get("surplus_w"),
             "next_window": f"{nxt['when']} · {nxt['text']}" if nxt else None,
             "next_start": nxt["start"] if nxt else None,
@@ -403,11 +421,86 @@ class Planner:
         if key != self._car_last_logged or d["executed"]:   # log changes and every executed call
             self._car_last_logged = key
             self._append(self.car_log_path, {k: d[k] for k in ("updated", "action", "target_amps", "reason",
-                                                                "reason_da", "calls", "executed", "dry_run", "live")})
+                                                                "reason_da", "calls", "executed", "warning",
+                                                                "dry_run", "live")})
         return d
 
+    def _car_production_step(self, d: dict, opts: dict, live: dict, snap: dict, now: datetime):
+        """Carry out the decision's calls, and when the car cannot be paused: 6 A, and as a last
+        resort (grid charging, nothing more planned) the stop button on the charger."""
+        status = live.get("status")
+        charging = status == "charging"
+        wants_pause = d["action"] == "pause"
+        if self._thor_stopped:
+            return [], "Stoppet på laderen (nødstop) – sæt kablet i igen for at lade."
+        executed = self._execute_car_calls(d["calls"], opts, status, now)
+        if not (charging and wants_pause):
+            if not charging:
+                self._stop_ok_at = None
+            return executed, self._kia_warning(now)
+
+        stop = next((x for x in executed if x["service"] == "kia_uvo.stop_charge"), None)
+        if stop and stop["status"] == "ok" and self._stop_ok_at is None:
+            self._stop_ok_at = now
+        ignored = self._stop_ok_at is not None and now - self._stop_ok_at >= KIA_STOP_IGNORED
+        blocked = self._kia_block_until is not None and now < self._kia_block_until
+        no_device = not opts.get("car_device_id")
+        failing = blocked or self._kia_fails > 0 or ignored or no_device
+        if not failing:
+            return executed, None
+
+        warning = (self._kia_warning(now)
+                   or ("car_device_id er ikke sat i add-on'ens indstillinger, så bilen kan ikke pauses via Kia."
+                       if no_device else "Bilen lader stadig, selv om styringen har bedt den stoppe."))
+        amin = int(opts["car_min_amps"])
+        if live.get("amps") != amin:
+            executed += self._execute_car_calls([{"service": "number.set_value", "entity_id": opts["charger_current_entity"],
+                                                  "value": amin}], opts, status, now)
+        # Emergency stop on the charger: grid charging only, nothing more planned, Kia given up on.
+        soc = live.get("car_soc") or 0.0
+        at_max = soc >= float(opts["car_max_soc_pct"])
+        nothing_more = self._car_planned_ahead(snap, now) < 0.5
+        kia_gave_up = blocked or self._kia_fails >= 2 or ignored or no_device
+        if (opts.get("car_thor_stop_fallback") and opts.get("charger_stop_button") and d.get("source") != "solar"
+                and (nothing_more or at_max) and kia_gave_up):
+            res = self._execute_car_calls([{"service": "button.press", "entity_id": opts["charger_stop_button"]}],
+                                          opts, status, now)
+            executed += res
+            if res and res[0]["status"] == "ok":
+                self._thor_stopped = True
+                warning += " Nødstop på laderen brugt – sæt kablet i igen for at lade."
+                log.warning("car: emergency stop on the charger (Kia could not pause the car)")
+        else:
+            warning += f" Laderen er sat til {amin} A, til bilen kan pauses."
+        return executed, warning
+
+    def _kia_warning(self, now: datetime):
+        if self._kia_block_until is not None and now < self._kia_block_until:
+            return (f"Kia afviste kaldet: {str(self._kia_last_error).rstrip('. ')}. Ingen nye Kia-kald før kl. "
+                    f"{self._kia_block_until.astimezone(self.tz):%H:%M} (eller slå bil-produktion fra og til). "
+                    "Tjek PIN-koden i Kia-integrationen.")
+        if self._kia_fails:
+            nxt = self._kia_next_try.astimezone(self.tz).strftime("%H:%M") if self._kia_next_try else "snart"
+            return f"Kia-kald fejlede {self._kia_fails} gange ({str(self._kia_last_error).rstrip('. ')}). Prøver igen kl. {nxt}."
+        return None
+
+    @staticmethod
+    def _car_planned_ahead(snap: dict, now: datetime) -> float:
+        """kWh the plan still has for the car in the hours after the current one."""
+        total = 0.0
+        for r in (snap or {}).get("plan", []):
+            try:
+                start = datetime.fromisoformat(r["t"])
+            except (KeyError, ValueError):
+                continue
+            if start > now and "car_grid" in r:
+                total += (r.get("car_grid") or 0.0) + (r.get("car_pv") or 0.0) + (r.get("car_bat") or 0.0)
+        return total
+
     def _execute_car_calls(self, calls: list, opts: dict, status: str, now: datetime) -> list:
-        """Carry out the controller's calls (car production helper on)."""
+        """Carry out calls (car production helper on). Kia calls go over the WebSocket API so a
+        failure carries HA's message; PIN / access errors stop Kia calls for 6 h, other failures
+        back off 2 / 4 / 8 / 15 min."""
         if hasattr(self.ha, "set_allowed_entities"):
             self.ha.set_allowed_entities(writer.allowed_entities(opts))
         done = []
@@ -425,13 +518,28 @@ class Planner:
                         res.update(status="skipped", error="car_device_id is not set")
                         done.append(res)
                         continue
+                    if self._kia_block_until is not None and now < self._kia_block_until:
+                        res.update(status="skipped", error=f"Kia blocked after: {self._kia_last_error}")
+                        done.append(res)
+                        continue
+                    if self._kia_next_try is not None and now < self._kia_next_try:
+                        res.update(status="skipped", error="waiting after a failed Kia call")
+                        done.append(res)
+                        continue
                     last = self._last_kia
                     if last and last[0] == svc and last[1] == status and (now - last[2]).total_seconds() < KIA_REPEAT_S:
                         res.update(status="skipped", error="repeated within 10 min (Kia cloud quota)")
                         done.append(res)
                         continue
-                    self.ha.call_service("kia_uvo", svc.split(".", 1)[1], {"device_id": device})
+                    call = getattr(self.ha, "call_service_ws", None) or self.ha.call_service
+                    try:
+                        call("kia_uvo", svc.split(".", 1)[1], {"device_id": device})
+                    except Exception as e:
+                        self._kia_failed(str(e), now)
+                        raise
                     self._last_kia = (svc, status, now)
+                    self._kia_fails, self._kia_next_try, self._kia_last_error = 0, None, None
+                    self._kia_block_until = None
                 else:
                     res.update(status="skipped", error="unknown call")
                     done.append(res)
@@ -443,6 +551,14 @@ class Planner:
                 log.warning("car call %s failed: %s", svc, e)
             done.append(res)
         return done
+
+    def _kia_failed(self, message: str, now: datetime):
+        self._kia_last_error = message
+        if any(k in message.lower() for k in NON_RETRYABLE):
+            self._kia_block_until = now + KIA_BLOCK
+            log.warning("Kia rejected the call (%s): no Kia calls until %s", message, self._kia_block_until)
+        self._kia_fails += 1
+        self._kia_next_try = now + timedelta(minutes=KIA_BACKOFF_MIN[min(self._kia_fails, len(KIA_BACKOFF_MIN)) - 1])
 
     # ---- solar dampening ---------------------------------------------------------
     def _solcast_applied(self, sol_attrs_entities: list) -> list:

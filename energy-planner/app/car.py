@@ -140,11 +140,11 @@ def decide(live: dict, plan_row, opts) -> dict:
     sell = live.get("sell")
     sun_is_cheap = sell is not None and sell <= float(opts["car_value_dkk_per_kwh"])
 
-    want, amps, reason = False, None, ""
+    want, amps, reason, source = False, None, "", "plan"
     if soc >= opts["car_max_soc_pct"]:
-        reason = f"car at max SoC ({soc:.0f} %)"
+        reason, source = f"car at max SoC ({soc:.0f} %)", "max_soc"
     elif need["critical"]:
-        want, amps, reason = True, amax, "critical SoC"
+        want, amps, reason, source = True, amax, "critical SoC", "critical"
     elif planned_forced_kw > PLAN_KW_MIN:
         want = True
         amps = amps_for(planned_forced_kw + planned_pv_kw)
@@ -153,10 +153,10 @@ def decide(live: dict, plan_row, opts) -> dict:
             and live.get("house_soc", 0.0) >= opts["car_house_min_soc"]:
         want = True
         amps = int(min(max(int(surplus / wpa), amin), amax))
-        reason = f"solar surplus {surplus:.0f} W"
+        reason, source = f"solar surplus {surplus:.0f} W", "solar"
     elif plan_row is None and need["minimum"]:
         # No current plan (planner failing): fall back to charging the minimum at full power.
-        want, amps, reason = True, amax, "no plan, below minimum SoC"
+        want, amps, reason, source = True, amax, "no plan, below minimum SoC", "fallback"
     else:
         reason = "plan: no car charging this hour" if plan_row else "no plan"
 
@@ -186,4 +186,7 @@ def decide(live: dict, plan_row, opts) -> dict:
                 out["action"] = "charge"
                 out["reason"] += f" (minimum charge time, {int(opts['car_min_charge_s'] - secs)} s left)"
     out["surplus_w"] = surplus
+    # "solar" when the sun drives the decision (charging on surplus, or pausing while there is real
+    # sun): the emergency stop on the charger is only for charging from the grid.
+    out["source"] = "solar" if source == "solar" or live.get("pv_w", 0.0) >= 1000 else source
     return out
