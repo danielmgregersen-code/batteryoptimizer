@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0
+
+- **Main fuse** (`main_fuse_amps` 25, `fuse_margin_amps` 3): the plan never puts the car and grid
+  charging of the battery together above the fuse minus the margin on the worst phase (house load
+  counted as one phase). Tonight's 16 A car + 4 kW battery becomes 16 A car + ~1.7 kW battery, or
+  whatever split is cheapest.
+- **Live fuse guard** from the grid currents per phase (`grid_current_entities`): lowers the car's
+  amps (min. 6 A), then the battery's grid charge rate, when the highest phase would exceed the
+  fuse − 1 A; restores when there is room. Tile "Hovedsikring" in the Plan tab. The default entity
+  names are a guess — check them in the configuration (the panel warns if they are missing).
+
 ## 0.7.2
 
 - **Extra charge for the car from the panel**: in the Bil tab, "Ekstra ladning" orders +10 % or

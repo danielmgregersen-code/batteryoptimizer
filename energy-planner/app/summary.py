@@ -162,6 +162,10 @@ def reason_da(reason: str) -> str:
         reason = reason[:sm.start()]
         what = "cooldown" if sm[1] == "cooldown" else "minimum ladetid"
         suffix = f" ({what}, {max(1, round(int(sm[2]) / 60))} min tilbage)"
+    fm = re.search(r" \(fuse limit, highest phase (\d+) A\)$", reason)
+    if fm:
+        reason = reason[:fm.start()]
+        suffix = f" (begrænset af hovedsikringen, højeste fase {fm[1]} A)" + suffix
     for pattern, f in _REASONS:
         m = re.match(pattern, reason)
         if m:

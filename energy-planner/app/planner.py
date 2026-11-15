@@ -1,5 +1,6 @@
 """One planning cycle: read HA -> build horizon -> solve -> setpoints -> publish + log (dry-run)."""
 import json
+import math
 import logging
 import os
 import threading
@@ -68,6 +69,7 @@ class Planner:
         self._stop_ok_at = None        # last successful kia stop while the car was charging
         self._thor_stopped = False     # emergency stop on the charger done: no restart from here
         self._car_prod_prev = False
+        self._fuse_rate_cap = None     # battery charge rate (%) capped live by the main fuse guard
         self.options_fn = options_fn
         self._profile = None
         self._profile_at = None
@@ -153,7 +155,7 @@ class Planner:
         if not snap or soc is None:
             return None
         now = (now or datetime.now(UTC)).astimezone(UTC)
-        live = adjust_for_soc(snap["setpoints"], soc)
+        live = self._fuse_guard_battery(adjust_for_soc(snap["setpoints"], soc), opts)
         if hasattr(self.ha, "set_allowed_entities"):
             self.ha.set_allowed_entities(writer.allowed_entities(opts))
         writes = writer.apply(self.ha, opts, live, now.astimezone(self.tz))
@@ -166,6 +168,42 @@ class Planner:
         for w in writes:
             log.info("fast: wrote %s: %s -> %s (%s)", w["entity"], w["from"], w["to"], w["status"])
         return writes
+
+    # ---- main fuse ----------------------------------------------------------------
+    def _phase_amps(self, opts: dict):
+        """Grid current per phase (A), or None if not configured or any phase is unavailable."""
+        ids = split_csv(opts.get("grid_current_entities") or "")
+        if not ids or not opts.get("main_fuse_amps"):
+            return None
+        vals = [self.ha.number(e) for e in ids]
+        return None if any(v is None for v in vals) else vals
+
+    def _fuse_guard_battery(self, live: dict, opts: dict) -> dict:
+        """Lower the battery's grid charge rate while the worst phase is above the fuse minus 1 A and
+        the car cannot give more (it is at 6 A, or not charging). Recovers in steps of 10 % once
+        there is 3 A of room again. Only while charging from the grid."""
+        if not live.get("grid_charge"):
+            self._fuse_rate_cap = None
+            return live
+        phases = self._phase_amps(opts)
+        rate = int(live.get("charge_rate_pct") or 100)
+        if phases:
+            imax = max(abs(a) for a in phases)
+            limit = float(opts["main_fuse_amps"]) - 1.0
+            car = self.car_latest or {}
+            car_cannot = car.get("action") != "charge" or (car.get("fuse") or {}).get("at_minimum")
+            if imax > limit and car_cannot:
+                over_kw = (imax - limit) * 3 * 0.23
+                step = max(5, math.ceil(over_kw / float(opts["inverter_kw"]) * 100 / 5) * 5)
+                self._fuse_rate_cap = max(5, min(self._fuse_rate_cap or rate, rate) - step)
+                log.info("fuse: highest phase %.1f A, battery charge rate capped at %s %%", imax, self._fuse_rate_cap)
+            elif self._fuse_rate_cap is not None and imax < limit - 3:
+                self._fuse_rate_cap += 10
+                if self._fuse_rate_cap >= rate:
+                    self._fuse_rate_cap = None
+        if self._fuse_rate_cap is not None and self._fuse_rate_cap < rate:
+            return {**live, "charge_rate_pct": self._fuse_rate_cap, "fuse_capped": True}
+        return live
 
     def _refresh_car_history(self, opts: dict, now: datetime):
         """Car SoC (90 days, for the last full charge) and buy prices (30 days, for "rock bottom")."""
@@ -345,10 +383,20 @@ class Planner:
             if status in carmod.CONNECTED and car_soc is None:
                 warnings.append("car is connected but its SoC is unavailable - car left out of the plan")
 
+        fuse_amps = (float(opts["main_fuse_amps"]) - float(opts.get("fuse_margin_amps", 0))
+                     if opts.get("main_fuse_amps") else None)
         plan = solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
-                     car=car_params)
+                     car=car_params, fuse_amps=fuse_amps)
         solar_only = solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
-                           allow_grid_charge=False, car=car_params)
+                           allow_grid_charge=False, car=car_params, fuse_amps=fuse_amps)
+        phases = self._phase_amps(opts)
+        if opts.get("main_fuse_amps") and split_csv(opts.get("grid_current_entities") or "") and phases is None:
+            warnings.append("the phase current sensors (grid_current_entities) are unavailable - "
+                            "no live main fuse guard, the plan still respects the fuse")
+        fuse = {"fuse_amps": opts.get("main_fuse_amps"), "margin_amps": opts.get("fuse_margin_amps"),
+                "plan_limit_amps": fuse_amps, "phase_amps": phases,
+                "max_phase_amps": round(max(abs(a) for a in phases), 1) if phases else None,
+                "battery_rate_cap_pct": self._fuse_rate_cap}
         if car_params:
             dep = car_info.get("departure") or {}
             if dep.get("status") == "planned":
@@ -410,10 +458,12 @@ class Planner:
         # Production: write the registers when the helper is on (otherwise dry-run, as before).
         production = writer.switch_on(self.ha, opts.get("production_switch_entity"))
         writes = []
+        live_sp = adjust_for_soc(sp, soc_pct)
         if production:
+            live_sp = self._fuse_guard_battery(live_sp, opts)
             if hasattr(self.ha, "set_allowed_entities"):
                 self.ha.set_allowed_entities(writer.allowed_entities(opts))
-            writes = writer.apply(self.ha, opts, adjust_for_soc(sp, soc_pct), now.astimezone(self.tz))
+            writes = writer.apply(self.ha, opts, live_sp, now.astimezone(self.tz))
             for w in writes:
                 if w["status"] == "error":
                     warnings.append(f"could not write {w['entity']}: {w.get('error')}")
@@ -430,7 +480,8 @@ class Planner:
             "soc_pct": soc_pct,
             "mode": sp["mode"],
             "setpoints": sp,
-            "setpoints_live": adjust_for_soc(sp, soc_pct),
+            "setpoints_live": live_sp,
+            "fuse": fuse,
             "actual_registers": actual,
             "counters": counters,
             "price_now": {"buy": round(float(plan.buy[0]), 4), "sell": round(float(plan.sell[0]), 4)},
@@ -530,6 +581,7 @@ class Planner:
             "bat_charge_w": num("battery_charge_power_entity"),
             "amps": self.ha.number(opts["charger_current_entity"]),
             "secs_since_status": secs, "sell": self.ha.number(opts["price_sell_entity"]),
+            "phase_amps": self._phase_amps(opts),
         }
         with self._lock:
             snap = self.latest

@@ -113,6 +113,9 @@ DEFAULTS = {
     # be restarted from here afterwards (the cable has to be re-plugged), but the car is not overcharged.
     "car_thor_stop_fallback": True,
     "charger_stop_button": "button.garage_growatt_thor_ev_charger_stop_charging",
+    "main_fuse_amps": 25,
+    "fuse_margin_amps": 3,
+    "grid_current_entities": "sensor.growatt_grid_current_l1,sensor.growatt_grid_current_l2,sensor.growatt_grid_current_l3",
 }
 
 # Registers the planner writes in production. The export limit is deliberately not one of them.

@@ -280,3 +280,5 @@ details[open] > summary { margin-bottom: 10px; }
 .num:focus-visible { outline: 2px solid var(--accent, currentColor); outline-offset: 1px; }
 .btn[disabled] { opacity: .45; cursor: not-allowed; }
 .btn.ghost { background: transparent; }
+
+.meter.warn .fill { background: var(--critical); }

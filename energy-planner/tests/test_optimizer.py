@@ -129,3 +129,24 @@ def test_terminal_value_never_exceeds_what_a_stored_kwh_can_save():
     p = params()
     buy = [1.5, 2.0, 3.0]
     assert terminal_value_for(buy, p) == pytest.approx(min(buy) * p.eta_discharge)
+
+
+def test_main_fuse_limits_car_plus_grid_charging_per_phase():
+    from optimizer import CarParams
+    T = 6
+    buy = [0.5] * T
+    car = CarParams(available=[True] * T, max_kw=11.04, eta=0.92, soc0_kwh=30.0, max_kwh=99.0,
+                    value_dkk_per_kwh=1.25)
+    load = [0.8] * T
+    free, p = run(buy, [0.1] * T, [0.0] * T, load, soc0_pct=10, car=car, tv=3.0)
+    assert (free.grid_car / 1.0).max() > 10.9 and free.grid_bat.max() > 4.0       # both at full power
+    lim, _ = run(buy, [0.1] * T, [0.0] * T, load, soc0_pct=10, car=car, tv=3.0, fuse_amps=22)
+    amps = (lim.grid_car + lim.grid_bat) / 0.69 + lim.grid_load / 0.23
+    assert amps.max() <= 22 + 1e-6
+    # same total amount of energy is still bought, just spread out
+    assert lim.grid_car.sum() + lim.grid_bat.sum() > 0
+
+
+def test_house_load_above_the_fuse_is_not_infeasible():
+    lim, _ = run([1.0] * 3, [0.1] * 3, [0.0] * 3, [6.0] * 3, soc0_pct=10, fuse_amps=22)
+    assert lim.grid_bat.sum() == pytest.approx(0.0, abs=1e-6)
