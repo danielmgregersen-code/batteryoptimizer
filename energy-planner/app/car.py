@@ -139,12 +139,32 @@ def departure_info(departure, soc_target: float, horizon, now_utc: datetime) -> 
     return out
 
 
+def extra_info(extra, horizon, now_utc: datetime) -> dict:
+    """An extra charge ordered in the panel: reach target_pct by "until" (the next deadline or the
+    trip). Planned at the last step that ends at or before "until"; "passed" once it is over."""
+    if not extra or extra.get("target_pct") is None or not extra.get("until"):
+        return {"set": False}
+    out = {**extra, "set": True, "step": None}
+    until = datetime.fromisoformat(extra["until"])
+    if until <= now_utc:
+        out["status"] = "passed"
+        return out
+    steps = [i for i, s in enumerate(horizon.starts) if s + timedelta(hours=1) <= until]
+    if not steps:
+        out["status"] = "passed" if not horizon.starts else "too_soon"
+        return out
+    out["status"] = "planned"
+    out["step"] = steps[-1]
+    return out
+
+
 def build_car_params(horizon, now_utc: datetime, tz, opts, status: str, soc_pct: float,
-                     full: dict = None, departure: dict = None):
+                     full: dict = None, departure: dict = None, extra: dict = None):
     """CarParams for the LP, or None when the car is not connected / unknown.
 
-    full: full_charge_decision(); departure: departure_info(). Either lifts the charge limit and adds
-    a (soft) target: 100 % by the deadline, or the trip's SoC by the departure.
+    full: full_charge_decision(); departure: departure_info(); extra: an "extra charge" ordered in the
+    panel ({"target_pct", "until"}). Each lifts the charge limit and adds a (soft) target: 100 % by the
+    deadline, the trip's SoC by the departure, or the ordered SoC by its "until".
     """
     if status not in CONNECTED or soc_pct is None:
         return None, {"connected": False}
@@ -157,6 +177,9 @@ def build_car_params(horizon, now_utc: datetime, tz, opts, status: str, soc_pct:
     dep_active = departure.get("status") in ("planned", "beyond_horizon")
     # Until a coming trip, the car is assumed to stay connected (not only until 06:00).
     until = max(deadline, datetime.fromisoformat(departure["at"])) if dep_active else deadline
+    ext = extra_info(extra, horizon, now_utc)
+    if ext.get("status") == "planned":
+        until = max(until, datetime.fromisoformat(ext["until"]))
     available = [s < until for s in horizon.starts]
     soc0 = cap * soc_pct / 100.0
     max_pct = float(opts["car_max_soc_pct"])
@@ -164,6 +187,9 @@ def build_car_params(horizon, now_utc: datetime, tz, opts, status: str, soc_pct:
         max_pct = 100.0
     if departure.get("status") == "planned":
         max_pct = max(max_pct, float(departure["soc"]))
+    if ext.get("status") == "planned":
+        max_pct = max(max_pct, float(ext["target_pct"]))
+    max_pct = min(max_pct, 100.0)
     max_kwh = cap * max_pct / 100.0
     need = needs(soc_pct, status == "charging", opts)
 
@@ -175,11 +201,15 @@ def build_car_params(horizon, now_utc: datetime, tz, opts, status: str, soc_pct:
     if departure.get("status") == "planned":
         i = departure["step"]
         targets[i] = max(targets.get(i, 0.0), cap * float(departure["soc"]) / 100.0)
+    if ext.get("status") == "planned":
+        i = ext["step"]
+        targets[i] = max(targets.get(i, 0.0), cap * float(ext["target_pct"]) / 100.0)
     # Minimum by the deadline: at the end of the last step that ends at or before it.
     if need["minimum"]:
         steps = [i for i, s in enumerate(horizon.starts) if s + timedelta(hours=1) <= deadline]
         if steps:
-            targets[steps[-1]] = min(cap * float(opts["car_min_stop_pct"]) / 100.0, max_kwh)
+            i = steps[-1]
+            targets[i] = max(targets.get(i, 0.0), min(cap * float(opts["car_min_stop_pct"]) / 100.0, max_kwh))
     # Critical: as fast as possible up to the critical stop.
     if need["critical"]:
         crit_kwh = min(cap * float(opts["car_critical_stop_pct"]) / 100.0, max_kwh)
@@ -194,7 +224,7 @@ def build_car_params(horizon, now_utc: datetime, tz, opts, status: str, soc_pct:
                        value_dkk_per_kwh=float(opts["car_value_dkk_per_kwh"]), targets=targets,
                        allow_battery=bool(opts.get("car_from_house_battery", False)))
     info = {"connected": True, "status": status, "soc_pct": soc_pct, "deadline": deadline.isoformat(),
-            "need_critical": need["critical"], "need_minimum": need["minimum"], "max_soc_pct": max_pct}
+            "need_critical": need["critical"], "need_minimum": need["minimum"], "max_soc_pct": max_pct, "extra": ext}
     return params, info
 
 

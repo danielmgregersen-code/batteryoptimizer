@@ -931,6 +931,52 @@
     return tile('Afgang', h('span', { style: { fontSize: '20px' } }, when), `mål ${fmt(d.soc, 0)} % · ${status}`);
   }
 
+  // Extra charge ordered from the panel: +10/+20 % or an own target SoC by the next deadline/trip.
+  async function orderExtra(body) {
+    try {
+      const r = await getJSON('api/car/extra', body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { method: 'DELETE' });
+      toast(body ? `Ekstra ladning bestilt: ${r.order.label} (mål ${fmt(r.order.target_pct, 0)} %)` : 'Ekstra ladning annulleret');
+      if (r.error) toast('Planlægning fejlede: ' + r.error);
+    } catch (e) { toast('Ekstra ladning: ' + e.message); }
+    await loadPlan();
+  }
+
+  function extraCard(ci, carSoc) {
+    const x = (ci && ci.extra) || {};
+    const connected = !!(ci && ci.connected);
+    const active = !!x.set;
+    let statusLine;
+    if (active) {
+      const until = x.until ? dayName(x.until.slice(0, 10), { weekday: 'short' }) + ' kl. ' + x.until.slice(11, 16) : '';
+      const ordered = x.requested_at ? ` (${x.label} bestilt ${x.requested_at.slice(11, 16)})` : ` (${x.label})`;
+      const plan = x.status === 'planned' && x.planned_pct != null
+        ? (x.planned_pct >= x.target_pct - 1 ? ` · planen når ${fmt(x.planned_pct, 0)} %` : ` · ⚠ planen når kun ${fmt(x.planned_pct, 0)} %`)
+        : x.status === 'waiting' ? ' · venter på, at bilen bliver tilsluttet' : x.status === 'too_soon' ? ' · for kort tid til deadline' : '';
+      statusLine = `Mål ${fmt(x.target_pct, 0)} % ${until}${ordered}${plan}`;
+    } else {
+      statusLine = connected ? 'Ingen bestilling. Planen lægger den ekstra energi i de billigste timer før deadline.' : 'Bilen er ikke tilsluttet.';
+    }
+    const input = h('input', { type: 'number', min: 1, max: 100, step: 1, class: 'num', placeholder: carSoc != null ? String(Math.min(100, Math.round(carSoc) + 15)) : '80', 'aria-label': 'Mål-SoC i procent' });
+    const setTarget = () => {
+      const v = Math.round(Number(input.value));
+      if (!v || v < 1 || v > 100) { toast('Skriv en mål-SoC mellem 1 og 100 %'); return; }
+      if (carSoc != null && v <= carSoc) { toast(`Bilen er allerede på ${fmt(carSoc, 0)} % — vælg et højere mål`); return; }
+      orderExtra({ target: v });
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') setTarget(); });
+    const dis = !connected;
+    return h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', {}, 'Ekstra ladning'),
+        h('span', { class: 'hint' }, 'Gælder til næste deadline eller afgang · udløber af sig selv')),
+      h('div', { class: 'extra-row' },
+        [10, 20].map((n) => h('button', { type: 'button', class: 'btn', disabled: dis, onclick: () => orderExtra({ pct: n }) }, `+${n} %`)),
+        h('span', { class: 'extra-sep' }),
+        h('label', { class: 'extra-target' }, 'Mål-SoC', input, h('span', { class: 'hint' }, '%')),
+        h('button', { type: 'button', class: 'btn', disabled: dis, onclick: setTarget }, 'Sæt mål'),
+        active ? h('button', { type: 'button', class: 'btn ghost', onclick: () => orderExtra(null) }, 'Annullér') : null),
+      h('div', { class: 'hint', style: { marginTop: '10px' } }, statusLine));
+  }
+
   // ---------------------------------------------------------------- Car tab
   function renderCar() {
     const root = $('#tab-bil');
@@ -1002,7 +1048,7 @@
         : h('div', { class: 'empty' }, 'Ingen hændelser endnu.'));
 
     const carWarn = c && c.warning ? h('div', { class: 'banner error' }, icon.error(), h('div', {}, c.warning)) : null;
-    root.replaceChildren(h('div', { class: 'stack' }, carWarn, tiles, h('div', { class: 'grid-2' }, chartCard, callsCard), logCard));
+    root.replaceChildren(h('div', { class: 'stack' }, carWarn, tiles, extraCard(carInfo, live.car_soc), h('div', { class: 'grid-2' }, chartCard, callsCard), logCard));
 
     if (showChart) {
       const end = rows.findIndex((r) => r.car_grid === undefined || new Date(r.t) >= new Date(carUntil(carInfo).at));

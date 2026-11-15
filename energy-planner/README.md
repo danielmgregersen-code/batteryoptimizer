@@ -81,6 +81,12 @@ Replaces the HA automation *"Solcelle- & Prisstyret ladning: IONIQ 9"* in two la
   days), at most every `car_full_min_days` (14) days, never forced.
 - **Trips**: `input_datetime.ioniq9_afgang` (date and time) and optionally
   `input_number.ioniq9_afgang_soc` (default 100 %). Planned once the departure is inside the horizon.
+- **Extra charge** (Bil tab, card "Ekstra ladning"): +10 % or +20 % on top of the car's SoC now, or
+  an own target SoC. The target is locked when ordered (it does not creep up while the car charges)
+  and is reached by the next deadline, or by the trip if one is set, in the cheapest hours; the
+  daily limit is lifted to it (max 100 %). One order at a time; it expires by itself after its
+  deadline and survives restarts (`/data/car_extra.json`). API: `POST api/car/extra` with
+  `{"pct": 20}` or `{"target": 80}`, `DELETE api/car/extra`.
 
 **The controller** (every `car_interval_seconds`) keeps the automation's mechanics: amps 6-16,
 start button from `preparing`, `kia_uvo.start_charge` / `stop_charge` to resume/pause with

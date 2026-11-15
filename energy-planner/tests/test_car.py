@@ -247,6 +247,33 @@ def test_departure_target_and_availability_until_the_trip():
     assert p.car_end[7] >= 0.42 * 110 - 0.1                       # and 42 % at 06:00 still holds (it is above)
 
 
+def test_extra_charge_target_by_the_deadline_lifts_the_limit():
+    hz = night()                                                  # 22:00 .. 09:00, cheap 00-06
+    until = datetime(2026, 11, 15, 6, 0, tzinfo=TZ).isoformat()
+    extra = {"target_pct": 95, "until": until, "label": "Mål 95 %"}
+    cp, info = carmod.build_car_params(hz, hz.starts[0], TZ, OPTS, "suspended_evse", 60, extra=extra)
+    assert info["extra"]["status"] == "planned" and info["extra"]["step"] == 7
+    assert info["max_soc_pct"] == 95 and cp.targets[7] == pytest.approx(0.95 * 110)
+    p = solve(hz.buy, hz.sell, hz.pv, hz.load, hz.dt, CAP * 0.5, P, min(hz.buy) * 0.95, car=cp)
+    assert p.car_end[7] == pytest.approx(0.95 * 110, abs=0.1)
+    assert (p.grid_car + p.pv_car)[:2].sum() == pytest.approx(0.0, abs=1e-6)   # only in the cheap hours
+
+
+def test_extra_charge_passed_is_ignored():
+    hz = night()
+    past = {"target_pct": 95, "until": (hz.starts[0] - timedelta(hours=1)).isoformat()}
+    cp, info = carmod.build_car_params(hz, hz.starts[0], TZ, OPTS, "suspended_evse", 60, extra=past)
+    assert info["extra"]["status"] == "passed" and info["max_soc_pct"] == 90 and not cp.targets
+    assert carmod.extra_info(None, hz, hz.starts[0]) == {"set": False}
+
+
+def test_minimum_does_not_lower_a_higher_target_at_the_deadline():
+    hz = night()
+    extra = {"target_pct": 80, "until": datetime(2026, 11, 15, 6, 0, tzinfo=TZ).isoformat()}
+    cp, _ = carmod.build_car_params(hz, hz.starts[0], TZ, OPTS, "suspended_evse", 30, extra=extra)
+    assert cp.targets[7] == pytest.approx(0.80 * 110)              # not 42 %
+
+
 def test_departure_beyond_the_horizon_or_passed():
     hz = night()
     far = carmod.departure_info(hz.starts[0] + timedelta(days=3), 100, hz, hz.starts[0])

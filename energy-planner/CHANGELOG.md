@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.2
+
+- **Extra charge for the car from the panel**: in the Bil tab, "Ekstra ladning" orders +10 % or
+  +20 % on top of the car's SoC now, or an own target SoC. Useful when you expect tomorrow's prices
+  to be higher than the plan's estimate. The target is locked at the order, planned in the cheapest
+  hours before the next deadline (or the trip, if set), lifts the daily limit (max 100 %) and expires
+  by itself. Can be cancelled. The car sensor gets an `extra` attribute.
+- The daily minimum (42 % by 06:00) no longer replaces a higher target in the same hour (e.g. 100 %
+  or an extra charge) when the car is below the minimum.
+
 ## 0.7.1
 
 - **No more selling the sun the plan wanted stored.** When grid charging is followed by solar
