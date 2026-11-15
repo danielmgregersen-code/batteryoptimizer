@@ -245,6 +245,7 @@ def main():
     ap.add_argument("--port", type=int, default=8010)
     ap.add_argument("--no-car", action="store_true")
     ap.add_argument("--production", action="store_true", help="turn both production helpers on")
+    ap.add_argument("--departure", action="store_true", help="a trip tomorrow 09:00 at 100 %%")
     ap.add_argument("--kia-pin-error", action="store_true",
                     help="car charging at 45 %%, Kia rejects calls with a PIN error (shows the fallback)")
     ap.add_argument("--data-dir", default=None)
@@ -263,6 +264,10 @@ def main():
     fake = FakeHA(car=not args.no_car)
     for key in ("production_switch_entity", "car_production_switch_entity"):
         fake.states[DEFAULTS[key]] = "on" if args.production else "off"
+    if args.departure:
+        dep = (datetime.now(TZ) + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+        fake.states[DEFAULTS["car_departure_entity"]] = dep.strftime("%Y-%m-%d %H:%M:%S")
+        fake.attrs[DEFAULTS["car_departure_entity"]] = {"has_date": True, "has_time": True}
     if args.kia_pin_error:
         from homeassistant import ServiceCallError
 

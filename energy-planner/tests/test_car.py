@@ -176,3 +176,97 @@ def test_without_a_plan_the_minimum_is_still_charged():
 def test_next_deadline():
     assert carmod.next_deadline(datetime(2026, 11, 14, 21, tzinfo=UTC), TZ, 6) == datetime(2026, 11, 15, 6, tzinfo=TZ)
     assert carmod.next_deadline(datetime(2026, 11, 15, 3, tzinfo=UTC), TZ, 6) == datetime(2026, 11, 15, 6, tzinfo=TZ)
+
+
+# ---- 100 % at rock-bottom prices, and trips --------------------------------------------------------
+HISTORY = [1.0 + 0.01 * i for i in range(30 * 24)]      # last 30 days: 1.00 .. 8.19 kr; 5th pct ~ 1.36
+
+
+def night(buy=None, sell=None, pv=None, start_local=datetime(2026, 11, 14, 22, tzinfo=TZ)):
+    buy = buy or [2.0] * 2 + [1.2] * 6 + [2.5] * 4       # 22..09: cheap 00-06
+    return horizon(start_local, buy, sell or [0.5] * len(buy), pv)
+
+
+def full(hz, soc=60, days=20, history=HISTORY, **opt):
+    now = hz.starts[0]
+    last = now - timedelta(days=days) if days is not None else None
+    return carmod.full_charge_decision(hz, now, TZ, {**OPTS, **opt}, soc, last, history)
+
+
+def test_full_charge_never_more_often_than_the_minimum_interval():
+    d = full(night([0.2] * 12), days=10)
+    assert not d["active"] and d["status"] == "too_soon" and d["possible_from"] == "2026-11-18"
+
+
+def test_full_charge_only_at_rock_bottom_and_never_forced():
+    assert full(night([1.2] * 12), days=20)["active"]             # 1.20 <= 5th percentile (1.36)
+    assert not full(night([1.9] * 12), days=20)["active"]          # ordinary night: wait
+    assert not full(night([1.9] * 12), days=60)["active"]          # long ago, still not forced
+    assert full(night([1.2] * 12), days=None)["active"]            # never been full: allowed
+    d = full(night([1.9] * 12), days=20)
+    assert d["status"] == "waiting" and d["threshold"] == pytest.approx(1.359, abs=0.01)
+
+
+def test_negative_sell_price_triggers_a_full_charge():
+    buy = [2.0] * 4
+    sell = [0.3, -0.2, -0.1, 0.3]
+    hz = horizon(datetime(2026, 6, 14, 11, tzinfo=TZ), buy, sell, [6.0] * 4)
+    d = full(hz, days=20, history=[])                             # no price history needed
+    assert d["active"] and d["why"] == "negative_sell"
+
+
+def test_full_charge_plans_100_percent_in_the_cheapest_hours_as_late_as_possible():
+    hz = night()
+    f = full(hz, soc=60, days=20, history=[1.2] * 100 + [3.0] * 700)   # 5th percentile = 1.20
+    assert f["active"]
+    cp, info = carmod.build_car_params(hz, hz.starts[0], TZ, OPTS, "suspended_evse", 60, full=f)
+    assert info["max_soc_pct"] == 100.0
+    p = solve(hz.buy, hz.sell, hz.pv, hz.load, hz.dt, CAP * 0.5, P, min(hz.buy) * 0.95, car=cp)
+    assert p.car_end[7] == pytest.approx(110.0, abs=0.1)          # 100 % at 06:00
+    charged = p.pv_car + p.grid_car
+    assert charged[:2].sum() == pytest.approx(0.0, abs=1e-6)      # not in the dear evening hours
+    assert p.car_shortfall == pytest.approx(0.0, abs=1e-6)
+
+
+def test_daily_limit_without_a_full_charge():
+    hz = night()
+    cp, info = carmod.build_car_params(hz, hz.starts[0], TZ, OPTS, "suspended_evse", 60,
+                                       full={"active": False})
+    assert info["max_soc_pct"] == 90 and cp.max_kwh == pytest.approx(99.0)
+
+
+def test_departure_target_and_availability_until_the_trip():
+    hz = night([2.0] * 2 + [1.2] * 6 + [2.5] * 6)                 # 22:00 .. 11:00
+    dep_at = datetime(2026, 11, 15, 10, 0, tzinfo=TZ).astimezone(UTC)
+    dep = carmod.departure_info(dep_at, 100, hz, hz.starts[0])
+    assert dep["status"] == "planned" and dep["step"] == 11       # 09:00-10:00 is the last hour
+    cp, info = carmod.build_car_params(hz, hz.starts[0], TZ, OPTS, "suspended_evse", 50, departure=dep)
+    assert info["max_soc_pct"] == 100 and cp.available[11] and not cp.available[12]
+    p = solve(hz.buy, hz.sell, hz.pv, hz.load, hz.dt, CAP * 0.5, P, min(hz.buy) * 0.95, car=cp)
+    assert p.car_end[11] == pytest.approx(110.0, abs=0.1)
+    assert p.car_end[7] >= 0.42 * 110 - 0.1                       # and 42 % at 06:00 still holds (it is above)
+
+
+def test_departure_beyond_the_horizon_or_passed():
+    hz = night()
+    far = carmod.departure_info(hz.starts[0] + timedelta(days=3), 100, hz, hz.starts[0])
+    assert far["status"] == "beyond_horizon" and far["step"] is None
+    cp, info = carmod.build_car_params(hz, hz.starts[0], TZ, OPTS, "suspended_evse", 50, departure=far)
+    assert info["max_soc_pct"] == 90 and all(cp.available)          # connected until the trip, no target yet
+    past = carmod.departure_info(hz.starts[0] - timedelta(hours=1), 100, hz, hz.starts[0])
+    assert past["status"] == "passed"
+    assert carmod.departure_info(None, 100, hz, hz.starts[0]) == {"set": False}
+
+
+def test_decide_stops_at_the_effective_limit():
+    d = carmod.decide(live(car_soc=92, secs_since_status=5000), row(grid=11.0), {**OPTS, "car_max_soc_pct": 100})
+    assert d["action"] == "charge"
+    d = carmod.decide(live(car_soc=92, secs_since_status=5000), row(grid=11.0), OPTS)
+    assert d["action"] == "pause"
+
+
+def test_last_full_from_statistics():
+    rows = [{"start": datetime(2026, 11, d, 4, tzinfo=UTC).timestamp() * 1000, "max": m}
+            for d, m in ((1, 100.0), (5, 98.0), (8, 99.4), (10, 60.0))]
+    assert carmod.last_full_from_stats(rows) == datetime(2026, 11, 8, 4, tzinfo=UTC)
+    assert carmod.last_full_from_stats([]) is None

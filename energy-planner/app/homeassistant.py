@@ -156,7 +156,7 @@ class HomeAssistant:
                 "statistic_ids": statistic_ids,
                 "period": period,
                 # mean for power sensors, change for energy counters (kWh per hour = average kW)
-                "types": ["mean", "change"],
+                "types": ["mean", "change", "max"],
                 # Convert on the HA side, so a sensor reporting kW / Wh lines up with W / kWh.
                 "units": {"power": "W", "energy": "kWh"},
             }))

@@ -559,3 +559,34 @@ def test_missing_device_id_while_charging_warns_and_falls_back(tmp_path):
     d = p.car_cycle(NIGHT)
     assert ha.kia == [] and "car_device_id" in d["warning"]
     assert any(x[1] == "press" for x in ha.local)              # grid charging, nothing more planned
+
+
+def test_departure_helper_drives_the_plan_and_the_controller_limit(tmp_path):
+    ha = car_ha()
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 50.0
+    ha.texts[DEFAULTS["car_departure_entity"]] = "2026-11-15 09:00:00"
+    ha.state = lambda e: ({"state": ha.texts[e], "attributes": {"has_date": True, "has_time": True},
+                           "last_changed": "2026-11-14T10:00:00+00:00"} if e in ha.texts else None)
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    snap = p.run_once(datetime(2026, 11, 14, 19, 30, tzinfo=UTC))
+    car = snap["car"]
+    assert car["departure"]["status"] == "planned" and car["max_soc_pct"] == 100
+    assert car["departure_ok"] is True
+    by_t = {r["t"][11:16]: r for r in snap["plan"]}
+    assert by_t["08:00"]["car_soc"] == pytest.approx(100.0, abs=0.2)
+    assert any("afgang" in it["label"] for it in snap["upcoming"] if it["kind"] == "car")
+    p.car_cycle(datetime(2026, 11, 14, 19, 30, tzinfo=UTC))
+    assert ha.published["sensor.energy_planner_car"][1]["max_soc_pct"] == 100
+
+
+def test_full_charge_seen_live_is_remembered(tmp_path):
+    ha = car_ha()
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 99.5
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    p.run_once(datetime(2026, 11, 14, 19, 30, tzinfo=UTC))
+    p.car_cycle(datetime(2026, 11, 14, 19, 30, tzinfo=UTC))
+    p2 = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    assert p2._last_full() == datetime(2026, 11, 14, 19, 30, tzinfo=UTC)
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 60.0
+    snap = p2.run_once(datetime(2026, 11, 20, 19, 30, tzinfo=UTC))
+    assert snap["car"]["full_charge"]["status"] == "too_soon"

@@ -70,7 +70,7 @@ def mode_detail(sp: dict) -> str:
     return "solen sælges, batteriet gemmes" if sp.get("export_hint") == "export" else "batteriet gemmes til senere"
 
 
-def upcoming(rows: list, car_connected: bool, today) -> list:
+def upcoming(rows: list, car_connected: bool, today, car_label: str = "Lader bilen") -> list:
     """Segments of equal mode (and car charging windows), in time order."""
     def total(a, b, f):
         return sum(f(r) for r in rows[a:b + 1])
@@ -105,7 +105,7 @@ def upcoming(rows: list, car_connected: bool, today) -> list:
             pv = total(a, b, lambda r: r.get("car_pv") or 0.0)
             cost = total(a, b, lambda r: (r.get("car_grid") or 0.0) * r["buy"])
             src = "mest sol" if pv > kwh / 2 else f"à {num(cost / max(kwh, 1e-9), 2)} kr"
-            items.append({"kind": "car", "mode": "car", "label": "Lader bilen",
+            items.append({"kind": "car", "mode": "car", "label": car_label,
                           "start": rows[a]["t"], "end": _end_iso(rows[b]), "when": _span(rows, a, b, today),
                           "text": f"{num(kwh)} kWh, {src} · til {num(rows[b].get('car_soc'), 0)} %",
                           "kwh": round(kwh, 1), "_i": a})

@@ -851,6 +851,7 @@
     [/^car minimum cannot be reached by the deadline \(([\d.]+) kWh short\)/, (m) => `Bilens minimum kan ikke nås inden deadline (mangler ${fmt(+m[1], 1)} kWh).`],
     [/^the car charger power has no long-term statistics.*/, () => 'Billaderens effekt har ingen langtidsstatistik. Indtil den har, regnes timer med over car_detect_kw husforbrug som bilopladning og tages ud af forbrugsprofilen. Se kortet "Forbrugsprofil".'],
     [/^could not write (\S+): (.*)/, (m) => `Kunne ikke skrive ${m[1]}: ${m[2]}`],
+    [/^the car only reaches (\d+) % by the departure/, (m) => `Bilen når kun ${m[1]} % til afgang.`],
     [/^car is connected but its SoC is unavailable.*/, () => 'Bilen er tilsluttet, men dens SoC er utilgængelig – bilen er udeladt af planen.'],
   ];
   function translateWarning(w) {
@@ -893,6 +894,41 @@
     return (e.calls || []).length ? (e.dry_run === false ? '' : 'ville: ') + (e.calls || []).map((x) => short(x.service)).join(', ') : '';
   }
 
+  // Until when the car is assumed connected: the next deadline, or a later planned trip.
+  function carUntil(ci) {
+    const d = ci.departure || {};
+    if ((d.status === 'planned' || d.status === 'beyond_horizon') && d.at > ci.deadline) {
+      return { at: d.at, label: dayName(d.at.slice(0, 10), { weekday: 'short' }) + ' kl. ' + d.at.slice(11, 16) };
+    }
+    return { at: ci.deadline, label: 'kl. ' + ci.deadline.slice(11, 16) };
+  }
+
+  function fullTile(ci) {
+    const f = (ci && ci.full_charge) || {};
+    const last = f.last_full ? dayName(f.last_full.slice(0, 10), { day: 'numeric', month: 'short' }) : 'ukendt';
+    const since = f.days_since != null ? ` (${f.days_since} dage siden)` : '';
+    const status = {
+      off: 'slået fra (car_full_charge)',
+      full: 'bilen er fuld nu',
+      too_soon: `tidligst ${f.possible_from ? dayName(f.possible_from, { day: 'numeric', month: 'short' }) : ''}`,
+      planned: f.why === 'negative_sell' ? 'planlagt: negativ salgspris' : `planlagt: nattens pris ${fmt(f.night_price, 2)} kr er i bund`,
+      waiting: f.threshold != null ? `venter på bundpris: nat ${fmt(f.night_price, 2)} kr, grænse ${fmt(f.threshold, 2)} kr` : 'venter på negativ salgspris (for lidt prishistorik)',
+    }[f.status] || (ci && ci.connected ? '–' : 'bilen er ikke tilsluttet');
+    return tile('100 %-ladning', h('span', { style: { fontSize: '20px' } }, f.active ? 'I nat' : 'Ikke nu'), `sidst fuld ${last}${since} · ${status}`);
+  }
+
+  function departureTile(ci) {
+    const d = (ci && ci.departure) || {};
+    if (!d.set) return tile('Afgang', h('span', { style: { fontSize: '20px' } }, 'Ingen'), 'sæt input_datetime.ioniq9_afgang for en lang tur');
+    const when = dayName(d.at.slice(0, 10)) + ' kl. ' + d.at.slice(11, 16);
+    const status = {
+      passed: 'afgangen er passeret',
+      beyond_horizon: 'planlægges, når priserne er kendt',
+      planned: ci.departure_ok ? `planen når ${fmt(ci.departure_reached_pct, 0)} %` : `⚠ når kun ${fmt(ci.departure_reached_pct, 0)} %`,
+    }[d.status] || '';
+    return tile('Afgang', h('span', { style: { fontSize: '20px' } }, when), `mål ${fmt(d.soc, 0)} % · ${status}`);
+  }
+
   // ---------------------------------------------------------------- Car tab
   function renderCar() {
     const root = $('#tab-bil');
@@ -909,12 +945,14 @@
 
     const tiles = h('div', { class: 'tiles' },
       tile('Bilens batteri', live.car_soc != null ? h('span', {}, fmt(live.car_soc, 0), h('small', {}, ' %')) : '–',
-        'minimum 42 % kl. 06 · maks 90 %', meter(live.car_soc, [{ v: 42, title: 'Minimum' }, { v: 90, ghost: true, title: 'Maks' }], 'car')),
+        `minimum 42 % kl. 06 · maks ${fmt((carInfo && carInfo.max_soc_pct) || 90, 0)} %`,
+        meter(live.car_soc, [{ v: 42, title: 'Minimum' }, { v: (carInfo && carInfo.max_soc_pct) || 90, ghost: true, title: 'Maks' }], 'car')),
       tile('Lader', h('span', { style: { fontSize: '20px' } }, CHARGER_STATUS[status] || status || '–'),
         live.charger_w != null ? `${fmt((live.charger_w || 0) / 1000, 1)} kW · ${live.amps != null ? fmt(live.amps, 0) + ' A sat' : ''}` : ''),
       tile('Styringen ville', h('span', { style: { fontSize: '20px' } }, action + (c && c.target_amps ? ` · ${c.target_amps} A` : '')), c ? (c.reason_da || translateReason(c.reason)) : 'venter på første cyklus'),
       tile('Planlagt', carInfo && carInfo.connected ? h('span', {}, fmt(carInfo.planned_kwh, 1), h('small', {}, ' kWh')) : '–',
-        carInfo && carInfo.connected ? `frem til kl. ${carInfo.deadline.slice(11, 16)} · net-del ca. ${fmt(carInfo.planned_cost_dkk, 0)} kr` + (carInfo.shortfall_kwh > 0.05 ? ` · mangler ${fmt(carInfo.shortfall_kwh, 1)} kWh` : '') : 'bilen er ikke tilsluttet'));
+        carInfo && carInfo.connected ? `frem til ${carUntil(carInfo).label} · net-del ca. ${fmt(carInfo.planned_cost_dkk, 0)} kr` + (carInfo.shortfall_kwh > 0.05 ? ` · mangler ${fmt(carInfo.shortfall_kwh, 1)} kWh` : '') : 'bilen er ikke tilsluttet'),
+      fullTile(carInfo), departureTile(carInfo));
 
     const live_ = c && c.dry_run === false;
     const executed = (c && c.executed) || [];
@@ -941,7 +979,7 @@
     const rows = p ? p.plan : [];
     const showChart = carInfo && carInfo.connected && rows.length;
     const chartCard = h('div', { class: 'card' },
-      h('div', { class: 'card-head' }, h('h2', {}, 'Bilens plan'), h('span', { class: 'hint' }, showChart ? `Tilsluttet frem til kl. ${carInfo.deadline.slice(11, 16)} (antaget)` : '')),
+      h('div', { class: 'card-head' }, h('h2', {}, 'Bilens plan'), h('span', { class: 'hint' }, showChart ? `Tilsluttet frem til ${carUntil(carInfo).label} (antaget)` : '')),
       showChart ? [chartBox, h('div', { class: 'stack', style: { gap: '6px', marginTop: '10px' } },
         legend([{ color: C.buy, label: 'Købspris', line: true }, { color: C.sell, label: 'Salgspris', line: true }]),
         legend([{ color: C.car, label: 'Net → bil' }, { color: C.sun, label: 'Sol → bil' }, { color: C.batt, label: 'Husbatteri → bil' }]))]
@@ -965,7 +1003,7 @@
     root.replaceChildren(h('div', { class: 'stack' }, carWarn, tiles, h('div', { class: 'grid-2' }, chartCard, callsCard), logCard));
 
     if (showChart) {
-      const end = rows.findIndex((r) => r.car_grid === undefined || new Date(r.t) >= new Date(carInfo.deadline));
+      const end = rows.findIndex((r) => r.car_grid === undefined || new Date(r.t) >= new Date(carUntil(carInfo).at));
       const crow = rows.slice(0, Math.max(2, end < 0 ? rows.length : Math.min(rows.length, end + 2)));
       timeChart(chartBox, {
         rows: crow, endLabels: true, label: 'Bilens planlagte opladning',
