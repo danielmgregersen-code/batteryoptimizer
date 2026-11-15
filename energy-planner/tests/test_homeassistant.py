@@ -106,6 +106,27 @@ def test_web_app_smoke():
     assert client.get("/api/economy?days=30").status_code == 503
 
 
+def test_car_extra_api(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import main
+    from planner import Planner
+    from settings import DEFAULTS
+    from test_planner import car_ha
+
+    ha = car_ha()
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 45.0
+    p = Planner(ha, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    monkeypatch.setattr(main, "planner", p)
+    client = TestClient(main.app)
+    assert client.post("/api/car/extra", json={}).status_code == 400
+    assert client.post("/api/car/extra", json={"target": 30}).status_code == 400      # below the SoC
+    r = client.post("/api/car/extra", json={"pct": 20}).json()
+    assert r["order"]["target_pct"] == 65 and r["car"]["extra"]["status"] == "planned"
+    r = client.delete("/api/car/extra").json()
+    assert r["order"] is None and not r["car"]["extra"]["set"]
+
+
 def test_websocket_call_service_returns_has_error_message():
     from websockets.sync.server import serve
 

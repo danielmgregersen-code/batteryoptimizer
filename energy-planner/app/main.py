@@ -161,6 +161,34 @@ async def run_now():
         raise HTTPException(status_code=503, detail=str(e))
 
 
+async def _replan():
+    """Plan again right away so the panel shows the effect of a change at once."""
+    try:
+        snap = await asyncio.to_thread(planner.run_once)
+        return {"car": snap.get("car"), "upcoming": snap.get("upcoming")}
+    except PlannerError as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/car/extra")
+async def order_car_extra(body: dict):
+    """Extra charge before the next deadline/trip: {"pct": 20} (on top of the SoC now) or {"target": 80}."""
+    kind = "pct" if "pct" in body else "target" if "target" in body else None
+    if kind is None:
+        raise HTTPException(status_code=400, detail='send {"pct": n} or {"target": n}')
+    try:
+        order = await asyncio.to_thread(planner.set_car_extra, kind, body[kind])
+    except (TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"order": order, **(await _replan())}
+
+
+@app.delete("/api/car/extra")
+async def cancel_car_extra():
+    planner.clear_car_extra()
+    return {"order": None, **(await _replan())}
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     with open(os.path.join(STATIC, "index.html"), encoding="utf-8") as f:

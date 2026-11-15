@@ -87,6 +87,8 @@ class Planner:
         self.car_full_path = os.path.join(data_dir, "car_full.json")
         self._car_full_seen = pvd.load_json(self.car_full_path, {}).get("at")   # last SoC >= 99 seen live
         self._car_full_stats = None    # last SoC >= 99 in HA's statistics
+        self.car_extra_path = os.path.join(data_dir, "car_extra.json")
+        self._car_extra = pvd.load_json(self.car_extra_path, {}) or None   # extra charge ordered in the panel
         self._price_history = []       # hourly buy prices of the last 30 days
         self._backfill = None          # {"hours", "at", "error"} of the last history fetch
         self._backfill_at = None       # when it was last attempted
@@ -203,6 +205,45 @@ class Planner:
             dt = dt.replace(tzinfo=self.tz)
         return dt.astimezone(self.tz)          # local, so the panel shows it as set
 
+    def set_car_extra(self, kind: str, amount: float, now: datetime = None) -> dict:
+        """Order an extra charge from the panel: "pct" adds percentage points to the car's SoC now,
+        "target" is an absolute SoC. Locked at the order and valid until the trip (if set) or the next
+        deadline. A new order replaces the previous one."""
+        opts = self.options_fn()
+        now = (now or datetime.now(UTC)).astimezone(UTC)
+        amount = float(amount)
+        if not opts.get("car_enabled"):
+            raise ValueError("bilen er ikke slået til")
+        if not 1 <= amount <= 100:
+            raise ValueError("værdien skal være mellem 1 og 100")
+        soc = self.ha.number(opts["car_soc_entity"])
+        if kind == "pct":
+            if soc is None:
+                raise ValueError("bilens SoC er ukendt")
+            target, label = min(100.0, soc + amount), f"+{amount:g} %"
+        elif kind == "target":
+            if soc is not None and amount <= soc:
+                raise ValueError(f"bilen er allerede på {soc:.0f} %")
+            target, label = amount, f"Mål {amount:g} %"
+        else:
+            raise ValueError("ukendt type")
+        until = carmod.next_deadline(now, self.tz, int(opts["car_deadline_hour"]))
+        dep = self._departure(opts)
+        if dep is not None and dep.astimezone(UTC) > now:
+            until = dep.astimezone(UTC)
+        self._car_extra = {"kind": kind, "amount": amount, "label": label, "target_pct": round(target, 1),
+                           "soc_at_order": soc, "until": until.astimezone(self.tz).isoformat(),
+                           "requested_at": now.astimezone(self.tz).isoformat(timespec="seconds")}
+        pvd.save_json(self.car_extra_path, self._car_extra)
+        log.info("extra car charge ordered: %s -> %.0f %% by %s", label, target, self._car_extra["until"])
+        return self._car_extra
+
+    def clear_car_extra(self):
+        if self._car_extra:
+            log.info("extra car charge cancelled")
+        self._car_extra = None
+        pvd.save_json(self.car_extra_path, {})
+
     def _departure_soc(self, opts: dict) -> float:
         e = opts.get("car_departure_soc_entity")
         v = self.ha.number(e) if e else None
@@ -293,10 +334,14 @@ class Planner:
             full = carmod.full_charge_decision(horizon, now, self.tz, opts, car_soc, self._last_full(),
                                                self._price_history)
             departure = carmod.departure_info(self._departure(opts), self._departure_soc(opts), horizon, now)
+            if self._car_extra and carmod.extra_info(self._car_extra, horizon, now).get("status") == "passed":
+                self.clear_car_extra()             # the order expires with its deadline
             car_params, info = carmod.build_car_params(horizon, now, self.tz, opts, status, car_soc,
-                                                       full=full, departure=departure)
+                                                       full=full, departure=departure, extra=self._car_extra)
             car_info.update(info)
             car_info.update(full_charge=full, departure=departure)
+            if self._car_extra and "extra" not in car_info:   # ordered, but the car is not connected
+                car_info["extra"] = {**self._car_extra, "set": True, "status": "waiting"}
             if status in carmod.CONNECTED and car_soc is None:
                 warnings.append("car is connected but its SoC is unavailable - car left out of the plan")
 
@@ -312,6 +357,9 @@ class Planner:
                 car_info["departure_ok"] = reached >= float(dep["soc"]) - 1.0
                 if not car_info["departure_ok"]:
                     warnings.append(f"the car only reaches {reached:.0f} % by the departure")
+            ext = car_info.get("extra") or {}
+            if ext.get("status") == "planned":
+                ext["planned_pct"] = round(float(plan.car_end[ext["step"]]) / float(opts["car_battery_kwh"]) * 100.0, 1)
             car_info["planned_kwh"] = round(float((plan.pv_car + plan.bat_car + plan.grid_car).sum()), 2)
             car_info["planned_cost_dkk"] = round(float((plan.grid_car * plan.buy).sum()), 2)
             car_info["shortfall_kwh"] = round(plan.car_shortfall, 2)
@@ -404,6 +452,8 @@ class Planner:
         if car_info.get("departure", {}).get("status") == "planned":
             dep = datetime.fromisoformat(car_info["departure"]["at"]).astimezone(self.tz)
             car_label = f"Lader bilen til afgang {['man.', 'tirs.', 'ons.', 'tors.', 'fre.', 'lør.', 'søn.'][dep.weekday()]} {dep:%H:%M}"
+        elif (car_info.get("extra") or {}).get("status") == "planned":
+            car_label = f"Lader bilen til {car_info['extra']['target_pct']:.0f} % (ekstra)"
         elif car_info.get("full_charge", {}).get("active"):
             car_label = "Lader bilen til 100 % (bundpris)"
         snapshot["upcoming"] = upcoming(rows, bool(car_params), now.astimezone(self.tz).date(), car_label)
@@ -525,7 +575,9 @@ class Planner:
             "full_charge": (car_info.get("full_charge") or {}).get("status"),
             "departure": (car_info.get("departure") or {}).get("at"),
             "departure_soc": (car_info.get("departure") or {}).get("soc"),
-            "departure_ok": car_info.get("departure_ok")})
+            "departure_ok": car_info.get("departure_ok"),
+            "extra": ({k: car_info["extra"].get(k) for k in ("label", "target_pct", "until", "planned_pct")}
+                      if (car_info.get("extra") or {}).get("set") else None)})
         key = (d["action"], d["target_amps"], d["reason"].split(" (")[0], live["status"], live["amps"])
         if key != self._car_last_logged or d["executed"]:   # log changes and every executed call
             self._car_last_logged = key

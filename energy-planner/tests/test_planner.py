@@ -579,6 +579,55 @@ def test_departure_helper_drives_the_plan_and_the_controller_limit(tmp_path):
     assert ha.published["sensor.energy_planner_car"][1]["max_soc_pct"] == 100
 
 
+def test_extra_charge_is_locked_at_the_order_planned_and_expires(tmp_path):
+    ha = car_ha()
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 45.0
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    now = datetime(2026, 11, 14, 19, 30, tzinfo=UTC)                     # 20:30 local
+    order = p.set_car_extra("pct", 20, now)
+    assert order["target_pct"] == 65 and order["label"] == "+20 %"
+    assert order["until"] == "2026-11-15T06:00:00+01:00"
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 50.0                         # charging does not move the target
+    snap = p.run_once(now)
+    ext = snap["car"]["extra"]
+    assert ext["status"] == "planned" and ext["target_pct"] == 65 and ext["planned_pct"] == pytest.approx(65, abs=0.5)
+    by_t = {r["t"][11:16]: r for r in snap["plan"]}
+    assert by_t["05:00"]["car_soc"] == pytest.approx(65.0, abs=0.5)
+    assert any("65 %" in it["label"] for it in snap["upcoming"] if it["kind"] == "car")
+    p.car_cycle(now)
+    assert ha.published["sensor.energy_planner_car"][1]["extra"]["target_pct"] == 65
+    assert ha.published["sensor.energy_planner_car"][1]["max_soc_pct"] >= 65
+    # survives a restart, expires after the deadline
+    p2 = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    assert p2._car_extra["target_pct"] == 65
+    snap = p2.run_once(datetime(2026, 11, 15, 6, 30, tzinfo=UTC))
+    assert p2._car_extra is None and not snap["car"]["extra"]["set"]
+
+
+def test_extra_charge_target_validation_cap_cancel_and_departure(tmp_path):
+    ha = car_ha()
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 90.0
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    now = datetime(2026, 11, 14, 19, 30, tzinfo=UTC)
+    assert p.set_car_extra("pct", 20, now)["target_pct"] == 100           # capped at 100 %
+    with pytest.raises(ValueError):
+        p.set_car_extra("target", 80, now)                                 # below the SoC now
+    with pytest.raises(ValueError):
+        p.set_car_extra("target", 120, now)
+    assert p.set_car_extra("target", 95, now)["label"] == "Mål 95 %"
+    p.clear_car_extra()
+    assert p._car_extra is None and not p.run_once(now)["car"]["extra"]["set"]
+    ha.numbers[DEFAULTS["car_soc_entity"]] = None
+    with pytest.raises(ValueError):
+        p.set_car_extra("pct", 10, now)                                    # needs a known SoC
+    assert p.set_car_extra("target", 80, now)["target_pct"] == 80          # an absolute target does not
+    # with a trip set, the order lasts until the trip
+    ha.texts[DEFAULTS["car_departure_entity"]] = "2026-11-15 09:00:00"
+    ha.state = lambda e: ({"state": ha.texts[e], "attributes": {"has_date": True, "has_time": True}}
+                          if e in ha.texts else None)
+    assert p.set_car_extra("target", 80, now)["until"] == "2026-11-15T09:00:00+01:00"
+
+
 def test_full_charge_seen_live_is_remembered(tmp_path):
     ha = car_ha()
     ha.numbers[DEFAULTS["car_soc_entity"]] = 99.5
