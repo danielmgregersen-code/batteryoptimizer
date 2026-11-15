@@ -590,3 +590,48 @@ def test_full_charge_seen_live_is_remembered(tmp_path):
     ha.numbers[DEFAULTS["car_soc_entity"]] = 60.0
     snap = p2.run_once(datetime(2026, 11, 20, 19, 30, tzinfo=UTC))
     assert snap["car"]["full_charge"]["status"] == "too_soon"
+
+
+def test_seconds_to_next_cycle_aligns_with_the_hour():
+    from main import seconds_to_next_cycle
+    assert seconds_to_next_cycle(datetime(2026, 11, 15, 11, 10, 0, tzinfo=TZ), 5) == 300
+    assert seconds_to_next_cycle(datetime(2026, 11, 15, 11, 58, 0, tzinfo=TZ), 5) == 140    # 12:00:20
+    assert seconds_to_next_cycle(datetime(2026, 11, 15, 11, 48, 0, tzinfo=TZ), 15) == 740   # not 12:03
+    assert seconds_to_next_cycle(datetime(2026, 11, 15, 12, 0, 18, tzinfo=TZ), 5) == 300    # already in the new hour
+
+
+def test_battery_fast_cycle_hands_grid_charging_over_to_the_sun(tmp_path):
+    ha = make_ha()
+    ha.texts.update({DEFAULTS["production_switch_entity"]: "on", DEFAULTS["reg_battery_first"]: "Enabled",
+                     DEFAULTS["reg_grid_charge"]: "Enabled"})
+    ha.numbers.update({DEFAULTS["reg_max_soc"]: 72.0, DEFAULTS["reg_min_soc"]: 66.0, DEFAULTS["reg_charge_rate"]: 25.0})
+    calls = []
+
+    def call_service(domain, service, data=None, return_response=False):
+        calls.append((domain, (data or {}).get("entity_id"), (data or {}).get("option", (data or {}).get("value"))))
+        if domain == "select":
+            ha.texts[data["entity_id"]] = data["option"]
+        elif domain == "number":
+            ha.numbers[data["entity_id"]] = data["value"]
+    ha.call_service = call_service
+    ha.state = lambda e: ({"state": str(ha.numbers.get(e, ha.texts.get(e))), "attributes": {}}
+                          if e in ha.numbers or e in ha.texts else None)
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    p.run_once(datetime(2026, 11, 14, 10, 40, tzinfo=UTC))
+    # pretend the plan is grid 72 % then sun 97 %
+    p.latest["setpoints"] = {"mode": "grid_charge", "battery_first": True, "grid_charge": True, "max_soc_pct": 72,
+                             "min_soc_pct": 66, "charge_rate_pct": 25, "grid_target_pct": 72,
+                             "run_target_pct": 97, "solar_rate_pct": 100}
+    ha.texts.update({DEFAULTS["reg_battery_first"]: "Enabled", DEFAULTS["reg_grid_charge"]: "Enabled"})
+    ha.numbers.update({DEFAULTS["reg_max_soc"]: 72.0, DEFAULTS["reg_min_soc"]: 66.0, DEFAULTS["reg_charge_rate"]: 25.0})
+    calls.clear()
+    ha.numbers[DEFAULTS["battery_soc_entity"]] = 70.0
+    assert p.battery_fast_cycle(datetime(2026, 11, 14, 10, 50, tzinfo=UTC)) == []          # below the grid target
+    ha.numbers[DEFAULTS["battery_soc_entity"]] = 72.0
+    writes = p.battery_fast_cycle(datetime(2026, 11, 14, 10, 52, tzinfo=UTC))
+    keys = [w["key"] for w in writes]
+    assert keys[0] == "reg_grid_charge" and "reg_max_soc" in keys
+    assert ha.texts[DEFAULTS["reg_grid_charge"]] == "Disabled" and ha.numbers[DEFAULTS["reg_max_soc"]] == 97
+    assert p.latest["setpoints_live"]["handed_over"]
+    ha.texts[DEFAULTS["production_switch_entity"]] = "off"
+    assert p.battery_fast_cycle() is None

@@ -602,7 +602,7 @@
   }
 
   function registerRows(p) {
-    const sp = p.setpoints, a = p.actual_registers || {};
+    const sp = p.setpoints_live || p.setpoints, a = p.actual_registers || {};
     const writes = {};
     for (const w of ((p.production || {}).writes || [])) writes[w.key] = w;
     const rows = [
@@ -652,7 +652,7 @@
       root.replaceChildren(h('div', { class: 'card' }, h('div', { class: 'empty' }, state.planError ? 'Ingen plan: ' + state.planError : 'Henter plan…')));
       return;
     }
-    const sp = p.setpoints;
+    const sp = p.setpoints_live || p.setpoints;
     const m = MODES[sp.mode] || MODES.hold;
     const rows = p.plan;
     const r0 = rows[0];
@@ -669,7 +669,9 @@
     if (warns.length) banners.push(h('div', { class: 'banner' }, icon.warn(), h('ul', {}, warns.map((w) => h('li', {}, translateWarning(w))))));
 
     let modeDetail = '';
-    if (sp.mode === 'grid_charge') modeDetail = `til ${sp.max_soc_pct} % med ${fmt(sp.charge_kw, 1)} kW (ladehastighed ${sp.charge_rate_pct} %)`;
+    if (sp.mode === 'grid_charge') modeDetail = `til ${sp.max_soc_pct} % med ${fmt(sp.charge_kw, 1)} kW (ladehastighed ${sp.charge_rate_pct} %)`
+      + (sp.run_target_pct > sp.max_soc_pct ? `, derefter sol til ${sp.run_target_pct} %` : '');
+    else if (sp.handed_over) modeDetail = `nettet har ladet sin del, solen lader videre til ${sp.max_soc_pct} %`;
     else if (sp.mode === 'solar_charge') modeDetail = `til ${sp.max_soc_pct} %` + (sp.charge_rate_pct < 100 ? ` · ladehastighed ${sp.charge_rate_pct} %` : '');
     else if (sp.mode === 'discharge') modeDetail = `${fmt(sp.discharge_kw, 1)} kW · gulv ${sp.min_soc_pct} %`;
     else modeDetail = sp.export_hint === 'export' ? 'solen sælges, batteriet gemmes' : 'batteriet gemmes til senere';

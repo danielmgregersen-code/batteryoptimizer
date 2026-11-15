@@ -41,7 +41,7 @@ Create two helpers (Settings → Devices & services → Helpers → Toggle):
 
 ## How it decides
 
-Every 15 minutes (and whenever you press *Kør planlægning nu*) it solves a linear program over the
+Every 5 minutes, just after each full hour (and whenever you press *Kør planlægning nu*) it solves a linear program over the
 hours for which both a buy and a sell price exist (today, and tomorrow once the prices are out).
 Before tomorrow's prices are published the horizon is extended to `min_horizon_hours` with
 **estimated** prices: the last known day's price at the same local hour (shown in italics).
@@ -209,7 +209,7 @@ The sidebar panel shows the same plan hour by hour, plus the register values cur
 
 | Mode | Battery first | Grid charge | Max SoC | Min SoC |
 | --- | --- | --- | --- | --- |
-| `grid_charge` | on | on | SoC after the last planned grid hour | current |
+| `grid_charge` | on | on | SoC after the last planned grid hour; once reached, grid charging goes off and max SoC rises to the end of the charging run if the sun continues it (checked every minute) | current |
 | `solar_charge` | on | off | SoC at the end of the charging run (rate capped if part of the sun is sold) | current |
 | `discharge` | off (load first) | off | – | `soc_floor_pct` + what later, dearer hours need before the next charge (the configured floor in the dearest hour) |
 | `hold` | on | off | current SoC | current |

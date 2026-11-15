@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 import economy
 from evaluation import evaluate
 from homeassistant import HomeAssistant
-from planner import Planner, PlannerError
+from planner import LOG_READ, Planner, PlannerError
 from settings import counter_ids, load_options
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -39,7 +39,24 @@ def _loop():
         except Exception as e:  # never let the loop die
             planner.last_error = str(e)
             log.exception("planning failed: %s", e)
-        _stop.wait(int(load_options()["interval_minutes"]) * 60)
+        _stop.wait(seconds_to_next_cycle(datetime.now(planner.tz), int(load_options()["interval_minutes"])))
+
+
+def seconds_to_next_cycle(now: datetime, interval_minutes: int) -> float:
+    """The interval, but never past the start of the next hour (+20 s): a new hour's setpoints are
+    written within half a minute instead of up to an interval late."""
+    next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1, seconds=20)
+    return max(5.0, min(interval_minutes * 60.0, (next_hour - now).total_seconds()))
+
+
+def _battery_fast_loop():
+    _stop.wait(30)
+    while not _stop.is_set():
+        try:
+            planner.battery_fast_cycle()
+        except Exception as e:  # never let the loop die
+            log.exception("battery fast check failed: %s", e)
+        _stop.wait(60)
 
 
 def _car_loop():
@@ -58,6 +75,7 @@ def _car_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     threading.Thread(target=_loop, daemon=True, name="planner-loop").start()
+    threading.Thread(target=_battery_fast_loop, daemon=True, name="battery-fast-loop").start()
     threading.Thread(target=_car_loop, daemon=True, name="car-loop").start()
     yield
     _stop.set()
@@ -108,7 +126,7 @@ def get_car(limit: int = 200):
 def get_evaluation(days: int = 14):
     """Realised cost, forecast quality and agreement with Node-RED over the last `days` days."""
     days = max(1, min(days, 60))
-    decisions = _since(planner.recent_decisions(4000), days)
+    decisions = _since(planner.recent_decisions(LOG_READ), days)
     result = evaluate(decisions, counter_ids(load_options()), planner.tz)
     result["decisions"] = decisions[-96:]
     return result
@@ -128,7 +146,7 @@ async def get_economy(days: int = 30):
         return hit[1]
     try:
         res = await asyncio.to_thread(economy.report, planner.ha, load_options(), planner.tz, days,
-                                      datetime.now(timezone.utc), planner.recent_decisions(4000))
+                                      datetime.now(timezone.utc), planner.recent_decisions(LOG_READ))
     except Exception as e:  # statistics unavailable (no websocket, HA restarting)
         raise HTTPException(status_code=503, detail=f"statistics unavailable: {e}")
     _economy_cache[days] = (time.monotonic(), res)
