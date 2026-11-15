@@ -88,6 +88,14 @@ DEFAULTS = {
     "car_deadline_hour": 6,
     "car_value_dkk_per_kwh": 1.25,   # max price at the plug for charging beyond the minimum
     "car_from_house_battery": False, # let the plan feed the car from the house battery
+    # 100 % now and then, only when power is at rock bottom (never forced), at most every N days
+    "car_full_charge": True,
+    "car_full_min_days": 14,
+    "car_full_cheap_percentile": 5,    # night price among the N % cheapest hours of the last 30 days
+    # A trip: the car at car_departure_soc (or the helper's value) at this date and time
+    "car_departure_entity": "input_datetime.ioniq9_afgang",
+    "car_departure_soc_entity": "input_number.ioniq9_afgang_soc",
+    "car_departure_soc": 100,
     "car_start_surplus_w": 4200,
     "car_stop_surplus_w": 1500,      # stop threshold while the house battery is below car_buffer_soc
     "car_buffer_soc": 50,            # at/above this the house battery may buffer the car (stop at 0 W)

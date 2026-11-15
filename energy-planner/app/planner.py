@@ -6,7 +6,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 
 import car as carmod
-from inputs import UTC, build_horizon, hour_floor, parse_prices, parse_solcast, persistence_forecast
+from inputs import UTC, build_horizon, hour_floor, parse_prices, parse_solcast, parse_ts, persistence_forecast
 from optimizer import BatteryParams, solve, terminal_value_for
 from loadprofile import _by_start, build_profile, load_for_hour, profile_view
 import pvdampening as pvd
@@ -83,6 +83,10 @@ class Planner:
                                                             "pushed_at": None})
         self._pv_actual = {}
         self._solcast_synced = False
+        self.car_full_path = os.path.join(data_dir, "car_full.json")
+        self._car_full_seen = pvd.load_json(self.car_full_path, {}).get("at")   # last SoC >= 99 seen live
+        self._car_full_stats = None    # last SoC >= 99 in HA's statistics
+        self._price_history = []       # hourly buy prices of the last 30 days
         self._backfill = None          # {"hours", "at", "error"} of the last history fetch
         self._backfill_at = None       # when it was last attempted
 
@@ -119,6 +123,7 @@ class Planner:
             prof["statistics_rows"] = {i: len(stats.get(i) or []) for i in ids}
             if opts.get("pv_power_entity"):
                 self._pv_actual = _by_start(stats.get(opts["pv_power_entity"]))
+            self._refresh_car_history(opts, now)
             for i in ids:
                 if not stats.get(i):
                     log.warning("no long-term statistics for %s (does it have a state_class?)", i)
@@ -130,6 +135,50 @@ class Planner:
             prof = build_profile([], [], self.tz, default_kwh)
             # Not cached: try the statistics again next cycle instead of in 6 hours.
         return prof
+
+    # ---- car: full charges and trips -------------------------------------------
+    def _refresh_car_history(self, opts: dict, now: datetime):
+        """Car SoC (90 days, for the last full charge) and buy prices (30 days, for "rock bottom")."""
+        ids = [opts[k] for k in ("car_soc_entity", "price_buy_entity") if opts.get(k)]
+        if not ids or not opts.get("car_enabled"):
+            return
+        try:
+            stats = self.ha.statistics(ids, now - timedelta(days=90), now, "hour")
+        except Exception as e:  # best effort: without it a 100 % charge only happens on negative prices
+            log.info("car/price history unavailable: %s", e)
+            return
+        self._car_full_stats = carmod.last_full_from_stats(stats.get(opts.get("car_soc_entity")))
+        cutoff = now - timedelta(days=30)
+        self._price_history = [float(r["mean"]) for r in stats.get(opts.get("price_buy_entity")) or []
+                               if r.get("mean") is not None and parse_ts(r["start"]) >= cutoff]
+
+    def _last_full(self):
+        seen = datetime.fromisoformat(self._car_full_seen) if self._car_full_seen else None
+        cands = [t for t in (seen, self._car_full_stats) if t is not None]
+        return max(cands) if cands else None
+
+    def _departure(self, opts: dict):
+        """The trip helper (input_datetime with date and time) as an aware UTC datetime, or None."""
+        e = opts.get("car_departure_entity")
+        st = self.ha.state(e) if e and hasattr(self.ha, "state") else None
+        raw = (st or {}).get("state")
+        if not raw or raw in ("unknown", "unavailable"):
+            return None
+        attrs = (st or {}).get("attributes") or {}
+        if attrs.get("has_date") is False or attrs.get("has_time") is False:
+            return None                      # a trip needs both a date and a time
+        try:
+            dt = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=self.tz)
+        return dt.astimezone(self.tz)          # local, so the panel shows it as set
+
+    def _departure_soc(self, opts: dict) -> float:
+        e = opts.get("car_departure_soc_entity")
+        v = self.ha.number(e) if e else None
+        return float(min(max(v if v is not None else float(opts.get("car_departure_soc", 100)), 0), 100))
 
     def _check_entities(self, opts: dict) -> dict:
         """Which configured entities are missing or unavailable (shown in the UI)."""
@@ -213,8 +262,13 @@ class Planner:
         if opts.get("car_enabled"):
             status = self.ha.text(opts["charger_status_entity"])
             car_soc = self.ha.number(opts["car_soc_entity"])
-            car_params, info = carmod.build_car_params(horizon, now, self.tz, opts, status, car_soc)
+            full = carmod.full_charge_decision(horizon, now, self.tz, opts, car_soc, self._last_full(),
+                                               self._price_history)
+            departure = carmod.departure_info(self._departure(opts), self._departure_soc(opts), horizon, now)
+            car_params, info = carmod.build_car_params(horizon, now, self.tz, opts, status, car_soc,
+                                                       full=full, departure=departure)
             car_info.update(info)
+            car_info.update(full_charge=full, departure=departure)
             if status in carmod.CONNECTED and car_soc is None:
                 warnings.append("car is connected but its SoC is unavailable - car left out of the plan")
 
@@ -223,6 +277,13 @@ class Planner:
         solar_only = solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
                            allow_grid_charge=False, car=car_params)
         if car_params:
+            dep = car_info.get("departure") or {}
+            if dep.get("status") == "planned":
+                reached = float(plan.car_end[dep["step"]]) / float(opts["car_battery_kwh"]) * 100.0
+                car_info["departure_reached_pct"] = round(reached, 1)
+                car_info["departure_ok"] = reached >= float(dep["soc"]) - 1.0
+                if not car_info["departure_ok"]:
+                    warnings.append(f"the car only reaches {reached:.0f} % by the departure")
             car_info["planned_kwh"] = round(float((plan.pv_car + plan.bat_car + plan.grid_car).sum()), 2)
             car_info["planned_cost_dkk"] = round(float((plan.grid_car * plan.buy).sum()), 2)
             car_info["shortfall_kwh"] = round(plan.car_shortfall, 2)
@@ -310,7 +371,13 @@ class Planner:
             "pv_dampening": damp_info,
             "plan": rows,
         }
-        snapshot["upcoming"] = upcoming(rows, bool(car_params), now.astimezone(self.tz).date())
+        car_label = "Lader bilen"
+        if car_info.get("departure", {}).get("status") == "planned":
+            dep = datetime.fromisoformat(car_info["departure"]["at"]).astimezone(self.tz)
+            car_label = f"Lader bilen til afgang {['man.', 'tirs.', 'ons.', 'tors.', 'fre.', 'lør.', 'søn.'][dep.weekday()]} {dep:%H:%M}"
+        elif car_info.get("full_charge", {}).get("active"):
+            car_label = "Lader bilen til 100 % (bundpris)"
+        snapshot["upcoming"] = upcoming(rows, bool(car_params), now.astimezone(self.tz).date(), car_label)
         snapshot["summary"] = summary_attributes(sp, snapshot["upcoming"])
         with self._lock:
             self.latest = snapshot
@@ -388,6 +455,12 @@ class Planner:
         with self._lock:
             snap = self.latest
         row = carmod.plan_for_now(snap, now, self.tz)
+        # The plan may lift the daily limit (100 % at rock-bottom prices, or a trip).
+        snap_car = (snap or {}).get("car") or {}
+        opts = {**opts, "car_max_soc_pct": snap_car.get("max_soc_pct") or opts["car_max_soc_pct"]}
+        if live.get("car_soc") is not None and live["car_soc"] >= 99:
+            self._car_full_seen = now.isoformat(timespec="seconds")
+            pvd.save_json(self.car_full_path, {"at": self._car_full_seen})
         d = carmod.decide(live, row, opts)
         car_production = writer.switch_on(self.ha, opts.get("car_production_switch_entity"))
         d.update({"updated": now.astimezone(self.tz).isoformat(timespec="seconds"), "dry_run": not car_production,
@@ -416,7 +489,14 @@ class Planner:
             "next_window": f"{nxt['when']} · {nxt['text']}" if nxt else None,
             "next_start": nxt["start"] if nxt else None,
             "planned_kwh": car_info.get("planned_kwh"),
-            "deadline": car_info.get("deadline")})
+            "deadline": car_info.get("deadline"),
+            "max_soc_pct": opts["car_max_soc_pct"],
+            "last_full": self._last_full().isoformat() if self._last_full() else None,
+            "days_since_full": (car_info.get("full_charge") or {}).get("days_since"),
+            "full_charge": (car_info.get("full_charge") or {}).get("status"),
+            "departure": (car_info.get("departure") or {}).get("at"),
+            "departure_soc": (car_info.get("departure") or {}).get("soc"),
+            "departure_ok": car_info.get("departure_ok")})
         key = (d["action"], d["target_amps"], d["reason"].split(" (")[0], live["status"], live["amps"])
         if key != self._car_last_logged or d["executed"]:   # log changes and every executed call
             self._car_last_logged = key

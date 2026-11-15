@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning of a Growatt hybrid inverter, home battery and EV charging (dry-run)."
-version: "0.6.1"
+version: "0.7.0"
 slug: "energy_planner"
 init: false
 arch:
@@ -74,6 +74,12 @@ options:
   car_deadline_hour: 6
   car_value_dkk_per_kwh: 1.25
   car_from_house_battery: false
+  car_full_charge: true
+  car_full_min_days: 14
+  car_full_cheap_percentile: 5
+  car_departure_entity: "input_datetime.ioniq9_afgang"
+  car_departure_soc_entity: "input_number.ioniq9_afgang_soc"
+  car_departure_soc: 100
   car_start_surplus_w: 4200
   car_stop_surplus_w: 1500
   car_buffer_soc: 50
@@ -148,6 +154,12 @@ schema:
   car_deadline_hour: int(0,23)
   car_value_dkk_per_kwh: float(0,10)
   car_from_house_battery: bool
+  car_full_charge: bool
+  car_full_min_days: int(1,90)
+  car_full_cheap_percentile: int(1,50)
+  car_departure_entity: str
+  car_departure_soc_entity: str
+  car_departure_soc: int(50,100)
   car_start_surplus_w: int(0,22000)
   car_stop_surplus_w: int(0,22000)
   car_buffer_soc: int(0,100)

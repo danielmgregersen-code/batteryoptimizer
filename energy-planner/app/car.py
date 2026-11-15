@@ -17,6 +17,10 @@ charge time and a cooldown), but *what* to do comes from the plan for the curren
   otherwise                                 -> pause
 Hard rules on top: below the critical start always charge at 16 A; at the max SoC always stop.
 
+Two exceptions lift the daily limit (car_max_soc_pct, 90 %): a charge to 100 % when power is at rock
+bottom (full_charge_decision, never forced) and a trip (departure_info: the car at a given SoC at a
+given time).
+
 In this version nothing is called: the controller publishes what it *would* do
 (`sensor.energy_planner_car`) and logs it next to what the charger actually does.
 """
@@ -53,20 +57,124 @@ def needs(soc: float, charging: bool, opts) -> dict:
     return {"critical": bool(crit), "minimum": bool(minimum)}
 
 
-def build_car_params(horizon, now_utc: datetime, tz, opts, status: str, soc_pct: float):
-    """CarParams for the LP, or None when the car is not connected / unknown."""
+def last_full_from_stats(rows, threshold: float = 99.0):
+    """Start of the latest hour in which the car SoC statistics reached `threshold` (max or mean)."""
+    from inputs import parse_ts
+    latest = None
+    for r in rows or []:
+        v = r.get("max") if r.get("max") is not None else r.get("mean")
+        if v is None or float(v) < threshold:
+            continue
+        t = parse_ts(r["start"])
+        latest = t if latest is None or t > latest else latest
+    return latest
+
+
+def percentile(values, pct: float):
+    vals = sorted(v for v in values if v is not None)
+    if not vals:
+        return None
+    k = (len(vals) - 1) * pct / 100.0
+    lo, hi = math.floor(k), math.ceil(k)
+    return vals[lo] + (vals[hi] - vals[lo]) * (k - lo)
+
+
+def full_charge_decision(horizon, now_utc: datetime, tz, opts, soc_pct: float, last_full,
+                         price_history) -> dict:
+    """Charge to 100 % only when power is at rock bottom, and not more often than car_full_min_days.
+
+    Rock bottom: a negative sell price in the hours up to the deadline (sun on a summer day), or the
+    cheapest hours needed for 100 % average among the car_full_cheap_percentile % cheapest hourly
+    prices of the last 30 days. Never forced, however long ago the last full charge was.
+    """
+    out = {"active": False, "status": "off", "last_full": last_full.isoformat() if last_full else None,
+           "days_since": None, "threshold": None, "night_price": None}
+    if not opts.get("car_full_charge"):
+        return out
+    if last_full is not None:
+        out["days_since"] = (now_utc - last_full).days
+    if soc_pct is not None and soc_pct >= 99:
+        out["status"] = "full"
+        return out
+    min_days = int(opts["car_full_min_days"])
+    if out["days_since"] is not None and out["days_since"] < min_days:
+        out["status"] = "too_soon"
+        out["possible_from"] = (last_full + timedelta(days=min_days)).astimezone(tz).date().isoformat()
+        return out
+    deadline = next_deadline(now_utc, tz, int(opts["car_deadline_hour"]))
+    window = [i for i, s in enumerate(horizon.starts) if s + timedelta(hours=1) <= deadline]
+    if not window or soc_pct is None:
+        out["status"] = "waiting"
+        return out
+    cap, rate = float(opts["car_battery_kwh"]), car_max_kw(opts) * float(opts["car_eta"])
+    hours = max(1, math.ceil((100.0 - soc_pct) / 100.0 * cap / rate - 1e-9))
+    cheapest = sorted(horizon.buy[i] for i in window)[:hours]
+    out["night_price"] = round(sum(cheapest) / len(cheapest), 3)
+    out["threshold"] = percentile(price_history, float(opts["car_full_cheap_percentile"])) \
+        if len(price_history or []) >= 24 * 7 else None
+    negative_sell = any(horizon.sell[i] < 0 for i in window)
+    cheap = out["threshold"] is not None and out["night_price"] <= out["threshold"]
+    out["active"] = bool(negative_sell or cheap)
+    out["status"] = "planned" if out["active"] else "waiting"
+    out["why"] = "negative_sell" if negative_sell else ("cheap" if cheap else None)
+    return out
+
+
+def departure_info(departure, soc_target: float, horizon, now_utc: datetime) -> dict:
+    """A trip: the car must be at soc_target when it leaves. Planned once the departure is inside
+    the horizon; ignored once it has passed."""
+    if departure is None:
+        return {"set": False}
+    out = {"set": True, "at": departure.isoformat(), "soc": soc_target, "step": None}
+    if departure <= now_utc:
+        out["status"] = "passed"
+        return out
+    steps = [i for i, s in enumerate(horizon.starts) if s + timedelta(hours=1) <= departure]
+    end = horizon.starts[-1] + timedelta(hours=1) if horizon.starts else now_utc
+    if departure > end or not steps:
+        out["status"] = "beyond_horizon"
+        return out
+    out["status"] = "planned"
+    out["step"] = steps[-1]
+    return out
+
+
+def build_car_params(horizon, now_utc: datetime, tz, opts, status: str, soc_pct: float,
+                     full: dict = None, departure: dict = None):
+    """CarParams for the LP, or None when the car is not connected / unknown.
+
+    full: full_charge_decision(); departure: departure_info(). Either lifts the charge limit and adds
+    a (soft) target: 100 % by the deadline, or the trip's SoC by the departure.
+    """
     if status not in CONNECTED or soc_pct is None:
         return None, {"connected": False}
     cap = float(opts["car_battery_kwh"])
     eta = float(opts["car_eta"])
     max_kw = car_max_kw(opts)
     deadline = next_deadline(now_utc, tz, int(opts["car_deadline_hour"]))
-    available = [s < deadline for s in horizon.starts]
+    full = full or {}
+    departure = departure or {}
+    dep_active = departure.get("status") in ("planned", "beyond_horizon")
+    # Until a coming trip, the car is assumed to stay connected (not only until 06:00).
+    until = max(deadline, datetime.fromisoformat(departure["at"])) if dep_active else deadline
+    available = [s < until for s in horizon.starts]
     soc0 = cap * soc_pct / 100.0
-    max_kwh = cap * float(opts["car_max_soc_pct"]) / 100.0
+    max_pct = float(opts["car_max_soc_pct"])
+    if full.get("active"):
+        max_pct = 100.0
+    if departure.get("status") == "planned":
+        max_pct = max(max_pct, float(departure["soc"]))
+    max_kwh = cap * max_pct / 100.0
     need = needs(soc_pct, status == "charging", opts)
 
     targets = {}
+    if full.get("active"):
+        steps = [i for i, s in enumerate(horizon.starts) if s + timedelta(hours=1) <= deadline]
+        if steps:
+            targets[steps[-1]] = cap
+    if departure.get("status") == "planned":
+        i = departure["step"]
+        targets[i] = max(targets.get(i, 0.0), cap * float(departure["soc"]) / 100.0)
     # Minimum by the deadline: at the end of the last step that ends at or before it.
     if need["minimum"]:
         steps = [i for i, s in enumerate(horizon.starts) if s + timedelta(hours=1) <= deadline]
@@ -86,7 +194,7 @@ def build_car_params(horizon, now_utc: datetime, tz, opts, status: str, soc_pct:
                        value_dkk_per_kwh=float(opts["car_value_dkk_per_kwh"]), targets=targets,
                        allow_battery=bool(opts.get("car_from_house_battery", False)))
     info = {"connected": True, "status": status, "soc_pct": soc_pct, "deadline": deadline.isoformat(),
-            "need_critical": need["critical"], "need_minimum": need["minimum"]}
+            "need_critical": need["critical"], "need_minimum": need["minimum"], "max_soc_pct": max_pct}
     return params, info
 
 

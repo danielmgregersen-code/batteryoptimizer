@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.0
+
+The car: an occasional 100 % at rock-bottom prices, and trips.
+
+- **100 % when power is at rock bottom** (`car_full_charge`): only if the last full charge is at
+  least `car_full_min_days` (14) ago, the car is connected, and either a sell price before the
+  deadline is negative (sun on a summer day) or the cheapest hours needed for 100 % average among
+  the `car_full_cheap_percentile` (5) % cheapest hourly prices of the last 30 days. Never forced,
+  however long ago the last full charge was. The last full charge comes from the car SoC
+  statistics and from what the add-on sees (`/data/car_full.json`). Charged as late as possible
+  before the deadline so the car does not sit at 100 % for long.
+- **Trips**: set `input_datetime.ioniq9_afgang` (date and time) and optionally
+  `input_number.ioniq9_afgang_soc` (default `car_departure_soc`, 100 %). Once the departure is within
+  the plan's horizon, the car is planned to that SoC by then in the cheapest hours, and is assumed
+  connected until it leaves. The daily 42 % by 06:00 still applies.
+- The controller stops at the effective limit (90 %, or 100 % / the trip's SoC).
+- Car tab: "100 %-ladning" and "Afgang" tiles; `sensor.energy_planner_car` gets `last_full`,
+  `days_since_full`, `full_charge`, `departure`, `departure_soc`, `departure_ok`, `max_soc_pct`.
+
 ## 0.6.1
 
 Car production: safe when the car cannot be paused through Kia.
