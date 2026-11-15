@@ -51,7 +51,7 @@ DEFAULTS = {
     # Does sensor.growatt_total_house_load count the battery's charging as house load? On the
     # SPH10000TL3 it does not. auto = detect from the statistics, yes = always subtract.
     "load_includes_battery_charging": "no",
-    "interval_minutes": 15,
+    "interval_minutes": 5,
     "min_horizon_hours": 30,
     # Cumulative energy counters (kWh) logged with every decision, so the realised cost of what
     # actually happened can be computed afterwards (/api/evaluation).

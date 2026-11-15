@@ -90,11 +90,14 @@ def derive_setpoints(plan, soc_now_pct: float, battery, inverter_kw: float,
     soc_now_ceil = math.ceil(soc_now_pct - 1e-9)
     max_soc = None
     charge_rate = 100
+    run_target = None
+    solar_rate = 100
     if mode in ("grid_charge", "solar_charge"):
         # End of the contiguous charging run that starts now ...
         j = 0
         while j + 1 < T and charging(j + 1):
             j += 1
+        run_target = clamp(max(math.ceil(pct(plan.soc_end[j]) - 1e-9), soc_now_ceil))
         if mode == "grid_charge":
             # ... but grid charging only up to the SoC after the last planned grid hour in that run.
             # Charging that the plan leaves to the sun must not be done from the grid.
@@ -106,6 +109,8 @@ def derive_setpoints(plan, soc_now_pct: float, battery, inverter_kw: float,
             # battery does not swallow the part meant for export.
             charge_rate = _rate_pct(chg_pv, inverter_kw)
         max_soc = clamp(max(math.ceil(pct(plan.soc_end[j]) - 1e-9), soc_now_ceil))
+        if exp > EXPORT_KW_MIN and chg_pv > CHARGE_KW_MIN:
+            solar_rate = _rate_pct(chg_pv, inverter_kw)
     elif mode == "hold":
         max_soc = clamp(soc_now_ceil)
 
@@ -136,4 +141,28 @@ def derive_setpoints(plan, soc_now_pct: float, battery, inverter_kw: float,
         "charge_kw": round(chg_pv + chg_grid, 2),
         "grid_charge_kw": round(chg_grid, 2),
         "discharge_kw": round(dis, 2),
+        # Grid charging stops at max_soc_pct (grid target); when the run continues on sun to
+        # run_target_pct, adjust_for_soc() hands over to the sun as soon as the grid target is reached.
+        "grid_target_pct": max_soc if mode == "grid_charge" else None,
+        "run_target_pct": run_target,
+        "solar_rate_pct": solar_rate,
     }
+
+
+def adjust_for_soc(sp: dict, soc_now_pct: float) -> dict:
+    """Setpoints for the SoC right now (checked every minute between plans).
+
+    In grid_charge, once the battery has reached the grid target and the plan continues charging on
+    sun (run target higher), switch to solar charging: grid charging off, max SoC = run target. The
+    grid still never charges beyond its own target; the sun is not sold while the plan wants it stored.
+    """
+    if sp.get("mode") != "grid_charge":
+        return sp
+    grid, run = sp.get("grid_target_pct"), sp.get("run_target_pct")
+    if grid is None or run is None or run <= grid or soc_now_pct < grid - 0.5:
+        return sp
+    out = dict(sp)
+    out.update(mode="solar_charge", grid_charge=False, max_soc_pct=run,
+               charge_rate_pct=sp.get("solar_rate_pct", 100), handed_over=True,
+               min_soc_pct=min(sp["min_soc_pct"], int(math.ceil(soc_now_pct - 1e-9))))
+    return out

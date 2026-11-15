@@ -124,3 +124,29 @@ def test_export_hint_when_the_plan_sells_sun_now():
     pv = [2.0, 0, 0]
     s = sp(plan_for(buy, 100, pv=pv, load=0.2, sell=1.8), 100)
     assert s["export_hint"] == "export"
+
+
+def test_grid_then_sun_has_two_targets_and_hands_over_to_the_sun():
+    from setpoints import adjust_for_soc
+    buy = [0.6] + [1.0] * 3 + [3.0] * 6
+    pv = [0.0, 1.5, 1.5, 1.5] + [0.0] * 6
+    T = len(buy)
+    plan = solve(buy, [0.2] * T, pv, [0.3] * 4 + [1.2] * 6, np.ones(T), CAP * 0.1,
+                 BatteryParams(CAP, 4.0, 0.775, CAP, 0.97, 0.94, 0.95, 0.25), terminal_value_for(buy, P))
+    s = sp(plan, 10)
+    assert s["mode"] == "grid_charge" and s["grid_target_pct"] == s["max_soc_pct"] < s["run_target_pct"]
+    grid, run = s["grid_target_pct"], s["run_target_pct"]
+    below = adjust_for_soc(s, grid - 3)
+    assert below is s                                         # still charging from the grid to its target
+    at = adjust_for_soc(s, grid)
+    assert at["mode"] == "solar_charge" and not at["grid_charge"] and at["battery_first"]
+    assert at["max_soc_pct"] == run and at["handed_over"]
+
+
+def test_no_hand_over_without_sun_after_the_grid_charge():
+    from setpoints import adjust_for_soc
+    s = sp(plan_for(BUY_CHEAP_NIGHT, 10), 10)
+    assert s["mode"] == "grid_charge" and s["run_target_pct"] == s["grid_target_pct"]
+    assert adjust_for_soc(s, 100) is s
+    hold = sp(plan_for([2.8, 3.0, 3.0], 40, load=1.5), 40)
+    assert adjust_for_soc(hold, 40) is hold

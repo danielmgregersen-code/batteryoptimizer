@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.1
+
+- **No more selling the sun the plan wanted stored.** When grid charging is followed by solar
+  charging (e.g. grid to 72 %, then sun to 97 %), the inverter used to stop at the grid target and
+  export the sun until the next plan. Now a check every minute hands over as soon as the grid target
+  is reached: charge from grid off, max SoC = the target of the whole charging run. The grid still
+  never charges beyond its own target.
+- **Plans at every hour change:** besides the interval, a cycle runs 20 s after each full hour, so a
+  new hour's setpoints are written at once instead of up to an interval late.
+- `interval_minutes` defaults to 5 (was 15). The decision log keeps about 31 days at that rate.
+- The panel shows the setpoints in force (after a hand-over) and "…, derefter sol til 97 %".
+
 ## 0.7.0
 
 The car: an occasional 100 % at rock-bottom prices, and trips.

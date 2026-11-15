@@ -11,7 +11,7 @@ from optimizer import BatteryParams, solve, terminal_value_for
 from loadprofile import _by_start, build_profile, load_for_hour, profile_view
 import pvdampening as pvd
 from settings import REGISTER_KEYS, counter_ids, load_options, local_tz, split_csv
-from setpoints import derive_setpoints, step_mode
+from setpoints import adjust_for_soc, derive_setpoints, step_mode
 from evaluation import evaluate
 from summary import CAR_ACTION_LABEL, reason_da, summary_attributes, upcoming
 import writer
@@ -25,8 +25,9 @@ KIA_BACKOFF_MIN = (2, 4, 8, 15)      # minutes between retries after failed Kia 
 KIA_BLOCK = timedelta(hours=6)       # after a PIN / access error: no Kia calls for this long
 KIA_STOP_IGNORED = timedelta(minutes=10)   # a successful stop the car has not followed after this
 NON_RETRYABLE = ("pin", "unauthorized", "unauthorised", "locked", "token", "forbidden", "401", "403")
-MAX_LOG_LINES = 4000
-KEEP_LOG_LINES = 2000
+MAX_LOG_LINES = 12000      # with a cycle every 5 min, 9000 lines are about 31 days
+KEEP_LOG_LINES = 9000
+LOG_READ = 9000
 PROFILE_MAX_AGE = timedelta(hours=6)
 BACKFILL_DAYS = 14                 # Solcast keeps 14 days of undampened forecast history
 BACKFILL_RETRY = timedelta(hours=6)
@@ -137,6 +138,33 @@ class Planner:
         return prof
 
     # ---- car: full charges and trips -------------------------------------------
+    def battery_fast_cycle(self, now: datetime = None):
+        """Every minute between plans (battery production on): re-check the latest plan's setpoints
+        against the SoC right now and write what changed, e.g. hand grid charging over to the sun as
+        soon as the grid target is reached. No new optimisation."""
+        opts = self.options_fn()
+        if not writer.switch_on(self.ha, opts.get("production_switch_entity")):
+            return None
+        with self._lock:
+            snap = self.latest
+        soc = self.ha.number(opts["battery_soc_entity"])
+        if not snap or soc is None:
+            return None
+        now = (now or datetime.now(UTC)).astimezone(UTC)
+        live = adjust_for_soc(snap["setpoints"], soc)
+        if hasattr(self.ha, "set_allowed_entities"):
+            self.ha.set_allowed_entities(writer.allowed_entities(opts))
+        writes = writer.apply(self.ha, opts, live, now.astimezone(self.tz))
+        with self._lock:
+            if self.latest is snap:
+                snap["setpoints_live"] = live
+                if writes:
+                    snap["production"]["writes"] = writes
+                    snap["actual_registers"] = {k: self.ha.text(opts[k]) for k in REGISTER_KEYS if opts.get(k)}
+        for w in writes:
+            log.info("fast: wrote %s: %s -> %s (%s)", w["entity"], w["from"], w["to"], w["status"])
+        return writes
+
     def _refresh_car_history(self, opts: dict, now: datetime):
         """Car SoC (90 days, for the last full charge) and buy prices (30 days, for "rock bottom")."""
         ids = [opts[k] for k in ("car_soc_entity", "price_buy_entity") if opts.get(k)]
@@ -337,7 +365,7 @@ class Planner:
         if production:
             if hasattr(self.ha, "set_allowed_entities"):
                 self.ha.set_allowed_entities(writer.allowed_entities(opts))
-            writes = writer.apply(self.ha, opts, sp, now.astimezone(self.tz))
+            writes = writer.apply(self.ha, opts, adjust_for_soc(sp, soc_pct), now.astimezone(self.tz))
             for w in writes:
                 if w["status"] == "error":
                     warnings.append(f"could not write {w['entity']}: {w.get('error')}")
@@ -354,6 +382,7 @@ class Planner:
             "soc_pct": soc_pct,
             "mode": sp["mode"],
             "setpoints": sp,
+            "setpoints_live": adjust_for_soc(sp, soc_pct),
             "actual_registers": actual,
             "counters": counters,
             "price_now": {"buy": round(float(plan.buy[0]), 4), "sell": round(float(plan.sell[0]), 4)},
@@ -757,7 +786,7 @@ class Planner:
     def _export_limited_hours(self) -> set:
         """UTC hours in which the decision log saw the export limit at 0 (panels throttled)."""
         hours = set()
-        for e in self.recent_decisions(4000):
+        for e in self.recent_decisions(LOG_READ):
             try:
                 limit = float((e.get("actual_registers") or {}).get("reg_export_limit"))
                 t = datetime.fromisoformat(e["updated"]).astimezone(UTC)
