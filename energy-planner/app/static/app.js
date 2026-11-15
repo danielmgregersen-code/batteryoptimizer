@@ -661,6 +661,8 @@
 
     const banners = [];
     if (p.last_error) banners.push(h('div', { class: 'banner error' }, icon.error(), h('div', {}, 'Seneste planlægning fejlede: ', p.last_error)));
+    const cw = state.car && state.car.latest && state.car.latest.warning;
+    if (cw) banners.push(h('div', { class: 'banner error' }, icon.error(), h('div', {}, 'Bil: ', cw)));
     const bad = Object.entries(p.entity_check || {}).filter(([, v]) => v !== 'ok');
     const warns = [...(p.warnings || [])];
     if (bad.length) warns.push('Entiteter mangler eller er utilgængelige: ' + bad.map(([e, v]) => `${e} (${v === 'missing' ? 'findes ikke' : 'utilgængelig'})`).join(', '));
@@ -879,6 +881,18 @@
     return r + suffix;
   }
 
+  // Calls in the car log: what was executed with its result (production), else what it would call.
+  function callCell(e) {
+    const short = (svc) => svc.replace('kia_uvo.', 'kia ').replace('number.set_value', 'strøm').replace('button.press', 'knap');
+    if (e.executed && e.executed.length) {
+      return e.executed.map((x) => {
+        const mark = x.status === 'ok' ? '✓' : x.status === 'skipped' ? '–' : '✗';
+        return h('div', { title: x.error || '' }, `${mark} ${short(x.service)}${x.value != null ? ' ' + x.value : ''}${x.error ? ': ' + x.error : ''}`);
+      });
+    }
+    return (e.calls || []).length ? (e.dry_run === false ? '' : 'ville: ') + (e.calls || []).map((x) => short(x.service)).join(', ') : '';
+  }
+
   // ---------------------------------------------------------------- Car tab
   function renderCar() {
     const root = $('#tab-bil');
@@ -944,10 +958,11 @@
           h('td', { style: { textAlign: 'left', whiteSpace: 'normal', minWidth: '200px' } }, e.reason_da || translateReason(e.reason)),
           h('td', {}, CHARGER_STATUS[e.live?.status] || e.live?.status || ''), h('td', {}, e.live?.amps ?? ''),
           h('td', {}, e.live?.car_soc != null ? fmt(e.live.car_soc, 0) : ''),
-          h('td', { style: { textAlign: 'left' } }, (e.calls || []).map((x) => x.service.replace('kia_uvo.', '')).join(', ')))))))
+          h('td', { style: { textAlign: 'left', whiteSpace: 'normal' } }, callCell(e)))))))
         : h('div', { class: 'empty' }, 'Ingen hændelser endnu.'));
 
-    root.replaceChildren(h('div', { class: 'stack' }, tiles, h('div', { class: 'grid-2' }, chartCard, callsCard), logCard));
+    const carWarn = c && c.warning ? h('div', { class: 'banner error' }, icon.error(), h('div', {}, c.warning)) : null;
+    root.replaceChildren(h('div', { class: 'stack' }, carWarn, tiles, h('div', { class: 'grid-2' }, chartCard, callsCard), logCard));
 
     if (showChart) {
       const end = rows.findIndex((r) => r.car_grid === undefined || new Date(r.t) >= new Date(carInfo.deadline));
@@ -1197,6 +1212,7 @@
   }
   async function loadPlan() {
     try { state.plan = await getJSON('api/plan'); state.planError = null; } catch (e) { state.planError = e.message; }
+    try { state.car = await getJSON('api/car'); } catch (e) { /* keep the last */ }
     setUpdated();
     if (state.tab === 'plan') renderPlan();
     if (state.tab === 'bil') renderCar();

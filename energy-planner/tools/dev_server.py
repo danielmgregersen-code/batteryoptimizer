@@ -245,6 +245,8 @@ def main():
     ap.add_argument("--port", type=int, default=8010)
     ap.add_argument("--no-car", action="store_true")
     ap.add_argument("--production", action="store_true", help="turn both production helpers on")
+    ap.add_argument("--kia-pin-error", action="store_true",
+                    help="car charging at 45 %%, Kia rejects calls with a PIN error (shows the fallback)")
     ap.add_argument("--data-dir", default=None)
     args = ap.parse_args()
     data = args.data_dir or tempfile.mkdtemp(prefix="energy-planner-")
@@ -261,10 +263,22 @@ def main():
     fake = FakeHA(car=not args.no_car)
     for key in ("production_switch_entity", "car_production_switch_entity"):
         fake.states[DEFAULTS[key]] = "on" if args.production else "off"
+    if args.kia_pin_error:
+        from homeassistant import ServiceCallError
+
+        def ws(domain, service, data=None):
+            print(f"[fake HA] ws {domain}.{service} -> PIN error")
+            raise ServiceCallError("Failed to stop charge: PIN verification failed, ensure PIN is entered correctly.")
+        fake.call_service_ws = ws
+        fake.states[DEFAULTS["charger_status_entity"]] = "charging"
+        fake.states[DEFAULTS["car_soc_entity"]] = "45"
+        fake.states[DEFAULTS["car_production_switch_entity"]] = "on"
+        fake.states[DEFAULTS["pv_power_entity"]] = "0"
+    dev_opts = {**DEFAULTS, "car_device_id": "dev-car"}
     app_main.planner = Planner(fake, tz=TZ, log_path=os.path.join(data, "decisions.jsonl"),
-                               car_log_path=os.path.join(data, "car_decisions.jsonl"))
+                               car_log_path=os.path.join(data, "car_decisions.jsonl"), options_fn=lambda: dev_opts)
     app_main.planner.run_once()
-    app_main.planner.car_cycle()
+    app_main.planner.car_cycle(datetime.now(UTC).replace(hour=19, minute=30) if args.kia_pin_error else None)
     print(f"data in {data}; open http://127.0.0.1:{args.port}/")
     uvicorn.run(app_main.app, host="127.0.0.1", port=args.port, log_level="warning")
 

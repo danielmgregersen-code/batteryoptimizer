@@ -423,7 +423,7 @@ def test_car_production_executes_calls_and_guards_the_kia_quota(tmp_path):
     assert p.recent_car_decisions()[-1]["executed"]
 
 
-def test_car_production_without_device_id_skips_kia(tmp_path):
+def test_car_production_without_device_id_skips_kia_and_warns(tmp_path):
     ha = car_ha()
     ha.texts[DEFAULTS["car_production_switch_entity"]] = "on"
     ha.numbers[DEFAULTS["car_soc_entity"]] = 15.0
@@ -433,3 +433,129 @@ def test_car_production_without_device_id_skips_kia(tmp_path):
     d = p.car_cycle(datetime(2026, 11, 14, 19, 30, tzinfo=UTC))
     assert not any(c[0] == "kia_uvo" for c in calls)
     assert any(x["status"] == "skipped" and "car_device_id" in x["error"] for x in d["executed"])
+
+
+# ---- car production: Kia failures, 6 A and the emergency stop on the charger ----------------------
+PIN_ERROR = "Failed to stop charge: PIN verification failed, ensure PIN is entered correctly."
+
+
+def kia_failing_ha(soc, message=PIN_ERROR, pv_w=0.0):
+    from homeassistant import ServiceCallError
+    ha = car_ha()
+    ha.texts[DEFAULTS["charger_status_entity"]] = "charging"
+    ha.texts[DEFAULTS["car_production_switch_entity"]] = "on"
+    ha.numbers[DEFAULTS["car_soc_entity"]] = soc
+    ha.numbers[DEFAULTS["charger_current_entity"]] = 16
+    ha.numbers[DEFAULTS["pv_power_entity"]] = pv_w
+    ha.kia = []
+    ha.local = []
+
+    def ws(domain, service, data=None):
+        ha.kia.append(service)
+        if message:
+            raise ServiceCallError(message, "home_assistant_error")
+    ha.call_service_ws = ws
+    ha.call_service = lambda domain, service, data=None, return_response=False: ha.local.append(
+        (domain, service, (data or {}).get("entity_id"), (data or {}).get("value")))
+    return ha
+
+
+def planner_for(ha, tmp_path, **opt):
+    opts = {**DEFAULTS, "car_device_id": "abc123", **opt}
+    return Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"),
+                   options_fn=lambda: opts)
+
+
+NIGHT = datetime(2026, 11, 14, 19, 30, tzinfo=UTC)          # 20:30 local, expensive hour
+
+
+def test_pin_error_stops_kia_calls_sets_6a_and_stops_on_the_charger_when_nothing_more_is_planned(tmp_path):
+    ha = kia_failing_ha(soc=45.0)                             # above the minimum, prices above the car value
+    p = planner_for(ha, tmp_path)
+    p.run_once(NIGHT)
+    d = p.car_cycle(NIGHT)
+    assert d["action"] == "pause" and ha.kia == ["stop_charge"]
+    pressed = [x for x in ha.local if x[1] == "press"]
+    assert ("number", "set_value", DEFAULTS["charger_current_entity"], 6) in ha.local
+    assert pressed == [("button", "press", DEFAULTS["charger_stop_button"], None)]
+    assert "PIN" in d["warning"] and "Nødstop" in d["warning"]
+    # no Kia retries and no restart attempts afterwards
+    ha.local.clear()
+    d = p.car_cycle(NIGHT + timedelta(minutes=2))
+    assert ha.kia == ["stop_charge"] and ha.local == [] and "sæt kablet i igen" in d["warning"]
+    state, attrs = ha.published["sensor.energy_planner_car"]
+    assert "sæt kablet i igen" in attrs["warning"]
+
+
+def test_no_charger_stop_while_more_charging_is_planned_later(tmp_path):
+    ha = kia_failing_ha(soc=30.0)                             # minimum still needed: charges 04-06 later
+    p = planner_for(ha, tmp_path)
+    p.run_once(NIGHT)
+    d = p.car_cycle(NIGHT)
+    assert d["action"] == "pause"                             # not now: the cheap hours come later
+    assert not any(x[1] == "press" for x in ha.local)
+    assert ("number", "set_value", DEFAULTS["charger_current_entity"], 6) in ha.local
+    assert "6 A" in d["warning"]
+
+
+def test_no_charger_stop_on_sun_or_when_disabled(tmp_path):
+    ha = kia_failing_ha(soc=45.0, pv_w=3000.0)
+    p = planner_for(ha, tmp_path)
+    p.run_once(NIGHT)
+    p.car_cycle(NIGHT)
+    assert not any(x[1] == "press" for x in ha.local)
+    ha2 = kia_failing_ha(soc=45.0)
+    p2 = planner_for(ha2, tmp_path, car_thor_stop_fallback=False)
+    p2.run_once(NIGHT)
+    p2.car_cycle(NIGHT)
+    assert not any(x[1] == "press" for x in ha2.local)
+
+
+def test_other_kia_errors_back_off_and_need_two_failures_before_the_charger_stop(tmp_path):
+    ha = kia_failing_ha(soc=45.0, message="Read timed out")
+    p = planner_for(ha, tmp_path)
+    p.run_once(NIGHT)
+    d = p.car_cycle(NIGHT)
+    assert ha.kia == ["stop_charge"] and not any(x[1] == "press" for x in ha.local)
+    assert "prøver igen" in d["warning"].lower()
+    p.car_cycle(NIGHT + timedelta(minutes=1))                 # within the 2 min backoff: no call
+    assert ha.kia == ["stop_charge"]
+    p.car_cycle(NIGHT + timedelta(minutes=2))                 # retry fails again -> second failure
+    assert ha.kia == ["stop_charge", "stop_charge"]
+    assert any(x[1] == "press" for x in ha.local)             # now the emergency stop
+    p.car_cycle(NIGHT + timedelta(minutes=4))                 # (after the stop: nothing more)
+    assert ha.kia == ["stop_charge", "stop_charge"]
+
+
+def test_switching_the_car_helper_off_and_on_clears_the_kia_block(tmp_path):
+    ha = kia_failing_ha(soc=30.0)
+    p = planner_for(ha, tmp_path)
+    p.run_once(NIGHT)
+    p.car_cycle(NIGHT)
+    p.car_cycle(NIGHT + timedelta(minutes=30))
+    assert ha.kia == ["stop_charge"]                          # blocked after the PIN error
+    ha.texts[DEFAULTS["car_production_switch_entity"]] = "off"
+    p.car_cycle(NIGHT + timedelta(minutes=32))
+    ha.texts[DEFAULTS["car_production_switch_entity"]] = "on"
+    p.car_cycle(NIGHT + timedelta(minutes=34))
+    assert ha.kia == ["stop_charge", "stop_charge"]
+
+
+def test_a_stop_the_car_ignores_counts_as_failing_after_10_minutes(tmp_path):
+    ha = kia_failing_ha(soc=45.0, message=None)               # Kia says OK, car keeps charging
+    p = planner_for(ha, tmp_path)
+    p.run_once(NIGHT)
+    d = p.car_cycle(NIGHT)
+    assert d["warning"] is None and not any(x[1] == "press" for x in ha.local)
+    d = p.car_cycle(NIGHT + timedelta(minutes=10))
+    assert any(x[1] == "press" for x in ha.local) and "Nødstop" in d["warning"]
+
+
+
+def test_missing_device_id_while_charging_warns_and_falls_back(tmp_path):
+    ha = kia_failing_ha(soc=45.0)
+    p = planner_for(ha, tmp_path, car_device_id="")
+    p.run_once(NIGHT)
+    d = p.car_cycle(NIGHT)
+    assert ha.kia == [] and "car_device_id" in d["warning"]
+    assert any(x[1] == "press" for x in ha.local)              # grid charging, nothing more planned

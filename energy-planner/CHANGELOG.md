@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.1
+
+Car production: safe when the car cannot be paused through Kia.
+
+- Kia calls go over the WebSocket API, so a failure carries HA's message (e.g. "PIN verification
+  failed") instead of "500 Internal Server Error".
+- PIN / access errors: no new Kia calls for 6 hours or until the car helper is switched off and on
+  (repeated rejected PIN attempts can lock Hyundai's remote control). Other errors back off
+  2 / 4 / 8 / 15 minutes instead of retrying every 2 minutes. A missing `car_device_id` counts as a
+  failure too.
+- While the car cannot be paused (failed, blocked or ignored stop): the charger is set to 6 A.
+- Emergency stop on the charger (`charger_stop_button`, `car_thor_stop_fallback: true`): only while
+  charging from the grid (not on sun), when Kia has given up (PIN/access error, two failures, or a
+  stop the car ignored for 10 minutes) and nothing more is planned before the deadline or the car
+  is at its max SoC. The charger cannot be restarted from the add-on afterwards: re-plug the cable.
+- The warning is shown at the top of the panel and as `warning` on `sensor.energy_planner_car`; the
+  car log shows every executed call with its result.
+
 ## 0.6.0
 
 **Production.** Two HA helpers switch the add-on from dry-run to control; missing or off = dry-run.

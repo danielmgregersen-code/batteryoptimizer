@@ -18,6 +18,12 @@ Create two helpers (Settings → Devices & services → Helpers → Toggle):
 | `input_boolean.energy_planner_produktion` | Every planning cycle (15 min) the add-on writes the house-battery registers: battery first (the all-day slot, Enabled/Disabled), charge from grid, max SoC, load-first min SoC and charge rate. Only values that differ are written; there is no rate limit. Time slots and the export limit are never written. |
 | `input_boolean.energy_planner_bil_produktion` | Every car cycle (2 min) the add-on carries out the car controller's calls: charger current, the start button and `kia_uvo.start_charge` / `stop_charge` (needs `car_device_id`). The same Kia call is not repeated within 10 minutes while the charger status is unchanged (Kia's cloud quota). |
 
+- If the car cannot be paused through Kia (an error such as a rejected PIN, or the car ignoring the
+  stop): no repeated PIN attempts (6 h pause, or switch the car helper off and on), other errors
+  back off 2 / 4 / 8 / 15 min, the charger is set to 6 A, and while charging from the grid with
+  nothing more planned before the deadline the charger's stop button is pressed as an emergency
+  stop (`car_thor_stop_fallback`). The THOR cannot be restarted from the add-on after that: re-plug
+  the cable. The warning is shown in the panel and on `sensor.energy_planner_car`.
 - Write order: what goes off first (charge from grid before battery first), then the limits
   (min/max SoC so that min never exceeds max, charge rate), then what goes on.
 - Values are clipped (min SoC ≥ `soc_floor_pct`, max SoC ≥ min SoC, charge rate 10–100) and read

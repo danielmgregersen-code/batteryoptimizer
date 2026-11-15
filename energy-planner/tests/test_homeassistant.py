@@ -104,3 +104,38 @@ def test_web_app_smoke():
     m.planner.ha = _NoStats()
     m._economy_cache.clear()
     assert client.get("/api/economy?days=30").status_code == 503
+
+
+def test_websocket_call_service_returns_has_error_message():
+    from websockets.sync.server import serve
+
+    from homeassistant import ServiceCallError, ServiceNotAllowed
+
+    def handler(ws):
+        ws.send(json.dumps({"type": "auth_required"}))
+        json.loads(ws.recv())
+        ws.send(json.dumps({"type": "auth_ok"}))
+        cmd = json.loads(ws.recv())
+        if cmd["service"] == "stop_charge":
+            ws.send(json.dumps({"id": 1, "type": "result", "success": False,
+                                "error": {"code": "home_assistant_error",
+                                          "message": "Failed to stop charge: PIN verification failed"}}))
+        else:
+            ws.send(json.dumps({"id": 1, "type": "result", "success": True, "result": {"context": {}}}))
+
+    with serve(handler, "127.0.0.1", 0) as server:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        port = server.socket.getsockname()[1]
+        ha = HomeAssistant(token="tok", ws_url=f"ws://127.0.0.1:{port}")
+        assert ha.call_service_ws("kia_uvo", "start_charge", {"device_id": "x"}) == {"context": {}}
+        try:
+            ha.call_service_ws("kia_uvo", "stop_charge", {"device_id": "x"})
+            raise AssertionError("expected ServiceCallError")
+        except ServiceCallError as e:
+            assert "PIN verification failed" in str(e) and e.code == "home_assistant_error"
+        try:
+            ha.call_service_ws("switch", "turn_on", {})
+            raise AssertionError("expected ServiceNotAllowed")
+        except ServiceNotAllowed:
+            pass
+        server.shutdown()
