@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning of a Growatt hybrid inverter, home battery and EV charging (dry-run)."
-version: "0.8.2"
+version: "0.9.0"
 slug: "energy_planner"
 init: false
 arch:
@@ -40,7 +40,8 @@ options:
   wear_cost_dkk_per_kwh: 0.25
   pv_p10_weight: 0.3
   pv_dampening: "auto"
-  pv_dampening_days: 14
+  pv_dampening_days: 60
+  pv_dampening_half_life_days: 14
   pv_dampening_manual: ""
   solcast_push: false
   profile_days: 28
@@ -124,7 +125,8 @@ schema:
   wear_cost_dkk_per_kwh: float(0,5)
   pv_p10_weight: float(0,1)
   pv_dampening: list(auto|manual|off)
-  pv_dampening_days: int(5,30)
+  pv_dampening_days: int(5,180)
+  pv_dampening_half_life_days: int(3,90)
   pv_dampening_manual: str?
   solcast_push: bool
   profile_days: int(7,120)

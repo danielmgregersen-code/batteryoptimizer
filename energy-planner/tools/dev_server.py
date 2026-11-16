@@ -60,6 +60,7 @@ class FakeHA:
             DEFAULTS["price_sell_entity"]: {"raw_today": raw(d0, SELL_TODAY), "raw_tomorrow": None},
             "sensor.solcast_pv_forecast_forecast_today": solcast(d0),
             "sensor.solcast_pv_forecast_forecast_tomorrow": solcast(d1, 1.6),
+            "sensor.solcast_pv_forecast_forecast_day_3": solcast((today + timedelta(days=2)).isoformat(), 0.7),
         }
         hour = datetime.now(TZ).hour
         self.states = {
@@ -263,6 +264,17 @@ def main():
 
     synthetic_log(os.path.join(data, "decisions.jsonl"))
     # No pv_history.json: the planner fetches Solcast's forecast history (query_forecast_data) itself.
+    # The evening-before forecast only exists from 0.9.0 on: make up the last 10 days of it.
+    dayahead, t = {}, (datetime.now(TZ) - timedelta(days=10)).replace(hour=0, minute=0, second=0, microsecond=0)
+    while t < datetime.now(TZ):
+        f, clear, _ = synthetic_sun(t)
+        if f > 0.01:
+            wobble = random.Random(int(t.timestamp()) // 86400).uniform(0.75, 1.3)
+            dayahead[t.astimezone(timezone.utc).isoformat()] = {"p50": f * wobble, "p10": f * 0.6, "p90": clear,
+                                                               "plan": f * wobble * 0.85, "at": ""}
+        t += timedelta(hours=1)
+    with open(os.path.join(data, "pv_dayahead.json"), "w") as fh:
+        json.dump(dayahead, fh)
     fake = FakeHA(car=not args.no_car)
     for key in ("production_switch_entity", "car_production_switch_entity"):
         fake.states[DEFAULTS[key]] = "on" if args.production else "off"

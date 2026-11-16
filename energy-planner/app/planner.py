@@ -53,6 +53,20 @@ def battery_params(opts: dict) -> BatteryParams:
     )
 
 
+def _solar_totals(rows: list) -> dict:
+    """Sums over the hours that have an actual value (so forecasts compare like with like), plus the
+    whole-day forecast."""
+    with_actual = [r for r in rows if "actual" in r]
+
+    def tot(rs, k):
+        vals = [r[k] for r in rs if k in r]
+        return round(sum(vals), 2) if vals else None
+    return {"actual": tot(with_actual, "actual"), "p50": tot(with_actual, "p50"), "c50": tot(with_actual, "c50"),
+            "dayahead": tot(with_actual, "dayahead"), "hours_actual": len(with_actual),
+            "day_p50": tot(rows, "p50"), "day_p10": tot(rows, "p10"), "day_p90": tot(rows, "p90"),
+            "day_c50": tot(rows, "c50"), "day_dayahead": tot(rows, "dayahead")}
+
+
 class Planner:
     def __init__(self, ha, tz=None, log_path: str = DECISION_LOG, options_fn=load_options,
                  car_log_path: str = CAR_LOG):
@@ -98,6 +112,10 @@ class Planner:
         self._price_history = []       # hourly buy prices of the last 30 days
         self._backfill = None          # {"hours", "at", "error"} of the last history fetch
         self._backfill_at = None       # when it was last attempted
+        self.pv_dayahead_path = os.path.join(data_dir, "pv_dayahead.json")
+        self._pv_dayahead = pvd.load_json(self.pv_dayahead_path, {})   # tomorrow's forecast as seen the evening before
+        self._pv_shade, self._pv_ref = [0.0] * 24, [0.0] * 24          # the correction of the last cycle
+        self._solar_forecast = []
 
     # ---- consumption profile -------------------------------------------------
     def _profile_for(self, opts: dict, now: datetime):
@@ -132,6 +150,14 @@ class Planner:
             prof["statistics_rows"] = {i: len(stats.get(i) or []) for i in ids}
             if opts.get("pv_power_entity"):
                 self._pv_actual = _by_start(stats.get(opts["pv_power_entity"]))
+                days = int(opts.get("pv_dampening_days", 14))
+                if days > int(opts["profile_days"]):
+                    # the solar correction learns from a longer window than the load profile
+                    try:
+                        pv_stats = self.ha.statistics([opts["pv_power_entity"]], now - timedelta(days=days), now, "hour")
+                        self._pv_actual = {**_by_start(pv_stats.get(opts["pv_power_entity"])), **self._pv_actual}
+                    except Exception as e:
+                        log.info("solar statistics for %s days unavailable: %s", days, e)
             self._refresh_car_history(opts, now)
             for i in ids:
                 if not stats.get(i):
@@ -523,6 +549,7 @@ class Planner:
             "warnings": warnings,
             "car": car_info,
             "pv_dampening": damp_info,
+            "solar_forecast": self._solar_forecast if pv else [],
             "plan": rows,
         }
         car_label = "Lader bilen"
@@ -873,6 +900,9 @@ class Planner:
             # refuses set_dampening). Use them as they are and learn nothing.
             info["solcast_auto"] = True
             blended = {h: (1 - w) * pv50[h] + w * pv10.get(h, pv50[h]) for h in pv50}
+            ones = [1.0] * 24
+            self._record_dayahead(now, pv50, pv10, pv90, ones, blended)
+            self._solar_forecast = self._forecast_rows(pv50, pv10, pv90, ones, pv50, pv10, pv90, blended, {})
             return blended, pv50, pv10, pv90, {}, info
 
         if not self._solcast_synced:
@@ -901,11 +931,17 @@ class Planner:
             pvd.save_json(self.pv_history_path, self._pv_history)
 
         ref = pvd.clear_reference(self._pv_history, pv90, applied, self.tz, now)
-        model = pvd.fit(self._pv_history, self._pv_actual, ref, self.tz, now, info["days"], float(opts["inverter_kw"]))
+        half = float(opts.get("pv_dampening_half_life_days") or 0) or None
+        info["half_life_days"] = half
+        model = pvd.fit(self._pv_history, self._pv_actual, ref, self.tz, now, info["days"], float(opts["inverter_kw"]),
+                        half_life_days=half)
         manual = pvd.parse_manual(opts.get("pv_dampening_manual", ""))
         shade = pvd.effective_shade(model["shade"], manual, mode)
         c50, c10, c90, fac = pvd.correct(pv50, pv10, pv90, applied, shade, ref, self.tz)
         blended = {h: (1 - w) * c50[h] + w * c10.get(h, c50[h]) for h in c50}
+        self._pv_shade, self._pv_ref = shade, ref
+        self._record_dayahead(now, pv50, pv10, pv90, applied, blended)
+        self._solar_forecast = self._forecast_rows(pv50, pv10, pv90, applied, c50, c10, c90, blended, fac)
 
         today = now.astimezone(self.tz).date()
         desired = pvd.static_factors(shade, {t: v for t, v in pv50.items() if t.astimezone(self.tz).date() == today},
@@ -928,13 +964,109 @@ class Planner:
             "manual_hours": sorted(manual),
             "applied_in_solcast": st["applied"],
             "last_pushed": st.get("pushed_at"),
-            "hours": model["hours"], "forecast": model["forecast"], "actual": model["actual"],
+            "hours": model["hours"], "weight": model["weight"], "forecast": model["forecast"], "actual": model["actual"],
             "corrected": model["corrected"],
             "history_hours": len(self._pv_history),
             "mean_factor": pvd.mean_daylight(desired, ref),
             "backfill": self._backfill,
         })
         return blended, c50, c10, c90, fac, info
+
+    def _record_dayahead(self, now, pv50, pv10, pv90, applied, plan):
+        """From 20:00 local: keep tomorrow's forecast as it was the evening before (first read wins)."""
+        local = now.astimezone(self.tz)
+        if local.hour < 20:
+            return
+        tomorrow = local.date() + timedelta(days=1)
+        changed = False
+        for t, v in pv50.items():
+            if t.astimezone(self.tz).date() != tomorrow:
+                continue
+            key = t.astimezone(UTC).isoformat()
+            if key in self._pv_dayahead:
+                continue
+            a = max(applied[t.astimezone(self.tz).hour], pvd.MIN_FACTOR)
+            self._pv_dayahead[key] = {"p50": round(v / a, 4), "p10": round(pv10.get(t, v) / a, 4),
+                                      "p90": round(pv90.get(t, v) / a, 4), "plan": round(plan.get(t, v), 4),
+                                      "at": now.isoformat(timespec="seconds")}
+            changed = True
+        if changed:
+            cutoff = (now - timedelta(days=pvd.HISTORY_DAYS)).astimezone(UTC).isoformat()
+            for k in [k for k in self._pv_dayahead if k < cutoff]:
+                del self._pv_dayahead[k]
+            pvd.save_json(self.pv_dayahead_path, self._pv_dayahead)
+
+    def _forecast_rows(self, pv50, pv10, pv90, applied, c50, c10, c90, plan, fac):
+        """The coming days hour by hour: Solcast undampened p10/p50/p90 and the corrected values."""
+        rows = []
+        for t in sorted(pv50):
+            a = max(applied[t.astimezone(self.tz).hour], pvd.MIN_FACTOR)
+            rows.append({"t": t.astimezone(self.tz).isoformat(), "p50": round(pv50[t] / a, 3),
+                         "p10": round(pv10.get(t, pv50[t]) / a, 3), "p90": round(pv90.get(t, pv50[t]) / a, 3),
+                         "c50": round(c50.get(t, 0.0), 3), "c10": round(c10.get(t, 0.0), 3),
+                         "c90": round(c90.get(t, 0.0), 3), "plan": round(plan.get(t, 0.0), 3),
+                         "factor": fac.get(t, 1.0)})
+        return rows
+
+    def solar_report(self, day, now: datetime = None) -> dict:
+        """One local day hour by hour: actual, Solcast (undampened p10/p50/p90 as recorded), the same
+        with today's correction, and the forecast from the evening before. Actual from statistics."""
+        opts = self.options_fn()
+        now = (now or datetime.now(UTC)).astimezone(UTC)
+        start = datetime(day.year, day.month, day.day, tzinfo=self.tz)
+        end = start + timedelta(days=1)
+        actual = {}
+        if opts.get("pv_power_entity") and start.astimezone(UTC) < now:
+            stats = self.ha.statistics([opts["pv_power_entity"]], start.astimezone(UTC),
+                                       min(end.astimezone(UTC), now), "hour")
+            actual = _by_start(stats.get(opts["pv_power_entity"]))
+        rows = self._solar_rows(start, end, actual, now)
+        return {"day": day.isoformat(), "hours": rows, "totals": _solar_totals(rows),
+                "today": now.astimezone(self.tz).date().isoformat()}
+
+    def solar_days(self, days: int, now: datetime = None) -> list:
+        """Daily totals for the last `days` days (today first)."""
+        opts = self.options_fn()
+        now = (now or datetime.now(UTC)).astimezone(UTC)
+        today = now.astimezone(self.tz).date()
+        first = today - timedelta(days=days - 1)
+        actual = {}
+        if opts.get("pv_power_entity"):
+            begin = datetime(first.year, first.month, first.day, tzinfo=self.tz).astimezone(UTC)
+            stats = self.ha.statistics([opts["pv_power_entity"]], begin, now, "hour")
+            actual = _by_start(stats.get(opts["pv_power_entity"]))
+        out = []
+        for i in range(days):
+            d = today - timedelta(days=i)
+            start = datetime(d.year, d.month, d.day, tzinfo=self.tz)
+            rows = self._solar_rows(start, start + timedelta(days=1), actual, now)
+            out.append({"day": d.isoformat(), **_solar_totals(rows)})
+        return out
+
+    def _solar_rows(self, start, end, actual: dict, now) -> list:
+        idx = pvd._reference_index(self._pv_history, self.tz)
+        rows = []
+        t, stop = start.astimezone(UTC), end.astimezone(UTC)
+        while t < stop:
+            key = t.isoformat()
+            h = t.astimezone(self.tz).hour
+            e = self._pv_history.get(key)
+            row = {"t": t.astimezone(self.tz).isoformat()}
+            if e:
+                u50, u10, u90 = (pvd._undamped(e, k) for k in ("p50", "p10", "p90"))
+                kc = pvd.clearness(u50, pvd.reference_at(idx, h, t, self._pv_ref[h]))
+                f = pvd.factor(self._pv_shade[h], kc)
+                row.update(p50=round(u50, 3), p10=round(u10, 3), p90=round(u90, 3), c50=round(u50 * f, 3),
+                           factor=round(f, 3), limited=bool(e.get("limited")))
+            da = self._pv_dayahead.get(key)
+            if da:
+                row["dayahead"] = da["plan"]
+            a = actual.get(t)
+            if a is not None and t + timedelta(hours=1) <= now:
+                row["actual"] = round(max(0.0, a) / 1000.0, 3)
+            rows.append(row)
+            t += timedelta(hours=1)
+        return rows
 
     def _backfill_history(self, now: datetime):
         """Fetch Solcast's own (undampened) forecast history once after start, so the correction can

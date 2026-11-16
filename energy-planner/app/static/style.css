@@ -282,3 +282,13 @@ details[open] > summary { margin-bottom: 10px; }
 .btn.ghost { background: transparent; }
 
 .meter.warn .fill { background: var(--critical); }
+
+/* Sol tab */
+.sol-days { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; margin-bottom: 12px; scrollbar-width: thin; }
+.sol-days button { flex: 0 0 auto; }
+.sol-totals { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; font-size: 13px; color: var(--ink-2); }
+.sol-totals b { color: var(--ink); font-weight: 600; }
+table.clickable tbody tr { cursor: pointer; }
+table.clickable tbody tr:hover { background: var(--wash); }
+table.clickable tbody tr.selected { background: var(--wash); box-shadow: inset 3px 0 0 var(--accent); }
+td small { color: var(--muted); margin-left: 4px; }

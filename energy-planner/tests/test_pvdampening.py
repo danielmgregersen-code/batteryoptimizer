@@ -141,7 +141,7 @@ def test_entity_services_need_an_allowed_entity():
 
 def test_history_record_trims_old_hours():
     h = {}
-    old = NOW - timedelta(days=70)
+    old = NOW - timedelta(days=pvd.HISTORY_DAYS + 10)
     pvd.record(h, old, 1.0, 0.5, 1.5, 1.0, False, old)
     pvd.record(h, NOW, 1.0, 0.5, 1.5, 0.8, True, NOW)
     assert list(h) == [NOW.isoformat()] and h[NOW.isoformat()]["applied"] == 0.8 and h[NOW.isoformat()]["limited"]
@@ -194,7 +194,7 @@ def test_backfill_keeps_own_recordings_and_skips_the_current_hour():
               datetime(2026, 11, 14, 10, tzinfo=UTC): (1.0, 0.5, 1.5),
               datetime(2026, 11, 14, 11, tzinfo=UTC): (1.2, 0.6, 1.8),
               datetime(2026, 11, 14, 12, tzinfo=UTC): (1.3, 0.6, 1.9),          # current hour: not finished
-              datetime(2026, 8, 1, 12, tzinfo=UTC): (1.0, 1.0, 1.0)}            # older than HISTORY_DAYS
+              now - timedelta(days=pvd.HISTORY_DAYS + 5): (1.0, 1.0, 1.0)}      # older than HISTORY_DAYS
     limited = {datetime(2026, 11, 14, 11, tzinfo=UTC)}
     assert pvd.backfill(history, hourly, now, limited) == 2
     assert history[own.isoformat()]["p50"] == 9.0                              # own recording wins
@@ -207,3 +207,44 @@ def test_query_forecast_data_is_allowed():
     from homeassistant import ALLOWED_SERVICES
     assert ("solcast_solar", "query_forecast_data") in ALLOWED_SERVICES
     assert len(ALLOWED_SERVICES) == 5
+
+
+def test_recent_weeks_count_most_with_a_half_life():
+    """The tree 'grows' into the 14:00 sun: shade 0.2 for weeks 3-8 ago, 0.7 the last two weeks."""
+    history, actual = {}, {}
+    for d in range(1, 57):
+        k = [0.2, 0.5, 0.9, 1.0, 0.35, 0.8, 0.6][d % 7]
+        shade = 0.7 if d <= 14 else 0.2
+        for hl, ref in REF.items():
+            t = (datetime(2026, 11, 14, hl, tzinfo=TZ) - timedelta(days=d)).astimezone(UTC)
+            f = ref * k
+            history[t.isoformat()] = {"p50": f, "p10": f * 0.6, "p90": ref, "applied": 1.0, "limited": False}
+            actual[t] = f * (1 - (shade if hl == 14 else 0.0) * k) * 1000.0
+    ref = pvd.clear_reference(history, {}, [1.0] * 24, TZ, NOW)
+    equal = pvd.fit(history, actual, ref, TZ, NOW, 60, 10.0)
+    recent = pvd.fit(history, actual, ref, TZ, NOW, 60, 10.0, half_life_days=7)
+    assert recent["shade"][14] > equal["shade"][14] + 0.1
+    assert 0.5 < recent["shade"][14] < 0.7                 # ~3/4 of the weight on the last two weeks
+    assert recent["weight"][14] < recent["hours"][14]
+
+
+def test_equal_weights_match_the_old_fit():
+    h, a = synthetic()
+    ref = pvd.clear_reference(h, {}, [1.0] * 24, TZ, NOW)
+    assert pvd.fit(h, a, ref, TZ, NOW, 14, 10.0)["shade"] == pvd.fit(h, a, ref, TZ, NOW, 14, 10.0, half_life_days=1e9)["shade"]
+
+
+def test_old_clear_days_are_measured_against_their_own_season():
+    """Six weeks ago the sun was higher (clear-sky 3.0 kWh at 14:00, now 1.6). Without a reference per
+    date, those clear days would look clearer than possible ... and the fit must not see false shade."""
+    history, actual = {}, {}
+    for d in range(1, 50):
+        ref14 = 1.6 if d <= 21 else 3.0
+        k = [0.2, 0.5, 0.9, 1.0, 0.35, 0.8, 0.6][d % 7]
+        t = (datetime(2026, 11, 14, 14, tzinfo=TZ) - timedelta(days=d)).astimezone(UTC)
+        f = ref14 * k
+        history[t.isoformat()] = {"p50": f, "p10": f, "p90": ref14, "applied": 1.0, "limited": False}
+        actual[t] = f * 1000.0                          # no shade at all
+    ref = pvd.clear_reference(history, {}, [1.0] * 24, TZ, NOW)
+    m = pvd.fit(history, actual, ref, TZ, NOW, 60, 10.0, half_life_days=14)
+    assert m["shade"][14] == pytest.approx(0.0, abs=0.02)

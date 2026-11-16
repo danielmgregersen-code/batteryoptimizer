@@ -144,6 +144,12 @@ Opens from the sidebar (*Energy Planner*), through ingress.
   the SoC of the house battery and the car. Hover or use the arrow keys for every value of an hour.
   "Planner mod inverteren nu" shows each register the planner would set next to its current value.
 - **Bil**: the car controller's decision and the calls it would make, the car plan, and its log.
+- **Sol**: the solar forecast for today and the coming two days (p10–p90 band with the correction,
+  Solcast's p50 dashed, what the plan uses, today's actual production as bars); forecast against
+  actual day by day (today, yesterday and the 12 days before): actual, Solcast p10/p50/p90, Solcast
+  with the current correction, and the forecast from the evening before (what the plan counted on
+  at 20:00 the day before, kept in `/data/pv_dayahead.json` from 0.9.0 on), with a table of daily
+  totals; and the shading correction (moved here from the Plan tab).
 - **Økonomi**: what the installation cost and earned, from HA's long-term statistics (so with history
   from before the add-on): today / 7 / 30 / 90 days / 1 year. System value (what the panels and
   battery saved compared with buying everything), split into the sun's and the battery's part;
@@ -186,7 +192,12 @@ power, the grid part of the charging (`battery charge - solar`) is subtracted fr
 
 Solcast does not know about the trees. The add-on learns, per hour of the day, how much of the
 forecast actually arrives, from Solcast's forecast (recorded every cycle in `/data/pv_history.json`)
-and the actual production (`pv_power_entity` statistics), over the last `pv_dampening_days` (14).
+and the actual production (`pv_power_entity` statistics), over the last `pv_dampening_days` (60).
+Clear days are rare, so the window is long, but recent weeks count most: an hour `age` days old
+weighs `0.5^(age / pv_dampening_half_life_days)` (14) in the fit, so the sun's changing path and
+growing trees are followed. Each past hour is measured against the clear sky of its own weeks
+(the highest p90 within ±10 days of it). Solcast only keeps 14 days of history, so the longer
+window fills up from the add-on's own recordings (kept for 180 days).
 At start it also fetches Solcast's own 14 days of undampened forecast history
 (`solcast_solar.query_forecast_data`), so it can learn right away; its own recordings take precedence.
 

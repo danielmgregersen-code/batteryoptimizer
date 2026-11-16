@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.0
+
+- **New "Sol" tab.** The solar forecast for today and the next two days hour by hour: the p10–p90
+  band (with the correction), Solcast's p50, what the plan uses and today's actual production.
+  Forecast against actual day by day (today, yesterday and the 12 days before) with Solcast
+  p10/p50/p90, Solcast with the correction, actual, and the forecast from the evening before; a
+  table of daily totals with the deviation in %. Tiles for today / tomorrow / day 3 and yesterday's
+  hit rate. The shading correction card moved here from the Plan tab and shows the effective
+  (weighted) days per hour.
+- **The forecast from the evening before** is kept from 20:00 for the next day
+  (`/data/pv_dayahead.json`), so it can be compared with what actually came.
+- **The shading correction learns from a longer window with more weight on recent days**:
+  `pv_dampening_days` 14 → 60 (max 180), new `pv_dampening_half_life_days` (14). Past hours are
+  measured against the clear sky of their own weeks. The add-on keeps 180 days of its own recordings
+  (Solcast only 14), so the window fills up over time.
+- API: `GET api/solar?day=YYYY-MM-DD`, `GET api/solar/days?days=14`; the plan has `solar_forecast`.
+
 ## 0.8.2
 
 - **The THOR's own charging schedule ended last night's session.** The log shows the add-on only

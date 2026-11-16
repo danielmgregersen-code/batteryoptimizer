@@ -161,6 +161,39 @@ async def run_now():
         raise HTTPException(status_code=503, detail=str(e))
 
 
+_solar_cache: dict = {}
+SOLAR_CACHE_S = 300
+
+
+async def _cached(key, fn, *args):
+    hit = _solar_cache.get(key)
+    if hit and time.monotonic() - hit[0] < SOLAR_CACHE_S:
+        return hit[1]
+    try:
+        res = await asyncio.to_thread(fn, *args)
+    except Exception as e:  # statistics unavailable (no websocket, HA restarting)
+        raise HTTPException(status_code=503, detail=f"statistics unavailable: {e}")
+    _solar_cache[key] = (time.monotonic(), res)
+    return res
+
+
+@app.get("/api/solar")
+async def get_solar(day: str = None):
+    """One day hour by hour: actual, Solcast p10/p50/p90, corrected, and the evening-before forecast."""
+    from datetime import date
+    try:
+        d = date.fromisoformat(day) if day else datetime.now(timezone.utc).astimezone(planner.tz).date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="day must be YYYY-MM-DD")
+    return await _cached(("day", d.isoformat()), planner.solar_report, d)
+
+
+@app.get("/api/solar/days")
+async def get_solar_days(days: int = 14):
+    days = max(1, min(days, 60))
+    return await _cached(("days", days), planner.solar_days, days)
+
+
 async def _replan():
     """Plan again right away so the panel shows the effect of a change at once."""
     try:
