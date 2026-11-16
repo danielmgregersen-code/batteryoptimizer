@@ -475,13 +475,16 @@ def test_pin_error_stops_kia_calls_sets_6a_and_stops_on_the_charger_when_nothing
     p.run_once(NIGHT)
     d = p.car_cycle(NIGHT)
     assert d["action"] == "pause" and ha.kia == ["stop_charge"]
-    pressed = [x for x in ha.local if x[1] == "press"]
     assert ("number", "set_value", DEFAULTS["charger_current_entity"], 6) in ha.local
+    assert not any(x[1] == "press" for x in ha.local)          # not before the pause has been wanted 5 min
+    ha.numbers[DEFAULTS["charger_current_entity"]] = 6
+    d = p.car_cycle(NIGHT + timedelta(minutes=5))
+    pressed = [x for x in ha.local if x[1] == "press"]
     assert pressed == [("button", "press", DEFAULTS["charger_stop_button"], None)]
     assert "PIN" in d["warning"] and "Nødstop" in d["warning"]
     # no Kia retries and no restart attempts afterwards
     ha.local.clear()
-    d = p.car_cycle(NIGHT + timedelta(minutes=2))
+    d = p.car_cycle(NIGHT + timedelta(minutes=7))
     assert ha.kia == ["stop_charge"] and ha.local == [] and "sæt kablet i igen" in d["warning"]
     state, attrs = ha.published["sensor.energy_planner_car"]
     assert "sæt kablet i igen" in attrs["warning"]
@@ -522,8 +525,10 @@ def test_other_kia_errors_back_off_and_need_two_failures_before_the_charger_stop
     assert ha.kia == ["stop_charge"]
     p.car_cycle(NIGHT + timedelta(minutes=2))                 # retry fails again -> second failure
     assert ha.kia == ["stop_charge", "stop_charge"]
+    assert not any(x[1] == "press" for x in ha.local)         # wanted for 2 min only
+    p.car_cycle(NIGHT + timedelta(minutes=5))
     assert any(x[1] == "press" for x in ha.local)             # now the emergency stop
-    p.car_cycle(NIGHT + timedelta(minutes=4))                 # (after the stop: nothing more)
+    p.car_cycle(NIGHT + timedelta(minutes=8))                 # (after the stop: nothing more)
     assert ha.kia == ["stop_charge", "stop_charge"]
 
 
@@ -558,6 +563,7 @@ def test_missing_device_id_while_charging_warns_and_falls_back(tmp_path):
     p.run_once(NIGHT)
     d = p.car_cycle(NIGHT)
     assert ha.kia == [] and "car_device_id" in d["warning"]
+    p.car_cycle(NIGHT + timedelta(minutes=6))
     assert any(x[1] == "press" for x in ha.local)              # grid charging, nothing more planned
 
 
@@ -730,3 +736,53 @@ def test_battery_fast_cycle_caps_the_charge_rate_when_a_phase_is_over_the_fuse(t
     ha.numbers.update({phases[0]: 12.0, phases[1]: 12.0, phases[2]: 12.0})
     p.battery_fast_cycle(datetime(2026, 11, 14, 1, 52, tzinfo=UTC))
     assert p._fuse_rate_cap is None and ha.numbers[DEFAULTS["reg_charge_rate"]] == 40
+
+
+def test_kia_stop_that_errors_but_pauses_the_car_is_not_a_failure_and_no_charger_stop(tmp_path):
+    """Last night: the Kia stop came back with an error while the car did pause; 3 min later the
+    charger was stopped and the cheap hours after were lost."""
+    from homeassistant import ServiceCallError
+    ha = kia_failing_ha(soc=45.0)
+    p = planner_for(ha, tmp_path)
+    p.run_once(NIGHT)
+
+    def ws(domain, service, data=None):
+        ha.kia.append(service)
+        ha.texts[DEFAULTS["charger_status_entity"]] = "suspended_ev"     # the car follows ...
+        raise ServiceCallError("Read timed out", "home_assistant_error")  # ... but the call fails
+    ha.call_service_ws = ws
+    p._kia_fails = 1                                                     # an earlier failure
+    d = p.car_cycle(NIGHT)
+    assert ha.kia == ["stop_charge"] and p._kia_fails == 0 and d["executed"][0]["status"] == "ok"
+    for m in (2, 4, 6, 8):
+        p.car_cycle(NIGHT + timedelta(minutes=m))
+    assert not any(x[1] == "press" for x in ha.local)
+
+
+def test_no_charger_stop_when_the_charger_no_longer_charges_at_the_fresh_read(tmp_path):
+    ha = kia_failing_ha(soc=45.0)
+    p = planner_for(ha, tmp_path)
+    p.run_once(NIGHT)
+    p.car_cycle(NIGHT)
+    status = DEFAULTS["charger_status_entity"]
+    real_text = ha.text
+    # the cycle starts with "charging" (state), but the charger says paused when read again
+    ha.text = lambda e: "suspended_ev" if e == status else real_text(e)
+    ha.state = lambda e: ({"state": "charging", "last_changed": "2026-11-14T10:00:00+00:00"} if e == status
+                          else ({"state": ha.texts[e]} if e in ha.texts else None))
+    p.car_cycle(NIGHT + timedelta(minutes=6))
+    assert not any(x[1] == "press" for x in ha.local)
+
+
+def test_no_charger_stop_at_a_lifted_limit_while_more_is_planned_later(tmp_path):
+    ha = kia_failing_ha(soc=60.0)
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 45.0
+    p = planner_for(ha, tmp_path)
+    p.set_car_extra("target", 70, NIGHT)                  # extra: charged in the cheap hours later
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 60.0
+    p.run_once(NIGHT)
+    assert p._car_planned_ahead(p.latest, NIGHT) > 0.5
+    p.latest["car"]["max_soc_pct"] = 60                   # the car is "at the limit" right now
+    for m in (0, 2, 4, 6, 8):
+        p.car_cycle(NIGHT + timedelta(minutes=m))
+    assert not any(x[1] == "press" for x in ha.local)

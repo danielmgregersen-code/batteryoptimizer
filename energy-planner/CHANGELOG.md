@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.1
+
+- **No more emergency stop on the charger after a pause that worked.** A Kia stop that came back with
+  an error (or late) while the car did pause was counted as a failure, and with an earlier failure the
+  charger's stop button was pressed 3 min later, based on the status read before the call. The THOR
+  then ended the session, and the cheap hours planned after were lost. Now:
+  - the charger status is read again after a failing Kia call and right before an emergency stop; a
+    car that has paused means success,
+  - no reply in time is "unknown", not a failure,
+  - the emergency stop needs the pause wanted for at least 5 min and nothing more planned for the car
+    (being at a lifted limit, e.g. an extra charge, is no longer enough).
+
 ## 0.8.0
 
 - **Main fuse** (`main_fuse_amps` 25, `fuse_margin_amps` 3): the plan never puts the car and grid
