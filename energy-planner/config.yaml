@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning of a Growatt hybrid inverter, home battery and EV charging (dry-run)."
-version: "0.8.1"
+version: "0.8.2"
 slug: "energy_planner"
 init: false
 arch:
@@ -93,6 +93,7 @@ options:
   car_device_id: ""
   car_thor_stop_fallback: true
   charger_stop_button: "button.garage_growatt_thor_ev_charger_stop_charging"
+  charger_schedule_entities: "time.garage_growatt_thor_ev_charger_automatic_charging_start,time.garage_growatt_thor_ev_charger_automatic_charging_stop"
   main_fuse_amps: 25
   fuse_margin_amps: 3
   grid_current_entities: "sensor.growatt_grid_current_l1,sensor.growatt_grid_current_l2,sensor.growatt_grid_current_l3"
@@ -176,6 +177,7 @@ schema:
   car_device_id: str?
   car_thor_stop_fallback: bool
   charger_stop_button: str
+  charger_schedule_entities: str?
   main_fuse_amps: int(10,100)
   fuse_margin_amps: int(0,15)
   grid_current_entities: str?

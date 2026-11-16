@@ -70,6 +70,8 @@ class Planner:
         self._stop_ok_at = None        # last successful kia stop while the car was charging
         self._thor_stopped = False     # emergency stop on the charger done: no restart from here
         self._pause_wanted_since = None   # since when the controller has wanted a charging car paused
+        self._car_status_prev = None      # charger status at the previous car cycle
+        self._session_ended_at = None     # the charger ended the session on its own (not through HA)
         self._car_prod_prev = False
         self._fuse_rate_cap = None     # battery charge rate (%) capped live by the main fuse guard
         self.options_fn = options_fn
@@ -206,6 +208,25 @@ class Planner:
         if self._fuse_rate_cap is not None and self._fuse_rate_cap < rate:
             return {**live, "charge_rate_pct": self._fuse_rate_cap, "fuse_capped": True}
         return live
+
+    def _charger_schedule(self, opts: dict):
+        """The THOR's own automatic charging window as ("03:00", "05:00"), or None when it is off
+        (entities not configured / unavailable, or start = stop)."""
+        ids = split_csv(opts.get("charger_schedule_entities") or "")
+        if len(ids) != 2:
+            return None
+        vals = [self.ha.text(e) for e in ids]
+        if any(not v or v in ("unknown", "unavailable") for v in vals):
+            return None
+        start, stop = (v[:5] for v in vals)
+        return None if start == stop else (start, stop)
+
+    def _charger_schedule_warning(self, opts: dict):
+        sched = self._charger_schedule(opts) if opts.get("car_enabled") else None
+        if not sched:
+            return None
+        return (f"THOR har sin egen ladeplan ({sched[0]}–{sched[1]}). Den kan afslutte add-on'ens session ved de "
+                "tider, og så kan bilen ikke lade igen, før kablet tages ud og ind. Slå den fra i ShinePhone.")
 
     def _refresh_car_history(self, opts: dict, now: datetime):
         """Car SoC (90 days, for the last full charge) and buy prices (30 days, for "rock bottom")."""
@@ -382,6 +403,9 @@ class Planner:
             car_info.update(full_charge=full, departure=departure)
             if self._car_extra and "extra" not in car_info:   # ordered, but the car is not connected
                 car_info["extra"] = {**self._car_extra, "set": True, "status": "waiting"}
+            sched_warn = self._charger_schedule_warning(opts)
+            if sched_warn:
+                warnings.append(sched_warn)
             if status in carmod.CONNECTED and car_soc is None:
                 warnings.append("car is connected but its SoC is unavailable - car left out of the plan")
 
@@ -603,10 +627,32 @@ class Planner:
             self._kia_block_until = self._kia_next_try = self._stop_ok_at = None
             self._kia_fails, self._thor_stopped = 0, False
         self._car_prod_prev = car_production
-        if live.get("status") not in carmod.CONNECTED:
+        status, prev = live.get("status"), self._car_status_prev
+        self._car_status_prev = status
+        if (prev in ("charging", "suspended_ev", "suspended_evse") and status in ("finishing", "idle", "available")
+                and not self._thor_stopped and self._car_planned_ahead(snap, now) >= 0.5):
+            self._session_ended_at = now
+            log.warning("car: the charger ended the session on its own (%s -> %s) while the plan has more for the "
+                        "car; nothing was sent from here", prev, status)
+        elif status in ("preparing", "charging", "suspended_ev", "suspended_evse"):
+            self._session_ended_at = None
+        if self._session_ended_at and now - self._session_ended_at > timedelta(hours=12):
+            self._session_ended_at = None
+        if status not in carmod.CONNECTED:
             self._thor_stopped = False            # cable out: the next plug-in starts fresh
         if car_production:
             d["executed"], d["warning"] = self._car_production_step(d, opts, live, snap, now)
+        extra_warn = []
+        if self._session_ended_at:
+            extra_warn.append(f"Laderen afsluttede sessionen selv kl. {self._session_ended_at.astimezone(self.tz):%H:%M}, "
+                              "mens planen havde mere til bilen (intet blev sendt herfra). Sidder kablet stadig i, så "
+                              "tag det ud og ind igen.")
+        if car_production:
+            sw = self._charger_schedule_warning(opts)
+            if sw:
+                extra_warn.append(sw)
+        if extra_warn:
+            d["warning"] = " ".join([w for w in [d.get("warning")] + extra_warn if w])
         with self._lock:
             self.car_latest = d
         d["reason_da"] = reason_da(d["reason"])

@@ -18,6 +18,12 @@ Create two helpers (Settings → Devices & services → Helpers → Toggle):
 | `input_boolean.energy_planner_produktion` | Every planning cycle (15 min) the add-on writes the house-battery registers: battery first (the all-day slot, Enabled/Disabled), charge from grid, max SoC, load-first min SoC and charge rate. Only values that differ are written; there is no rate limit. Time slots and the export limit are never written. |
 | `input_boolean.energy_planner_bil_produktion` | Every car cycle (2 min) the add-on carries out the car controller's calls: charger current, the start button and `kia_uvo.start_charge` / `stop_charge` (needs `car_device_id`). The same Kia call is not repeated within 10 minutes while the charger status is unchanged (Kia's cloud quota). |
 
+- **Turn off the THOR's own automatic charging schedule** (ShinePhone; in HA
+  `time.…_automatic_charging_start` / `_stop`, option `charger_schedule_entities`). At the schedule's
+  start or stop time the charger ends the running session ("Unknown Stop" on its display), and a
+  session paused through Kia cannot be restarted without re-plugging. The panel warns while a
+  schedule is set (start ≠ stop), and when the charger ends a session on its own while the plan has
+  more for the car.
 - If the car cannot be paused through Kia (an error such as a rejected PIN, or the car ignoring the
   stop): no repeated PIN attempts (6 h pause, or switch the car helper off and on), other errors
   back off 2 / 4 / 8 / 15 min, the charger is set to 6 A, and while charging from the grid with
