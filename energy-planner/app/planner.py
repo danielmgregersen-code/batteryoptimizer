@@ -128,17 +128,32 @@ class Planner:
             for key in ("car_power_entity", "battery_charge_power_entity", "pv_power_entity"):
                 if opts.get(key):
                     ids.append(opts[key])
+            submeters = [e for e in split_csv(opts.get("load_submeters") or "") if e not in ids]
+            ids += submeters
             start = now - timedelta(days=int(opts["profile_days"]))
             stats = self.ha.statistics(ids, start, now, "hour")
+            ly_weight = float(opts.get("profile_last_year_weight") or 0.0)
+            merged = stats
+            if ly_weight > 0:
+                # the same weeks last year (+-21 days around today's date one year ago)
+                try:
+                    ly_mid = now - timedelta(days=365)
+                    ly = self.ha.statistics(ids, ly_mid - timedelta(days=21), ly_mid + timedelta(days=21), "hour")
+                    merged = {i: list(ly.get(i) or []) + list(stats.get(i) or []) for i in ids}
+                except Exception as e:
+                    log.info("last year's statistics unavailable: %s", e)
             prof = build_profile(
-                stats.get(opts["house_load_entity"]),
-                stats.get(opts.get("car_power_entity", "")),
+                merged.get(opts["house_load_entity"]),
+                merged.get(opts.get("car_power_entity", "")),
                 self.tz,
                 default_kwh,
-                bat_rows=stats.get(opts.get("battery_charge_power_entity", "")),
-                pv_rows=stats.get(opts.get("pv_power_entity", "")),
+                bat_rows=merged.get(opts.get("battery_charge_power_entity", "")),
+                pv_rows=merged.get(opts.get("pv_power_entity", "")),
                 battery_mode=opts.get("load_includes_battery_charging", "no"),
                 car_detect_w=float(opts.get("car_detect_kw", 4.0)) * 1000.0,
+                submeter_rows={e: merged.get(e) for e in submeters},
+                now=now, half_life_days=float(opts.get("profile_half_life_days") or 0) or None,
+                last_year_weight=ly_weight,
             )
             det = prof["diagnostics"]["battery_detection"]
             if det.get("included") is not None:
@@ -340,6 +355,7 @@ class Planner:
         """Which configured entities are missing or unavailable (shown in the UI)."""
         ids = [opts[k] for k in ("price_buy_entity", "price_sell_entity", "battery_soc_entity",
                                  "house_load_entity", "car_power_entity", "charger_power_entity") if opts.get(k)]
+        ids += split_csv(opts.get("load_submeters") or "")
         ids += split_csv(opts.get("solcast_entities", ""))
         ids += [opts[k] for k in REGISTER_KEYS if opts.get(k)]
         ids += split_csv(opts.get("counter_entities", ""))
@@ -399,7 +415,16 @@ class Planner:
         forecast_hours = set(buy_fc) | set(sell_fc)
         buy, sell = {**buy_fc, **buy}, {**sell_fc, **sell}
 
-        horizon = build_horizon(now, buy, sell, pv, lambda h: load_for_hour(profile, h, self.tz),
+        # What the separately measured appliances draw right now (kW): the current hour uses it
+        # instead of their profile, the next hour half of it while they run.
+        live_subs = {}
+        for e in split_csv(opts.get("load_submeters") or ""):
+            v = self.ha.number(e)
+            if v is not None:
+                live_subs[e] = max(0.0, v) / 1000.0
+        h_now = hour_floor(now)
+        horizon = build_horizon(now, buy, sell, pv,
+                                lambda h: load_for_hour(profile, h, self.tz, live=live_subs, now_hour=h_now),
                                 forecast_hours=forecast_hours)
         if len(horizon) == 0:
             raise PlannerError("no prices for the current hour")
@@ -504,6 +529,8 @@ class Planner:
             "pv_kw": round(float(plan.pv[0]) / dt0, 3),
             "pv_p50_kw": round(pv50.get(h0, 0.0), 3), "pv_p10_kw": round(pv10.get(h0, 0.0), 3),
             "load_kw": round(float(plan.load[0]) / dt0, 3),
+            "load_profile_kw": round(load_for_hour(profile, h0, self.tz), 3),
+            "submeters_now_kw": round(sum(live_subs.values()), 3) if live_subs else None,
         }
         samples = {"house_load_w": self.ha.number(opts["house_load_entity"]),
                    "car_w": self.ha.number(opts["charger_power_entity"]) if opts.get("charger_power_entity") else None}
@@ -545,6 +572,7 @@ class Planner:
             "horizon_hours": len(horizon),
             "profile_hours_of_data": profile["hours_of_data"],
             "profile": profile_view(profile),
+            "submeters_now": {e: round(v, 3) for e, v in live_subs.items()},
             "entity_check": self.entity_check,
             "warnings": warnings,
             "car": car_info,

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.10.0
+
+- **Expected house load follows the season:** the profile uses 56 days (`profile_days`) where
+  recent days count most (`profile_half_life_days`, 10), plus the same weeks last year from HA's
+  statistics (`profile_last_year_weight`, 0.5; 0 = off), so last winter's pattern (dryer, heat pump)
+  is there before this winter's has built up.
+- **Own meters** (`load_submeters`: heat pump, dishwasher, washer/dryer, hob): each gets its own
+  plain mean per hour, so appliances that run on some days only count with their expected energy
+  instead of being trimmed away as outliers; the rest of the house keeps the trimmed mean (weighted
+  by sample weight). The current hour uses what the meters draw right now (a running dryer, the hob
+  on), the next hour half of it while they run.
+- The "Forbrugsprofil" card shows the profile stacked per meter (weekday/weekend) and the new
+  diagnostics; `pred` logs the profile value and the meters' live power.
+
 ## 0.9.0
 
 - **New "Sol" tab.** The solar forecast for today and the next two days hour by hour: the p10–p90

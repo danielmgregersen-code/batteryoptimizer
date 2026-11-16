@@ -51,6 +51,19 @@ def synthetic_sun(t):
     return f, clear, actual
 
 
+def synthetic_submeters(t):
+    """Heat pump, dishwasher, washer/dryer and hob (W, hourly mean) like the user's Shelly meters."""
+    hp, dish, wash, hob = DEFAULTS["load_submeters"].split(",")
+    lt = t.astimezone(TZ)
+    day = lt.toordinal()
+    return {
+        hp: 250.0 if lt.month in (11, 12, 1, 2, 3) else 60.0,
+        dish: 900.0 if lt.hour == 20 and day % 2 == 0 else 0.0,
+        wash: (1800.0 if lt.month in (10, 11, 12, 1, 2, 3) else 600.0) if lt.hour in (10, 11) and day % 3 == 0 else 0.0,
+        hob: 1100.0 if lt.hour == 17 else 300.0 if lt.hour == 12 else 0.0,
+    }
+
+
 class FakeHA:
     def __init__(self, car=True):
         today = datetime.now(TZ).date()
@@ -80,6 +93,9 @@ class FakeHA:
         }
         for e in DEFAULTS["solcast_entities"].split(","):
             self.states[e] = "5.27"
+        for e, v in synthetic_submeters(datetime.now(TZ)).items():
+            self.states[e] = str(v)
+        self.states[DEFAULTS["load_submeters"].split(",")[2]] = "1950"     # the dryer runs right now
         for e in counter_ids(DEFAULTS).values():
             self.states[e] = "1000"
         for e, amps in zip(DEFAULTS["grid_current_entities"].split(","), ("21.4", "18.9", "19.6")):
@@ -156,6 +172,11 @@ class FakeHA:
             bat = 4000.0 if 2 <= hl < 5 and t.day % 4 else 0.0
             car = 11000.0 if hl == 4 and t.day % 5 == 0 else 0.0
             pv = synthetic_sun(t)[2] * 1000
+            subs = synthetic_submeters(t)
+            for sid, v in subs.items():
+                if sid in rows:
+                    rows[sid].append({"start": ms, "mean": v})
+            base += sum(subs.values())
             rows.get(load_id, []).append({"start": ms, "mean": base + random.uniform(-80, 120) + car})
             if car_id in rows:
                 rows[car_id].append({"start": ms, "mean": car})

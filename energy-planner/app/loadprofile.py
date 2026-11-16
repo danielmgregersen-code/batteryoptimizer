@@ -36,6 +36,39 @@ def trimmed_mean(values, trim: float = TRIM) -> float:
     return sum(kept) / len(kept)
 
 
+def weighted_trimmed_mean(pairs, trim: float = TRIM) -> float:
+    """Trimmed mean of (value, weight) pairs: `trim` of the total *weight* is dropped at each end."""
+    pairs = sorted((v, w) for v, w in pairs if w > 0)
+    total = sum(w for _, w in pairs)
+    if total <= 0:
+        return 0.0
+    lo, hi = trim * total, (1.0 - trim) * total
+    acc = num = den = 0.0
+    for v, w in pairs:
+        a, b = acc, acc + w
+        ov = max(0.0, min(b, hi) - max(a, lo))
+        num += v * ov
+        den += ov
+        acc = b
+    return num / den if den > 0 else sum(v * w for v, w in pairs) / total
+
+
+def weighted_mean(pairs) -> float:
+    total = sum(w for _, w in pairs)
+    return sum(v * w for v, w in pairs) / total if total > 0 else 0.0
+
+
+def sample_weight(start: datetime, now: datetime, half_life_days: float, last_year_weight: float) -> float:
+    """Recent hours count most (0.5^(age / half life)). Hours from about a year ago (the same weeks
+    last year) count `last_year_weight` x 0.5^(distance from today's date one year ago / half life)."""
+    if now is None or not half_life_days:
+        return 1.0
+    age = (now - start).total_seconds() / 86400.0
+    if age > 180:
+        return last_year_weight * 0.5 ** (abs(age - 365.25) / half_life_days) if last_year_weight else 0.0
+    return 0.5 ** (max(0.0, age) / half_life_days)
+
+
 def _by_start(rows) -> dict:
     out = {}
     for r in rows or []:
@@ -91,13 +124,20 @@ def detect_battery_in_load(load: dict, car: dict, bat: dict, pv: dict) -> dict:
 
 
 def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv_rows=None,
-                  battery_mode: str = "no", car_detect_w: float = 4000.0) -> dict:
+                  battery_mode: str = "no", car_detect_w: float = 4000.0, submeter_rows: dict = None,
+                  now: datetime = None, half_life_days: float = None, last_year_weight: float = 0.0) -> dict:
     """-> {"table": {(is_weekend, hour): kWh}, "hours_of_data": int, "default": kWh, "diagnostics": {...}}.
 
     battery_mode: "no" (default: the Growatt house load does not include battery charging),
     "auto" (detect), "yes" (always subtract grid charging).
     car_detect_w: in hours without car statistics, a base load above this is taken to be the car
     charging and the hour is left out (the user's old rule of thumb: more than ~4 kW is the car).
+    submeter_rows: {entity: statistics rows} of appliances measured separately (heat pump, washer /
+    dryer, dishwasher, hob). Each gets its own plain (untrimmed) mean per cell, so an appliance that
+    runs on some days only counts with its expected energy instead of being trimmed away; the rest
+    (base load minus the submeters) keeps the trimmed mean.
+    now / half_life_days / last_year_weight: sample weights (see sample_weight); without `now` every
+    hour counts the same.
     """
     load = _by_start(load_rows)
     car, car_kind = _power_by_start(car_rows)
@@ -114,7 +154,15 @@ def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv
         detection = detect_battery_in_load(load, car, bat, pv)
     subtract = battery_mode == "yes" or (battery_mode == "auto" and detection.get("included") is True)
 
-    samples: dict = {}
+    subs = {}
+    for e, rows in (submeter_rows or {}).items():
+        vals, _ = _power_by_start(rows)
+        subs[e] = vals
+    active = [e for e, v in subs.items() if v]          # submeters with statistics at all
+    samples: dict = {}                                  # cell -> [(base kWh, weight)]
+    rest: dict = {}                                     # cell -> [(rest kWh, weight)] (complete hours)
+    sub_samples: dict = {}                              # cell -> {entity: [(kWh, weight)]}
+    last_year_hours = 0
     n = corrected = car_hours = excluded = 0
     for start, load_w in load.items():
         car_w = max(0.0, car.get(start, 0.0))
@@ -131,7 +179,18 @@ def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv
             continue
         base_w = max(0.0, base_w)
         local = start.astimezone(tz)
-        samples.setdefault((local.weekday() >= 5, local.hour), []).append(base_w / 1000.0)
+        cell = (local.weekday() >= 5, local.hour)
+        w = sample_weight(start, now, half_life_days, last_year_weight)
+        if w <= 0:
+            continue
+        if now is not None and (now - start).days > 180:
+            last_year_hours += 1
+        samples.setdefault(cell, []).append((base_w / 1000.0, w))
+        if active and all(start in subs[e] for e in active):
+            parts = {e: max(0.0, subs[e][start]) / 1000.0 for e in active}
+            rest.setdefault(cell, []).append((max(0.0, base_w / 1000.0 - sum(parts.values())), w))
+            for e, v in parts.items():
+                sub_samples.setdefault(cell, {}).setdefault(e, []).append((v, w))
         n += 1
 
     # Fallback for sparse cells: same hour regardless of weekday/weekend.
@@ -139,16 +198,23 @@ def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv
     for (_, hour), vals in samples.items():
         by_hour.setdefault(hour, []).extend(vals)
 
-    table = {}
+    table, parts = {}, {}
     for weekend in (False, True):
         for hour in range(24):
-            vals = samples.get((weekend, hour), [])
-            if len(vals) >= 3:
-                table[(weekend, hour)] = trimmed_mean(vals)
+            cell = (weekend, hour)
+            vals = samples.get(cell, [])
+            if len(rest.get(cell, [])) >= 3:
+                # split: the even rest (trimmed) plus each submeter's expected energy (plain mean)
+                r = weighted_trimmed_mean(rest[cell])
+                sp = {e: weighted_mean(v) for e, v in sub_samples[cell].items()}
+                parts[cell] = {"rest": r, "subs": sp}
+                table[cell] = r + sum(sp.values())
+            elif len(vals) >= 3:
+                table[cell] = weighted_trimmed_mean(vals)
             elif by_hour.get(hour):
-                table[(weekend, hour)] = trimmed_mean(by_hour[hour])
+                table[cell] = weighted_trimmed_mean(by_hour[hour])
             else:
-                table[(weekend, hour)] = default_kwh
+                table[cell] = default_kwh
     diagnostics = {
         "battery_mode": battery_mode,
         "battery_detection": detection,
@@ -161,13 +227,32 @@ def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv
         "car_hours": car_hours,
         "battery_rows": len(bat),
         "pv_rows": len(pv),
+        "submeters": {e: len(v) for e, v in subs.items()},
+        "split_cells": len(parts),
+        "half_life_days": half_life_days,
+        "last_year_hours": last_year_hours,
+        "last_year_weight": last_year_weight,
     }
-    return {"table": table, "hours_of_data": n, "default": default_kwh, "diagnostics": diagnostics}
+    return {"table": table, "parts": parts, "hours_of_data": n, "default": default_kwh, "diagnostics": diagnostics}
 
 
-def load_for_hour(profile: dict, hour_utc: datetime, tz) -> float:
+def load_for_hour(profile: dict, hour_utc: datetime, tz, live: dict = None, now_hour: datetime = None) -> float:
+    """Expected base load (kWh) for an hour. live: {submeter: kW right now}. In the current hour the
+    submeters' profile is replaced by what they draw now (a dryer running, the hob on); in the next
+    hour, a submeter that is running (> 50 W) counts the average of now and its profile."""
     local = hour_utc.astimezone(tz)
-    return profile["table"].get((local.weekday() >= 5, local.hour), profile["default"])
+    cell = (local.weekday() >= 5, local.hour)
+    base = profile["table"].get(cell, profile["default"])
+    part = (profile.get("parts") or {}).get(cell)
+    if not live or now_hour is None or part is None:
+        return base
+    ahead = round((hour_utc - now_hour).total_seconds() / 3600.0)
+    if ahead == 0:
+        return part["rest"] + sum(live.get(e, v) for e, v in part["subs"].items())
+    if ahead == 1:
+        return part["rest"] + sum((live[e] + v) / 2 if live.get(e, 0.0) > 0.05 else v
+                                  for e, v in part["subs"].items())
+    return base
 
 
 def profile_view(profile: dict) -> dict:
@@ -176,6 +261,13 @@ def profile_view(profile: dict) -> dict:
     return {
         "weekday": [round(t[(False, h)], 3) for h in range(24)],
         "weekend": [round(t[(True, h)], 3) for h in range(24)],
+        "parts": {("weekend" if we else "weekday"): {
+            "rest": [round(profile["parts"][(we, h)]["rest"], 3) if (we, h) in profile.get("parts", {}) else None
+                     for h in range(24)],
+            "subs": {e: [round(profile["parts"][(we, h)]["subs"].get(e, 0.0), 3) if (we, h) in profile.get("parts", {})
+                         else None for h in range(24)]
+                     for e in sorted({e for p in profile.get("parts", {}).values() for e in p["subs"]})},
+        } for we in (False, True)} if profile.get("parts") else None,
         "hours_of_data": profile["hours_of_data"],
         "diagnostics": profile.get("diagnostics", {}),
         "statistics_rows": profile.get("statistics_rows", {}),

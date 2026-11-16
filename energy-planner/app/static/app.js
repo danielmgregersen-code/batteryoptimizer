@@ -755,15 +755,33 @@
 
     const prof = p.profile;
     const profBox = h('div', { class: 'chart' });
+    const split = prof && prof.parts ? profileSeries(prof) : null;
+    const profKind = state.profKind || 'weekday';
     const profCard = prof ? h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('h2', {}, 'Forbrugsprofil (basisforbrug pr. time, kWh)'),
         h('span', { class: 'hint' }, `Det planen regner med · ${fmt(prof.hours_of_data, 0)} timers statistik`)),
+      split ? h('div', { class: 'seg', role: 'group', 'aria-label': 'Dage', style: { marginBottom: '10px' } },
+        [['weekday', 'Hverdag'], ['weekend', 'Weekend']].map(([k, l]) => h('button', { type: 'button', 'aria-pressed': String(profKind === k), onclick: () => { state.profKind = k; renderPlan(); } }, l))) : null,
       profBox,
-      h('div', { style: { marginTop: '10px' } }, legend([{ color: C.batt, label: 'Hverdag' }, { color: C.export, label: 'Weekend' }])),
+      h('div', { style: { marginTop: '10px' } }, split ? legend(split.map((x) => ({ color: x.color, label: x.label })))
+        : legend([{ color: C.batt, label: 'Hverdag' }, { color: C.export, label: 'Weekend' }])),
       h('ul', { class: 'diag' }, profileDiagnostics(prof).map((d) => h('li', { class: d.warn ? 'warn' : '' }, d.text)))) : null;
 
     root.replaceChildren(h('div', { class: 'stack' }, banners, tiles, chartCard, h('div', { class: 'grid-2' }, upCard, regCard), profCard, tableCard));
-    if (prof) {
+    if (split) {
+      const pk = prof.parts[profKind];
+      const total = prof[profKind];
+      columnChart(profBox, {
+        label: 'Basisforbrug pr. time fordelt på målere', height: 180, stacked: true,
+        items: total.map((v, hh) => ({ label: String(hh).padStart(2, '0'), hh,
+          values: pk.rest[hh] == null ? [v, ...split.slice(1).map(() => 0)] : [pk.rest[hh], ...split.slice(1).map((x) => pk.subs[x.id][hh] || 0)] })),
+        series: split.map((x) => ({ label: x.label, color: x.color })),
+        tooltip: (it) => h('div', {}, h('div', { class: 'tt-head' }, `Kl. ${it.label}–${String((it.hh + 1) % 24).padStart(2, '0')} · ${fmt(total[it.hh], 2)} kWh`),
+          split.map((x, j) => ttRow(x.color, x.label, fmt(it.values[j], 2) + ' kWh', '')),
+          it.hh === parseInt(((p.updated || '').slice(11, 13)) || '-1', 10) && p.pred && p.pred.submeters_now_kw != null
+            ? ttRow(C.ink2, 'Målerne lige nu', fmt(p.pred.submeters_now_kw, 2) + ' kW') : null),
+      });
+    } else if (prof) {
       columnChart(profBox, {
         label: 'Basisforbrug pr. time', height: 170,
         items: prof.weekday.map((v, hh) => ({ label: String(hh).padStart(2, '0'), values: [v, prof.weekend[hh]], hh })),
@@ -796,6 +814,15 @@
     });
   }
 
+  const SUB_NAMES = [[/varmepumpe/i, 'Varmepumpe'], [/opvask/i, 'Opvaskemaskine'], [/vask|t(o|ø)rre|dryer/i, 'Vask og tørre'], [/kogeplade|hob/i, 'Kogeplade']];
+  const SUB_COLORS = [C.batt, C.gridbat, C.export, C.car, C.sun, C.buy];
+  const subName = (e) => (SUB_NAMES.find(([re]) => re.test(e)) || [null, e.replace(/^sensor\./, '')])[1];
+  function profileSeries(prof) {
+    const ids = Object.keys((prof.parts.weekday || prof.parts.weekend).subs);
+    return [{ id: 'rest', label: 'Resten af huset', color: C.hold },
+      ...ids.map((e, i) => ({ id: e, label: subName(e), color: SUB_COLORS[i % SUB_COLORS.length] }))];
+  }
+
   function profileDiagnostics(prof) {
     const d = prof.diagnostics || {}, out = [];
     if (!prof.hours_of_data) {
@@ -813,6 +840,11 @@
     else if (b.included === true) out.push({ warn: !d.battery_subtracted, text: `Husforbruget indeholder batteriets opladning: om natten ${fmt(b.base_while_charging_kw, 2)} kW mens batteriet lader (${fmt(b.charge_kw, 1)} kW) mod ${fmt(b.base_while_idle_kw, 2)} kW uden. ` + (d.battery_subtracted ? `Opladning fra nettet er trukket fra i ${fmt(d.battery_corrected_hours, 0)} timer.` : 'Den trækkes ikke fra') + mode });
     else if (b.included === false) out.push({ text: `Husforbruget indeholder ikke batteriets opladning (om natten ${fmt(b.base_while_charging_kw, 2)} kW under opladning mod ${fmt(b.base_while_idle_kw, 2)} kW uden).` + (d.battery_subtracted ? ' Trækkes alligevel fra' + mode + '.' : '') });
     else out.push({ text: `For få nattetimer med batteriopladning (${b.night_charging_hours ?? 0}) til at afgøre, om husforbruget indeholder den.` + (d.battery_subtracted ? ' Trækkes fra' + mode + '.' : '') });
+    if (d.half_life_days) out.push({ text: `Nyere dage tæller mest: halveringstid ${fmt(d.half_life_days, 0)} dage.` + (d.last_year_hours ? ` Inkl. ${fmt(d.last_year_hours, 0)} timer fra de samme uger sidste år (vægt ${fmt(d.last_year_weight, 1)}).` : d.last_year_weight ? ' Ingen statistik fra samme periode sidste år.' : '') });
+    const sm = d.submeters || {};
+    const ok = Object.keys(sm).filter((e) => sm[e] > 0), missing = Object.keys(sm).filter((e) => !sm[e]);
+    if (ok.length) out.push({ text: `Egne målere: ${ok.map(subName).join(', ')} får hver deres gennemsnit (ikke trimmet), så apparater, der kun kører nogle dage, tæller med. Den aktuelle time bruger det, de trækker lige nu.` });
+    if (missing.length) out.push({ warn: true, text: `Ingen langtidsstatistik for ${missing.join(', ')} (giv dem state_class: measurement).` });
     return out;
   }
 

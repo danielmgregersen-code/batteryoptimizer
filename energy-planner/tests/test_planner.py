@@ -874,3 +874,22 @@ def test_solar_report_for_a_past_day_and_today(tmp_path):
     days = p.solar_days(3, now)
     assert [d["day"] for d in days] == ["2026-11-14", "2026-11-13", "2026-11-12"]
     assert days[1]["actual"] == pytest.approx(y["totals"]["actual"])
+
+
+def test_a_hob_on_right_now_lifts_the_current_hour(tmp_path):
+    hob = DEFAULTS["load_submeters"].split(",")[3]
+    now = datetime(2026, 11, 14, 10, 30, tzinfo=UTC)
+    start = now - timedelta(days=14)
+    hours = [start + timedelta(hours=i) for i in range(24 * 14)]
+    stats = {DEFAULTS["house_load_entity"]: [{"start": t.timestamp() * 1000, "mean": 600.0} for t in hours],
+             hob: [{"start": t.timestamp() * 1000, "mean": 100.0} for t in hours]}
+    for e in DEFAULTS["load_submeters"].split(",")[:3]:
+        stats[e] = [{"start": t.timestamp() * 1000, "mean": 0.0} for t in hours]
+    ha = make_ha(stats=stats)
+    base = Planner(ha, tz=TZ, log_path=str(tmp_path / "a.jsonl")).run_once(now)
+    ha.numbers[hob] = 2000.0
+    snap = Planner(ha, tz=TZ, log_path=str(tmp_path / "b.jsonl")).run_once(now)
+    assert base["pred"]["load_kw"] == pytest.approx(0.6, abs=0.01)
+    assert snap["pred"]["load_kw"] == pytest.approx(0.5 + 2.0, abs=0.01)
+    assert snap["pred"]["submeters_now_kw"] == pytest.approx(2.0) and snap["submeters_now"][hob] == 2.0
+    assert snap["profile"]["parts"]["weekday"]["rest"][12] == pytest.approx(0.5, abs=0.01)
