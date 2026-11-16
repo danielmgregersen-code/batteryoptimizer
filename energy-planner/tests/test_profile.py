@@ -161,7 +161,7 @@ def test_a_dryer_on_some_days_counts_with_its_mean_and_is_not_trimmed_away():
         return 2000.0 if lt.hour == 19 and lt.toordinal() % 5 == 0 else 0.0
     load = rows(start, 24 * 42, lambda t: 400.0 + dry(t))
     old = build_profile(load, [], TZ, 0.8)
-    new = build_profile(load, [], TZ, 0.8, submeter_rows={dryer: rows(start, 24 * 42, dry)})
+    new = build_profile(load, [], TZ, 0.8, submeter_rows={dryer: rows(start, 24 * 42, dry)}, smooth_hours=0)
     expected = 0.4 + 2.0 / 5
     assert old["table"][(False, 19)] < new["table"][(False, 19)] - 0.2   # mostly trimmed away before
     assert new["table"][(False, 19)] == pytest.approx(expected, abs=0.15)
@@ -206,3 +206,20 @@ def test_live_submeters_replace_the_profile_in_the_current_hour_and_half_in_the_
     assert load_for_hour(prof, h0, TZ, live=live, now_hour=h0) == pytest.approx(0.5 + 2.0)
     assert load_for_hour(prof, h0 + timedelta(hours=1), TZ, live=live, now_hour=h0) == pytest.approx(0.5 + 1.05)
     assert load_for_hour(prof, h0 + timedelta(hours=2), TZ, live=live, now_hour=h0) == pytest.approx(0.6)
+
+
+def test_appliances_on_demand_are_smoothed_but_keep_their_energy_and_steady_ones_are_not():
+    start = NOW - timedelta(days=42)
+    dryer, hp = "sensor.dryer", "sensor.heat_pump"
+    dry = lambda t: 2000.0 if t.astimezone(TZ).hour == 19 and t.astimezone(TZ).toordinal() % 5 == 0 else 0.0
+    heat = lambda t: 800.0 if t.astimezone(TZ).hour == 6 else 100.0
+    load = rows(start, 24 * 42, lambda t: 400.0 + dry(t) + heat(t))
+    prof = build_profile(load, [], TZ, 0.8, submeter_rows={dryer: rows(start, 24 * 42, dry), hp: rows(start, 24 * 42, heat)},
+                         steady_submeters=[hp], smooth_hours=2)
+    d = [prof["parts"][(False, h)]["subs"][dryer] for h in range(24)]
+    assert sum(d) == pytest.approx(2.0 / 5, abs=0.05)                     # the day's energy is kept
+    assert d[19] < 0.2 and d[17] > 0.02 and d[21] > 0.02 and d[12] == 0  # spread over 17-21 only
+    assert d[18] == pytest.approx(d[20])
+    hp6 = prof["parts"][(False, 6)]["subs"][hp]
+    assert hp6 == pytest.approx(0.8, abs=0.01)                            # steady: its own hour
+    assert prof["diagnostics"]["smoothed_submeters"] == [dryer]

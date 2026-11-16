@@ -154,6 +154,8 @@ class Planner:
                 submeter_rows={e: merged.get(e) for e in submeters},
                 now=now, half_life_days=float(opts.get("profile_half_life_days") or 0) or None,
                 last_year_weight=ly_weight,
+                steady_submeters=split_csv(opts.get("load_submeters_steady") or ""),
+                smooth_hours=int(opts.get("load_submeters_smooth_hours", 2)),
             )
             det = prof["diagnostics"]["battery_detection"]
             if det.get("included") is not None:

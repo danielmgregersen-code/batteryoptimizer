@@ -125,7 +125,8 @@ def detect_battery_in_load(load: dict, car: dict, bat: dict, pv: dict) -> dict:
 
 def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv_rows=None,
                   battery_mode: str = "no", car_detect_w: float = 4000.0, submeter_rows: dict = None,
-                  now: datetime = None, half_life_days: float = None, last_year_weight: float = 0.0) -> dict:
+                  now: datetime = None, half_life_days: float = None, last_year_weight: float = 0.0,
+                  steady_submeters=(), smooth_hours: int = 2) -> dict:
     """-> {"table": {(is_weekend, hour): kWh}, "hours_of_data": int, "default": kWh, "diagnostics": {...}}.
 
     battery_mode: "no" (default: the Growatt house load does not include battery charging),
@@ -138,6 +139,10 @@ def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv
     (base load minus the submeters) keeps the trimmed mean.
     now / half_life_days / last_year_weight: sample weights (see sample_weight); without `now` every
     hour counts the same.
+    Appliances that run when needed (washer, dryer, dishwasher, hob) have no fixed hour, so their
+    timing is smoothed: weekdays and weekends are pooled and each hour gets the triangular-weighted
+    mean of +-`smooth_hours` around it (the day's energy is kept). `steady_submeters` (a heat pump
+    run by its thermostat) keep their own profile per (weekday/weekend, hour).
     """
     load = _by_start(load_rows)
     car, car_kind = _power_by_start(car_rows)
@@ -198,6 +203,7 @@ def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv
     for (_, hour), vals in samples.items():
         by_hour.setdefault(hour, []).extend(vals)
 
+    smoothed = _smooth_submeters(sub_samples, [e for e in active if e not in set(steady_submeters)], smooth_hours)
     table, parts = {}, {}
     for weekend in (False, True):
         for hour in range(24):
@@ -206,7 +212,8 @@ def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv
             if len(rest.get(cell, [])) >= 3:
                 # split: the even rest (trimmed) plus each submeter's expected energy (plain mean)
                 r = weighted_trimmed_mean(rest[cell])
-                sp = {e: weighted_mean(v) for e, v in sub_samples[cell].items()}
+                sp = {e: smoothed[e][hour] if e in smoothed else weighted_mean(v)
+                      for e, v in sub_samples[cell].items()}
                 parts[cell] = {"rest": r, "subs": sp}
                 table[cell] = r + sum(sp.values())
             elif len(vals) >= 3:
@@ -229,11 +236,39 @@ def build_profile(load_rows, car_rows, tz, default_kwh: float, bat_rows=None, pv
         "pv_rows": len(pv),
         "submeters": {e: len(v) for e, v in subs.items()},
         "split_cells": len(parts),
+        "smoothed_submeters": sorted(smoothed),
+        "smooth_hours": smooth_hours,
         "half_life_days": half_life_days,
         "last_year_hours": last_year_hours,
         "last_year_weight": last_year_weight,
     }
     return {"table": table, "parts": parts, "hours_of_data": n, "default": default_kwh, "diagnostics": diagnostics}
+
+
+def _smooth_submeters(sub_samples: dict, ids: list, k: int) -> dict:
+    """{entity: [24 kWh]}: weekday and weekend pooled per hour, then a circular triangular moving
+    average over +-k hours. A circular average keeps the sum over the day (the expected energy)."""
+    out = {}
+    for e in ids:
+        pooled = []
+        for hour in range(24):
+            pairs = [x for we in (False, True) for x in (sub_samples.get((we, hour)) or {}).get(e, [])]
+            pooled.append(weighted_mean(pairs) if pairs else None)
+        if all(v is None for v in pooled):
+            continue
+        sm = []
+        for hour in range(24):
+            num = den = 0.0
+            for d in range(-k, k + 1):
+                v = pooled[(hour + d) % 24]
+                if v is None:
+                    continue
+                w = k + 1 - abs(d)
+                num += w * v
+                den += w
+            sm.append(num / den if den else 0.0)
+        out[e] = sm
+    return out
 
 
 def load_for_hour(profile: dict, hour_utc: datetime, tz, live: dict = None, now_hour: datetime = None) -> float:
