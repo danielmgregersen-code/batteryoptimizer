@@ -786,3 +786,35 @@ def test_no_charger_stop_at_a_lifted_limit_while_more_is_planned_later(tmp_path)
     for m in (0, 2, 4, 6, 8):
         p.car_cycle(NIGHT + timedelta(minutes=m))
     assert not any(x[1] == "press" for x in ha.local)
+
+
+SCHED_START, SCHED_STOP = DEFAULTS["charger_schedule_entities"].split(",")
+
+
+def test_thor_schedule_is_a_visible_warning(tmp_path):
+    ha = car_ha()
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    assert not any("ladeplan" in w for w in p.run_once(NIGHT)["warnings"])          # entities missing
+    ha.texts.update({SCHED_START: "03:00:00", SCHED_STOP: "03:00:00"})
+    assert not any("ladeplan" in w for w in p.run_once(NIGHT)["warnings"])          # start = stop: off
+    ha.texts[SCHED_STOP] = "05:00:00"
+    assert any("ladeplan (03:00–05:00)" in w for w in p.run_once(NIGHT)["warnings"])
+    ha.texts[DEFAULTS["car_production_switch_entity"]] = "on"
+    d = p.car_cycle(NIGHT)
+    assert "ShinePhone" in d["warning"]
+
+
+def test_session_ended_by_the_charger_is_detected(tmp_path):
+    ha = kia_failing_ha(soc=30.0, message=None)          # minimum still needed: more planned later
+    p = planner_for(ha, tmp_path)
+    p.run_once(NIGHT)
+    ha.texts[DEFAULTS["charger_status_entity"]] = "suspended_ev"
+    d = p.car_cycle(NIGHT)
+    assert not d["warning"] or "afsluttede" not in d["warning"]
+    ha.texts[DEFAULTS["charger_status_entity"]] = "finishing"
+    d = p.car_cycle(NIGHT + timedelta(minutes=2))
+    assert "afsluttede sessionen selv kl. 20:32" in d["warning"]
+    assert not any(x[1] == "press" for x in ha.local)
+    ha.texts[DEFAULTS["charger_status_entity"]] = "preparing"       # re-plugged
+    d = p.car_cycle(NIGHT + timedelta(minutes=10))
+    assert not d["warning"] or "afsluttede" not in d["warning"]

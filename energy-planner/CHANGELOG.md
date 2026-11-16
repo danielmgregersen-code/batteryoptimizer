@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.2
+
+- **The THOR's own charging schedule ended last night's session.** The log shows the add-on only
+  paused the car through Kia at 02:55; at 02:58:41 the charger ended the session by itself
+  ("Unknown Stop"), just before its automatic charging window (03:00–05:00). The explanation in
+  0.8.1 (an emergency stop from the add-on) was wrong; its extra safeguards stay.
+- Warning in the panel and on the car sensor while the THOR has a schedule set
+  (`charger_schedule_entities`, start ≠ stop): turn it off in ShinePhone.
+- Warning when the charger ends a session on its own (charging/paused → finishing/idle/available
+  with nothing sent from here) while the plan has more for the car: re-plug the cable.
+
 ## 0.8.1
 
 - **No more emergency stop on the charger after a pause that worked.** A Kia stop that came back with
