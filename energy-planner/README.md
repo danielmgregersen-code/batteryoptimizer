@@ -24,6 +24,10 @@ Create two helpers (Settings → Devices & services → Helpers → Toggle):
   nothing more planned before the deadline the charger's stop button is pressed as an emergency
   stop (`car_thor_stop_fallback`). The THOR cannot be restarted from the add-on after that: re-plug
   the cable. The warning is shown in the panel and on `sensor.energy_planner_car`.
+  The emergency stop needs all of: the pause wanted for at least 5 min, the plan having nothing more
+  for the car, and the charger still saying `charging` when read again just before the press. A Kia
+  call that returns an error while the charger shows the car paused counts as a success; a call
+  with no reply in time counts as unknown ("?" in the log) and is judged by the charger status.
 - Write order: what goes off first (charge from grid before battery first), then the limits
   (min/max SoC so that min never exceeds max, charge rate), then what goes on.
 - Values are clipped (min SoC ≥ `soc_floor_pct`, max SoC ≥ min SoC, charge rate 10–100) and read

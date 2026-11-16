@@ -25,6 +25,7 @@ KIA_REPEAT_S = 600     # the same Kia cloud call is not repeated within this whi
 KIA_BACKOFF_MIN = (2, 4, 8, 15)      # minutes between retries after failed Kia calls
 KIA_BLOCK = timedelta(hours=6)       # after a PIN / access error: no Kia calls for this long
 KIA_STOP_IGNORED = timedelta(minutes=10)   # a successful stop the car has not followed after this
+THOR_STOP_AFTER = timedelta(minutes=5)     # the pause must have been wanted this long before an emergency stop
 NON_RETRYABLE = ("pin", "unauthorized", "unauthorised", "locked", "token", "forbidden", "401", "403")
 MAX_LOG_LINES = 12000      # with a cycle every 5 min, 9000 lines are about 31 days
 KEEP_LOG_LINES = 9000
@@ -68,6 +69,7 @@ class Planner:
         self._kia_last_error = None
         self._stop_ok_at = None        # last successful kia stop while the car was charging
         self._thor_stopped = False     # emergency stop on the charger done: no restart from here
+        self._pause_wanted_since = None   # since when the controller has wanted a charging car paused
         self._car_prod_prev = False
         self._fuse_rate_cap = None     # battery charge rate (%) capped live by the main fuse guard
         self.options_fn = options_fn
@@ -650,11 +652,16 @@ class Planner:
         if not (charging and wants_pause):
             if not charging:
                 self._stop_ok_at = None
+            self._pause_wanted_since = None
             return executed, self._kia_warning(now)
+        if self._pause_wanted_since is None:
+            self._pause_wanted_since = now
 
         stop = next((x for x in executed if x["service"] == "kia_uvo.stop_charge"), None)
-        if stop and stop["status"] == "ok" and self._stop_ok_at is None:
+        if stop and stop["status"] in ("ok", "unknown") and self._stop_ok_at is None:
             self._stop_ok_at = now
+        if stop and stop.get("paused"):
+            return executed, None                      # the car paused while the call was running
         ignored = self._stop_ok_at is not None and now - self._stop_ok_at >= KIA_STOP_IGNORED
         blocked = self._kia_block_until is not None and now < self._kia_block_until
         no_device = not opts.get("car_device_id")
@@ -669,20 +676,28 @@ class Planner:
         if live.get("amps") != amin:
             executed += self._execute_car_calls([{"service": "number.set_value", "entity_id": opts["charger_current_entity"],
                                                   "value": amin}], opts, status, now)
-        # Emergency stop on the charger: grid charging only, nothing more planned, Kia given up on.
-        soc = live.get("car_soc") or 0.0
-        at_max = soc >= float(opts["car_max_soc_pct"])
+        # Emergency stop on the charger: it cannot be restarted from here, so only when charging from
+        # the grid, the plan has nothing more for the car, Kia has given up, the pause has been wanted
+        # for a while, and the charger still says "charging" when read again right now.
         nothing_more = self._car_planned_ahead(snap, now) < 0.5
         kia_gave_up = blocked or self._kia_fails >= 2 or ignored or no_device
+        long_enough = now - self._pause_wanted_since >= THOR_STOP_AFTER
         if (opts.get("car_thor_stop_fallback") and opts.get("charger_stop_button") and d.get("source") != "solar"
-                and (nothing_more or at_max) and kia_gave_up):
+                and nothing_more and kia_gave_up and long_enough):
+            fresh = self.ha.text(opts["charger_status_entity"])
+            if fresh != "charging":
+                log.info("car: no emergency stop, the charger now says %s", fresh)
+                self._kia_fails, self._kia_next_try = 0, None
+                return executed, None
             res = self._execute_car_calls([{"service": "button.press", "entity_id": opts["charger_stop_button"]}],
                                           opts, status, now)
             executed += res
             if res and res[0]["status"] == "ok":
                 self._thor_stopped = True
                 warning += " Nødstop på laderen brugt – sæt kablet i igen for at lade."
-                log.warning("car: emergency stop on the charger (Kia could not pause the car)")
+                mins = (now - self._pause_wanted_since).total_seconds() / 60
+                log.warning("car: emergency stop on the charger: still charging after %.0f min of wanting a pause "
+                            "(Kia: %s)", mins, self._kia_last_error or ("stop ignored" if ignored else "no device id"))
         else:
             warning += f" Laderen er sat til {amin} A, til bilen kan pauses."
         return executed, warning
@@ -748,6 +763,18 @@ class Planner:
                     try:
                         call("kia_uvo", svc.split(".", 1)[1], {"device_id": device})
                     except Exception as e:
+                        # The car may have followed even though the call failed or timed out: ask the
+                        # charger before counting it as a failure.
+                        fresh = self.ha.text(opts["charger_status_entity"]) if opts.get("charger_status_entity") else None
+                        followed = ((svc == "kia_uvo.stop_charge" and status == "charging" and fresh in carmod.SUSPENDED)
+                                    or (svc == "kia_uvo.start_charge" and status != "charging" and fresh == "charging"))
+                        if followed or isinstance(e, TimeoutError):
+                            self._last_kia = (svc, status, now)
+                            res.update(status="ok" if followed else "unknown", error=str(e) or "no reply in time",
+                                       paused=followed and svc == "kia_uvo.stop_charge")
+                            log.info("car: %s returned %s, the charger now says %s", svc, e or "a timeout", fresh)
+                            done.append(res)
+                            continue
                         self._kia_failed(str(e), now)
                         raise
                     self._last_kia = (svc, status, now)

@@ -907,7 +907,7 @@
     const short = (svc) => svc.replace('kia_uvo.', 'kia ').replace('number.set_value', 'strøm').replace('button.press', 'knap');
     if (e.executed && e.executed.length) {
       return e.executed.map((x) => {
-        const mark = x.status === 'ok' ? '✓' : x.status === 'skipped' ? '–' : '✗';
+        const mark = x.status === 'ok' ? '✓' : x.status === 'skipped' ? '–' : x.status === 'unknown' ? '?' : '✗';
         return h('div', { title: x.error || '' }, `${mark} ${short(x.service)}${x.value != null ? ' ' + x.value : ''}${x.error ? ': ' + x.error : ''}`);
       });
     }
