@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning of a Growatt hybrid inverter, home battery and EV charging (dry-run)."
-version: "0.9.0"
+version: "0.10.0"
 slug: "energy_planner"
 init: false
 arch:
@@ -44,7 +44,10 @@ options:
   pv_dampening_half_life_days: 14
   pv_dampening_manual: ""
   solcast_push: false
-  profile_days: 28
+  profile_days: 56
+  profile_half_life_days: 10
+  profile_last_year_weight: 0.5
+  load_submeters: "sensor.shelly_varmepumpe_power,sensor.shelly_opvaskemaskine_power,sensor.bryggers_shelly_vask_og_torre_effekt,sensor.kokken_shelly_kogeplade_effekt"
   default_load_kw: 0.8
   load_includes_battery_charging: "no"
   interval_minutes: 5
@@ -130,6 +133,9 @@ schema:
   pv_dampening_manual: str?
   solcast_push: bool
   profile_days: int(7,120)
+  profile_half_life_days: int(3,60)
+  profile_last_year_weight: float(0,2)
+  load_submeters: str?
   default_load_kw: float(0.1,10)
   load_includes_battery_charging: list(auto|yes|no)
   interval_minutes: int(5,60)
