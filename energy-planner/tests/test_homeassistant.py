@@ -160,3 +160,20 @@ def test_websocket_call_service_returns_has_error_message():
         except ServiceNotAllowed:
             pass
         server.shutdown()
+
+
+def test_solar_api(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import main
+    from test_planner import _solar_planner
+
+    p, _ = _solar_planner(tmp_path)
+    p.run_once()
+    monkeypatch.setattr(main, "planner", p)
+    main._solar_cache.clear()
+    client = TestClient(main.app)
+    assert client.get("/api/solar?day=nope").status_code == 400
+    r = client.get("/api/solar?day=2026-11-13").json()
+    assert r["day"] == "2026-11-13" and len(r["hours"]) == 24
+    assert len(client.get("/api/solar/days?days=5").json()) == 5

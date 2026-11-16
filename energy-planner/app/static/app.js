@@ -762,24 +762,7 @@
       h('div', { style: { marginTop: '10px' } }, legend([{ color: C.batt, label: 'Hverdag' }, { color: C.export, label: 'Weekend' }])),
       h('ul', { class: 'diag' }, profileDiagnostics(prof).map((d) => h('li', { class: d.warn ? 'warn' : '' }, d.text)))) : null;
 
-    const dmp = p.pv_dampening;
-    const dmpBox = h('div', { class: 'chart' });
-    const dmpCard = dmp ? dampeningCard(dmp, dmpBox) : null;
-
-    root.replaceChildren(h('div', { class: 'stack' }, banners, tiles, chartCard, h('div', { class: 'grid-2' }, upCard, regCard), profCard, dmpCard, tableCard));
-    if (dmp && !dmp.solcast_auto) {
-      const hrs = [...Array(24).keys()].filter((hh) => (dmp.hours || [])[hh] > 0);
-      columnChart(dmpBox, {
-        label: 'Sol pr. time: Solcast, faktisk og korrigeret', height: 180,
-        empty: 'Ingen soltimer at sammenligne endnu – historikken bygges op time for time.',
-        items: hrs.map((hh) => ({ label: String(hh).padStart(2, '0'), values: [dmp.forecast[hh], dmp.actual[hh], dmp.corrected[hh]], hh })),
-        series: [{ label: 'Solcast', color: C.sun }, { label: 'Faktisk', color: C.batt }, { label: 'Med korrektion', color: C.gridbat }],
-        tooltip: (it) => h('div', {}, h('div', { class: 'tt-head' }, `Kl. ${it.label} · gns. over ${dmp.hours[it.hh]} dage`),
-          ttRow(C.sun, 'Solcast (uden dæmpning)', fmt(it.values[0], 2) + ' kWh', ''), ttRow(C.batt, 'Faktisk', fmt(it.values[1], 2) + ' kWh', ''),
-          ttRow(C.gridbat, 'Med korrektion', fmt(it.values[2], 2) + ' kWh', ''),
-          ttRow(C.ink2, 'Faktor ved klar himmel', fmt(dmp.clear_factors[it.hh], 2)), ttRow(C.ink2, 'Faktor i dag', fmt(dmp.today_factors[it.hh], 2))),
-      });
-    }
+    root.replaceChildren(h('div', { class: 'stack' }, banners, tiles, chartCard, h('div', { class: 'grid-2' }, upCard, regCard), profCard, tableCard));
     if (prof) {
       columnChart(profBox, {
         label: 'Basisforbrug pr. time', height: 170,
@@ -833,9 +816,288 @@
     return out;
   }
 
+  /* Solar chart: hours on x, an optional p10–p90 band, bars (actual) and lines (solid/dashed). */
+  function solarChart(container, cfg) {
+    const rows = cfg.rows;
+    const n = rows.length;
+    container.replaceChildren();
+    if (!n) { container.appendChild(h('div', { class: 'empty' }, cfg.empty || 'Ingen data endnu.')); return; }
+    observe(container, (W) => {
+      const narrow = W < 560;
+      const ml = narrow ? 34 : 42, mr = 10, top = cfg.dayLabels || cfg.nowAt != null ? 26 : 10, ph = cfg.height || 200, axisH = 22;
+      const pw = W - ml - mr, bw = pw / n, H = top + ph + axisH;
+      const root = svg('svg', { viewBox: `0 0 ${W} ${H}`, height: H, role: 'img', 'aria-label': cfg.label || 'Sol' });
+      const xAt = (i) => ml + i * bw;
+      const xc = (i) => xAt(i) + bw / 2;
+      const vals = [];
+      rows.forEach((r) => {
+        if (cfg.band) vals.push(cfg.band.hi(r));
+        if (cfg.bars) vals.push(cfg.bars.get(r));
+        (cfg.lines || []).forEach((l) => vals.push(l.get(r)));
+      });
+      const { lo, hi, ticks } = niceTicks(0, Math.max(0.5, ...vals.filter(Number.isFinite)), ph < 160 ? 3 : 4);
+      const yv = (v) => top + ph - ((v - lo) / (hi - lo)) * ph;
+      for (const t of ticks) {
+        svg('line', { x1: ml, x2: ml + pw, y1: yv(t), y2: yv(t), class: t === 0 ? 'baseline' : 'gridline' }, root);
+        svg('text', { x: ml - 6, y: yv(t) + 4, class: 'tick', 'text-anchor': 'end' }, root, fmt(t, t % 1 ? 1 : 0));
+      }
+      if (cfg.dayLabels) {
+        // a new day starts where the date changes (night hours may be left out of the rows)
+        rows.forEach((r, i) => {
+          if (i > 0 && dayKey(r.t) === dayKey(rows[i - 1].t)) return;
+          if (i > 0) svg('line', { x1: xAt(i), x2: xAt(i), y1: 4, y2: top + ph, class: 'baseline' }, root);
+          const rel = relDay(dayKey(r.t));
+          const label = rel ? rel.trim().replace(/^./, (c) => c.toUpperCase()) : 'I dag';
+          const full = label + (narrow ? '' : ', ' + dayName(dayKey(r.t), { day: 'numeric', month: 'short' }));
+          const xn = cfg.nowAt != null ? ml + cfg.nowAt * bw : -1;
+          const x0 = xn > xAt(i) - 4 && xn < xAt(i) + 90 ? xn + 16 : xAt(i) + 4;
+          if (x0 + 40 < W) svg('text', { x: x0, y: 14, class: 'daylabel' }, root, full);
+        });
+      }
+      // band (segments where both bounds exist)
+      if (cfg.band) {
+        let seg = [];
+        const flush = () => {
+          if (seg.length > 1) {
+            const up = seg.map(([i, , v]) => `${xc(i)},${yv(v)}`);
+            const dn = seg.slice().reverse().map(([i, v]) => `${xc(i)},${yv(v)}`);
+            svg('path', { d: 'M' + up.join('L') + 'L' + dn.join('L') + 'Z', style: { fill: cfg.band.color, opacity: 0.18, stroke: 'none' } }, root);
+          }
+          seg = [];
+        };
+        rows.forEach((r, i) => {
+          const a = cfg.band.lo(r), b = cfg.band.hi(r);
+          if (i > 0 && cfg.dayLabels && dayKey(r.t) !== dayKey(rows[i - 1].t)) flush();
+          if (a == null || b == null) flush(); else seg.push([i, a, b]);
+        });
+        flush();
+      }
+      if (cfg.bars) {
+        const bwid = Math.max(2, Math.min(22, bw * 0.62));
+        rows.forEach((r, i) => {
+          const v = cfg.bars.get(r);
+          if (v == null || v < 0.005) return;
+          const y = yv(v);
+          svg('path', { d: barPath(xc(i) - bwid / 2, y, bwid, yv(0) - y, true, false), style: { fill: cfg.bars.color, opacity: 0.85 } }, root);
+        });
+      }
+      for (const l of cfg.lines || []) {
+        let d = '', open = false;
+        rows.forEach((r, i) => {
+          const v = l.get(r);
+          if (v == null || (i > 0 && cfg.dayLabels && dayKey(r.t) !== dayKey(rows[i - 1].t))) open = false;
+          if (v == null) return;
+          d += (open ? 'L' : 'M') + xc(i) + ',' + yv(v);
+          open = true;
+        });
+        if (d) svg('path', { d, style: { fill: 'none', stroke: l.color, strokeWidth: l.width || 2, strokeDasharray: l.dash || 'none', strokeLinejoin: 'round', strokeLinecap: 'round' } }, root);
+      }
+      // x axis
+      const step = [1, 2, 3, 4, 6, 12].find((k) => bw * k >= (narrow ? 26 : 30)) || 12;
+      rows.forEach((r, i) => {
+        const hh = parseInt(r.t.slice(11, 13), 10);
+        if (hh % step === 0) svg('text', { x: xc(i), y: top + ph + 15, class: 'tick', 'text-anchor': 'middle' }, root, String(hh).padStart(2, '0'));
+      });
+      if (cfg.nowAt != null) {
+        const xn = ml + cfg.nowAt * bw;
+        svg('line', { x1: xn, x2: xn, y1: 18, y2: top + ph, class: 'nowline' }, root);
+        svg('rect', { x: xn - 12, y: 3, width: 24, height: 15, rx: 7.5, style: { fill: 'var(--ink)' } }, root);
+        svg('text', { x: xn, y: 14, class: 'nowlabel', 'text-anchor': 'middle' }, root, 'nu');
+      }
+      // hover
+      const band = svg('rect', { x: 0, y: top, width: bw, height: ph, class: 'hoverband', visibility: 'hidden' }, root);
+      const overlay = svg('rect', { x: ml, y: top, width: pw, height: ph, fill: 'transparent', class: 'plot', tabindex: 0, 'aria-label': 'Flyt med piletasterne for at se hver time' }, root);
+      let cur = -1;
+      const showAt = (i, cx, cy) => {
+        cur = Math.max(0, Math.min(n - 1, i));
+        band.setAttribute('x', xAt(cur));
+        band.setAttribute('visibility', 'visible');
+        tip.show(cfg.tooltip(rows[cur]), cx, cy);
+      };
+      const hide = () => { band.setAttribute('visibility', 'hidden'); tip.hide(); };
+      overlay.addEventListener('pointermove', (e) => {
+        const box = root.getBoundingClientRect();
+        showAt(Math.floor(((e.clientX - box.left) * (W / box.width) - ml) / bw), e.clientX, e.clientY);
+      });
+      overlay.addEventListener('pointerleave', hide);
+      overlay.addEventListener('blur', hide);
+      overlay.addEventListener('keydown', (e) => {
+        if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+        e.preventDefault();
+        const i = cur < 0 ? 0 : cur + (e.key === 'ArrowRight' ? 1 : -1);
+        const box = root.getBoundingClientRect();
+        showAt(i, box.left + (xAt(Math.max(0, Math.min(n - 1, i))) + bw) * (box.width / W), box.top + 40);
+      });
+      container.replaceChildren(root);
+    });
+  }
+
+  // ---------------------------------------------------------------- Sol tab
+  const SOL = { band: C.sun, solcast: C.sun, corrected: C.gridbat, actual: C.batt, dayahead: C.ink2 };
+  const dev = (f, a) => (f == null || a == null || a < 0.05 ? '' : ` (${fmtSigned((f - a) / a * 100, 0)} %)`);
+  const kwh = (v, d = 1) => (v == null ? '–' : fmt(v, d) + ' kWh');
+
+  function solarTooltip(r, title) {
+    return h('div', {}, h('div', { class: 'tt-head' }, title || (relDay(dayKey(r.t)) + 'kl. ' + hhmm(r.t) + '–' + addHour(r.t))),
+      r.actual != null ? ttRow(SOL.actual, 'Faktisk', kwh(r.actual, 2), '') : null,
+      r.c50 != null ? ttRow(SOL.corrected, 'Med korrektion (p50)', kwh(r.c50, 2), '') : null,
+      r.plan != null ? ttRow(SOL.corrected, 'Planen bruger', kwh(r.plan, 2), '') : null,
+      r.p50 != null ? ttRow(SOL.solcast, 'Solcast p50', kwh(r.p50, 2), '') : null,
+      r.p10 != null ? ttRow(C.ink2, 'Solcast p10–p90', `${fmt(r.p10, 2)}–${fmt(r.p90, 2)} kWh`) : null,
+      r.c10 != null ? ttRow(C.ink2, 'Korrigeret p10–p90', `${fmt(r.c10, 2)}–${fmt(r.c90, 2)} kWh`) : null,
+      r.dayahead != null ? ttRow(SOL.dayahead, 'Prognose aftenen før', kwh(r.dayahead, 2), '') : null,
+      r.factor != null && r.factor < 0.995 ? ttRow(C.ink2, 'Korrektionsfaktor', fmt(r.factor, 2)) : null,
+      r.limited ? ttRow(C.ink2, 'Eksport begrænset', 'ja') : null);
+  }
+
+  function renderSolar() {
+    const root = $('#tab-sol');
+    const p = state.plan;
+    const fc = (p && p.solar_forecast) || [];
+    const days = state.solarDays || [];
+    const todayRep = state.solarToday;
+    const actualByT = {};
+    ((todayRep && todayRep.hours) || []).forEach((r) => { if (r.actual != null) actualByT[r.t] = r.actual; });
+
+    const byDay = {};
+    fc.forEach((r) => {
+      const k = dayKey(r.t);
+      const d = byDay[k] || (byDay[k] = { p10: 0, p50: 0, p90: 0, c10: 0, c50: 0, c90: 0, plan: 0 });
+      for (const f of Object.keys(d)) d[f] += r[f] || 0;
+    });
+    const keys = Object.keys(byDay).sort();
+    const tday = todayKey();
+    const dayTile = (k, label) => {
+      const d = byDay[k];
+      if (!d) return tile(label, '–', 'ingen prognose');
+      const done = k === tday && todayRep ? todayRep.totals.actual : null;
+      return tile(label, h('span', {}, fmt(d.c50, 1), h('small', {}, ' kWh')),
+        `p10 ${fmt(d.c10, 1)} – p90 ${fmt(d.c90, 1)} · Solcast ${fmt(d.p50, 1)}` + (done != null ? ` · ${fmt(done, 1)} kWh produceret indtil nu` : ''));
+    };
+    const y = days[1];
+    const yTile = y && y.actual != null
+      ? tile('I går', h('span', {}, fmt(y.actual, 1), h('small', {}, ' kWh')),
+        `Solcast ${fmt(y.p50, 1)}${dev(y.p50, y.actual)} · med korrektion ${fmt(y.c50, 1)}${dev(y.c50, y.actual)}` + (y.dayahead != null ? ` · aftenen før ${fmt(y.dayahead, 1)}${dev(y.dayahead, y.actual)}` : ''))
+      : tile('I går', '–', 'ingen data endnu');
+    const dmp = p && p.pv_dampening;
+    const tiles = h('div', { class: 'tiles' },
+      dayTile(keys[0] || tday, 'I dag'), dayTile(keys[1], 'I morgen'), keys[2] ? dayTile(keys[2], dayName(keys[2], { weekday: 'long' }).replace(/^./, (c) => c.toUpperCase())) : null,
+      yTile,
+      dmp && !dmp.solcast_auto ? tile('Korrektion i dag', h('span', {}, fmt(dmp.mean_factor, 2)), 'gennemsnitlig faktor i dagtimerne (1 = ingen skygge)') : null);
+
+    // card 1: the coming days
+    const fcBox = h('div', { class: 'chart' });
+    const lit = (r) => r && (r.p90 > 0.01 || (actualByT[r.t] || 0) > 0.01);
+    const fcRows = fc.filter((r, i) => lit(r) || lit(fc[i - 1]) || lit(fc[i + 1])).map((r) => ({ ...r, actual: actualByT[r.t] }));
+    let nowAt = null;
+    if (p && p.updated) {
+      const i = fcRows.findIndex((r) => r.t.slice(0, 13) === p.updated.slice(0, 13));
+      if (i >= 0) nowAt = i + parseInt(p.updated.slice(14, 16), 10) / 60;
+    }
+    const fcCard = h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', {}, 'Solprognose de næste dage'), h('span', { class: 'hint' }, 'kWh pr. time · båndet er p10–p90 med korrektion')),
+      fcBox,
+      h('div', { style: { marginTop: '10px' } }, legend([{ color: SOL.band, label: 'p10–p90', wash: true }, { color: SOL.corrected, label: 'Planen bruger', line: true },
+        { color: SOL.solcast, label: 'Solcast p50 (stiplet)', line: true }, { color: SOL.actual, label: 'Faktisk i dag' }])));
+
+    // card 2: day by day
+    const rep = state.solarReport;
+    const sel = state.solarDay || tday;
+    const chips = days.slice(0, 14).map((d, i) => h('button', { type: 'button', 'aria-pressed': String(d.day === sel), onclick: () => { state.solarDay = d.day; loadSolarDay(); } },
+      i === 0 ? 'I dag' : i === 1 ? 'I går' : dayName(d.day, { weekday: 'short', day: 'numeric' })));
+    const dayBox = h('div', { class: 'chart' });
+    const t = rep && rep.totals;
+    const totals = t ? h('div', { class: 'sol-totals' },
+      h('span', {}, h('b', {}, 'Faktisk '), kwh(t.actual)),
+      h('span', {}, h('b', {}, 'Solcast '), kwh(t.p50), dev(t.p50, t.actual)),
+      h('span', {}, h('b', {}, 'Med korrektion '), kwh(t.c50), dev(t.c50, t.actual)),
+      t.dayahead != null ? h('span', {}, h('b', {}, 'Aftenen før '), kwh(t.dayahead), dev(t.dayahead, t.actual)) : null,
+      rep.day === tday && t.hours_actual ? h('span', { class: 'hint' }, `(${t.hours_actual} færdige timer; hele dagen: Solcast ${fmt(t.day_p50, 1)}, korrigeret ${fmt(t.day_c50, 1)} kWh)`) : null) : null;
+    const table = days.length ? h('div', { class: 'table-wrap', style: { marginTop: '14px' } }, h('table', { class: 'clickable' },
+      h('thead', {}, h('tr', {}, ['Dag', 'Faktisk', 'Solcast', 'Korrigeret', 'Aftenen før'].map((x) => h('th', {}, x)))),
+      h('tbody', {}, days.map((d, i) => h('tr', { class: d.day === sel ? 'selected' : '', onclick: () => { state.solarDay = d.day; loadSolarDay(); } },
+        h('td', {}, i === 0 ? 'I dag' : i === 1 ? 'I går' : dayName(d.day)),
+        h('td', {}, kwh(d.actual)),
+        h('td', {}, kwh(d.p50), h('small', {}, dev(d.p50, d.actual))),
+        h('td', {}, kwh(d.c50), h('small', {}, dev(d.c50, d.actual))),
+        h('td', {}, kwh(d.dayahead), h('small', {}, dev(d.dayahead, d.actual)))))))) : null;
+    const dayCard = h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', {}, 'Prognose mod faktisk, dag for dag'), h('span', { class: 'hint' }, 'Afvigelse = prognose mod faktisk over de færdige timer')),
+      h('div', { class: 'seg sol-days', role: 'group', 'aria-label': 'Dag' }, chips),
+      dayBox, totals,
+      h('div', { style: { marginTop: '10px' } }, legend([{ color: SOL.actual, label: 'Faktisk' }, { color: SOL.band, label: 'Solcast p10–p90', wash: true },
+        { color: SOL.solcast, label: 'Solcast p50 (stiplet)', line: true }, { color: SOL.corrected, label: 'Med korrektion', line: true },
+        { color: SOL.dayahead, label: 'Prognose aftenen før (prikket)', line: true }])),
+      table,
+      h('div', { class: 'hint', style: { marginTop: '8px' } }, '"Med korrektion" er beregnet med den nuværende skyggekorrektion. "Aftenen før" er det, planen regnede med kl. 20 dagen før (gemmes fra version 0.9.0).'));
+
+    const dmpBox = h('div', { class: 'chart' });
+    const dmpCard = dmp ? dampeningCard(dmp, dmpBox) : null;
+    root.replaceChildren(h('div', { class: 'stack' }, state.solarError ? h('div', { class: 'banner error' }, icon.error(), h('div', {}, state.solarError)) : null,
+      tiles, fcCard, dayCard, dmpCard));
+
+    solarChart(fcBox, {
+      rows: fcRows, dayLabels: true, nowAt, height: 210, label: 'Solprognose time for time', empty: 'Ingen solprognose.',
+      band: { color: SOL.band, lo: (r) => r.c10, hi: (r) => r.c90 },
+      bars: { color: SOL.actual, get: (r) => r.actual },
+      lines: [{ color: SOL.solcast, dash: '5 4', width: 1.6, get: (r) => r.p50 }, { color: SOL.corrected, get: (r) => r.plan }],
+      tooltip: (r) => solarTooltip(r),
+    });
+    if (rep) {
+      const fcByT = {};
+      fc.forEach((r) => { fcByT[r.t] = r; });
+      // today: hours not recorded yet take the current forecast
+      const hrs = rep.hours.map((r) => (r.p50 == null && fcByT[r.t] ? { ...r, p50: fcByT[r.t].p50, p10: fcByT[r.t].p10, p90: fcByT[r.t].p90, c50: fcByT[r.t].c50, factor: fcByT[r.t].factor } : r));
+      const lit = hrs.map((r, i) => ((r.p90 || 0) > 0.01 || (r.actual || 0) > 0.01 ? i : -1)).filter((i) => i >= 0);
+      const rows = lit.length ? hrs.slice(Math.max(0, lit[0] - 1), Math.min(hrs.length, lit[lit.length - 1] + 2)) : [];
+      solarChart(dayBox, {
+        rows, height: 200, label: 'Prognose mod faktisk for ' + rep.day, empty: 'Ingen prognose eller produktion for dagen (historikken bygges op time for time).',
+        band: { color: SOL.band, lo: (r) => r.p10, hi: (r) => r.p90 },
+        bars: { color: SOL.actual, get: (r) => r.actual },
+        lines: [{ color: SOL.solcast, dash: '5 4', width: 1.6, get: (r) => r.p50 }, { color: SOL.corrected, get: (r) => r.c50 },
+          { color: SOL.dayahead, dash: '1.5 3.5', width: 1.8, get: (r) => r.dayahead }],
+        tooltip: (r) => solarTooltip(r, 'Kl. ' + hhmm(r.t) + '–' + addHour(r.t)),
+      });
+    } else {
+      dayBox.appendChild(h('div', { class: 'empty' }, 'Henter …'));
+    }
+    if (dmp && !dmp.solcast_auto) {
+      const hrs = [...Array(24).keys()].filter((hh) => (dmp.hours || [])[hh] > 0);
+      columnChart(dmpBox, {
+        label: 'Sol pr. time: Solcast, faktisk og korrigeret', height: 180,
+        empty: 'Ingen soltimer at sammenligne endnu – historikken bygges op time for time.',
+        items: hrs.map((hh) => ({ label: String(hh).padStart(2, '0'), values: [dmp.forecast[hh], dmp.actual[hh], dmp.corrected[hh]], hh })),
+        series: [{ label: 'Solcast', color: C.sun }, { label: 'Faktisk', color: C.batt }, { label: 'Med korrektion', color: C.gridbat }],
+        tooltip: (it) => h('div', {}, h('div', { class: 'tt-head' }, `Kl. ${it.label} · gns. over ${dmp.hours[it.hh]} dage`),
+          ttRow(C.sun, 'Solcast (uden dæmpning)', fmt(it.values[0], 2) + ' kWh', ''), ttRow(C.batt, 'Faktisk', fmt(it.values[1], 2) + ' kWh', ''),
+          ttRow(C.gridbat, 'Med korrektion', fmt(it.values[2], 2) + ' kWh', ''),
+          ttRow(C.ink2, 'Faktor ved klar himmel', fmt(dmp.clear_factors[it.hh], 2)), ttRow(C.ink2, 'Faktor i dag', fmt(dmp.today_factors[it.hh], 2)),
+          dmp.weight ? ttRow(C.ink2, 'Effektive dage (vægtet)', fmt(dmp.weight[it.hh], 1)) : null),
+      });
+    }
+  }
+
+  async function loadSolarDay() {
+    const day = state.solarDay || todayKey();
+    try {
+      state.solarReport = day === todayKey() && state.solarToday ? state.solarToday : await getJSON('api/solar?day=' + day);
+      state.solarError = null;
+    } catch (e) { state.solarError = 'Sol: ' + e.message; }
+    if (state.tab === 'sol') renderSolar();
+  }
+  async function loadSolar() {
+    try {
+      const [today, days] = await Promise.all([getJSON('api/solar'), getJSON('api/solar/days?days=14')]);
+      state.solarToday = today;
+      state.solarDays = days;
+      state.solarError = null;
+    } catch (e) { state.solarError = 'Sol: ' + e.message; }
+    await loadSolarDay();
+  }
+
   function dampeningCard(d, box) {
     const head = h('div', { class: 'card-head' }, h('h2', {}, 'Solkorrektion (skygge pr. time)'),
-      h('span', { class: 'hint' }, d.solcast_auto ? 'Solcast dæmper selv' : `Lært over ${d.days} dage · faktor = 1 − skygge × klarhed`));
+      h('span', { class: 'hint' }, d.solcast_auto ? 'Solcast dæmper selv' : `Lært over ${d.days} dage${d.half_life_days ? `, halveringstid ${fmt(d.half_life_days, 0)} dage` : ''} · faktor = 1 − skygge × klarhed`));
     if (d.solcast_auto) {
       return h('div', { class: 'card' }, head, h('div', { class: 'empty' },
         'Solcasts egen automatiske dæmpning er slået til. Planneren bruger Solcasts dæmpede prognose, og add-on’ens korrektion er sat på pause (de to kan ikke køre samtidig).'));
@@ -849,6 +1111,7 @@
     const bf = d.backfill;
     if (bf && bf.error) status.push({ warn: true, text: 'Kunne ikke hente prognose-historik fra Solcast (prøver igen om 6 timer): ' + bf.error });
     else if (bf) status.push(`Hentede ${bf.received} timers prognose-historik fra Solcast (seneste 14 dage), ${bf.hours} nye`);
+    status.push(`Add-on'en gemmer selv prognosen i ${d.history_hours != null ? fmt(d.history_hours / 24, 0) + ' dage indtil videre (op til 180)' : 'op til 180 dage'}. Solcast har kun 14 dages historik, så det længere vindue fyldes op med tiden.`);
     const day = [...Array(24).keys()].filter((hh) => (d.hours || [])[hh] > 0 || d.clear_factors[hh] < 1);
     const cell = (v, manual) => h('td', { class: v < 0.995 ? '' : 'zero' }, fmt(v, 2) + (manual ? '*' : ''));
     const table = day.length ? h('div', { class: 'table-wrap', style: { marginTop: '12px' } }, h('table', {},
@@ -857,7 +1120,8 @@
         h('tr', {}, h('td', {}, 'Klar himmel'), day.map((hh) => cell(d.clear_factors[hh], (d.manual_hours || []).includes(hh)))),
         h('tr', {}, h('td', {}, 'I dag'), day.map((hh) => cell(d.today_factors[hh]))),
         h('tr', {}, h('td', {}, 'I Solcast nu'), day.map((hh) => cell(d.applied_in_solcast[hh]))),
-        h('tr', {}, h('td', {}, 'Dage med data'), day.map((hh) => h('td', { class: 'zero' }, String(d.hours[hh] || 0))))))) : null;
+        h('tr', {}, h('td', {}, 'Dage med data'), day.map((hh) => h('td', { class: 'zero' }, String(d.hours[hh] || 0)))),
+        d.weight ? h('tr', {}, h('td', {}, 'Effektive dage'), day.map((hh) => h('td', { class: 'zero', title: 'Dage vægtet efter alder (nyere tæller mest)' }, fmt(d.weight[hh] || 0, 1)))) : null))) : null;
     return h('div', { class: 'card' }, head, box,
       h('div', { style: { marginTop: '10px' } }, legend([{ color: C.sun, label: 'Solcast (uden dæmpning)' }, { color: C.batt, label: 'Faktisk' }, { color: C.gridbat, label: 'Med korrektion' }])),
       table,
@@ -1320,6 +1584,7 @@
     setUpdated();
     if (state.tab === 'plan') renderPlan();
     if (state.tab === 'bil') renderCar();
+    if (state.tab === 'sol') renderSolar();
   }
   async function loadCar() {
     try { state.car = await getJSON('api/car'); } catch (e) { /* keep the last */ }
@@ -1333,7 +1598,7 @@
     if (state.tab === 'evaluering') renderEval();
   }
   function selectTab(name, push) {
-    if (!['plan', 'bil', 'evaluering', 'okonomi'].includes(name)) name = 'plan';
+    if (!['plan', 'bil', 'sol', 'evaluering', 'okonomi'].includes(name)) name = 'plan';
     state.tab = name;
     document.querySelectorAll('.tabs button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
     document.querySelectorAll('.tab').forEach((s) => { s.hidden = s.id !== 'tab-' + name; });
@@ -1341,6 +1606,7 @@
     if (push) { try { history.replaceState(null, '', '#' + name); } catch (e) { /* sandboxed */ } }
     if (name === 'plan') renderPlan();
     if (name === 'bil') { renderCar(); loadCar(); }
+    if (name === 'sol') { renderSolar(); loadSolar(); }
     if (name === 'evaluering') { renderEval(); loadEval(!!state.evalData); }
     if (name === 'okonomi') { renderEconomy(); loadEcon(!!state.econData); }
   }
@@ -1357,5 +1623,6 @@
   loadPlan();
   setInterval(loadPlan, 60000);
   setInterval(() => { if (state.tab === 'bil') loadCar(); }, 30000);
+  setInterval(() => { if (state.tab === 'sol') loadSolar(); }, 300000);
   setInterval(() => { if (state.tab === 'evaluering') loadEval(false); }, 300000);
 })();

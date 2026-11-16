@@ -43,7 +43,8 @@ DEFAULTS = {
     "pv_p10_weight": 0.3,
     # Learned shading per hour on top of Solcast (see pvdampening.py): auto / manual / off.
     "pv_dampening": "auto",
-    "pv_dampening_days": 14,
+    "pv_dampening_days": 60,
+    "pv_dampening_half_life_days": 14,
     "pv_dampening_manual": "",        # e.g. "14:0.3,15:0.2" = clear-sky factor for those hours
     "solcast_push": False,            # also set the factors in the Solcast integration (daily)
     "profile_days": 28,

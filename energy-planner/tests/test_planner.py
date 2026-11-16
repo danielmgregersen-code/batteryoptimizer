@@ -818,3 +818,59 @@ def test_session_ended_by_the_charger_is_detected(tmp_path):
     ha.texts[DEFAULTS["charger_status_entity"]] = "preparing"       # re-plugged
     d = p.car_cycle(NIGHT + timedelta(minutes=10))
     assert not d["warning"] or "afsluttede" not in d["warning"]
+
+
+def _solar_planner(tmp_path):
+    import pvdampening as pvd
+    from fixtures import SOLCAST_HOURLY, solcast_attrs
+    history, actual_rows = {}, []
+    for d in range(0, 15):
+        for hl in range(8, 16):
+            t = (datetime(2026, 11, 14, hl, tzinfo=TZ) - timedelta(days=d)).astimezone(UTC)
+            clear = SOLCAST_HOURLY[hl][2]
+            history[t.isoformat()] = {"p50": clear * 0.8, "p10": clear * 0.4, "p90": clear, "applied": 1.0,
+                                      "limited": False}
+            actual_rows.append({"start": t.timestamp() * 1000, "mean": clear * 0.6 * 1000})
+    pvd.save_json(str(tmp_path / "pv_history.json"), history)
+    ha = make_ha(stats={DEFAULTS["house_load_entity"]: [], DEFAULTS["pv_power_entity"]: actual_rows})
+    ha.attrs["sensor.solcast_pv_forecast_forecast_tomorrow"] = solcast_attrs("2026-11-15")
+    ha.attrs["sensor.solcast_pv_forecast_forecast_day_3"] = solcast_attrs("2026-11-16")
+    ha.call_service = lambda *a, **k: {}
+    return Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl")), ha
+
+
+def test_solar_forecast_covers_three_days_and_the_evening_forecast_is_kept_once(tmp_path):
+    p, ha = _solar_planner(tmp_path)
+    snap = p.run_once(datetime(2026, 11, 14, 10, 30, tzinfo=UTC))
+    days = {r["t"][:10] for r in snap["solar_forecast"]}
+    assert days == {"2026-11-14", "2026-11-15", "2026-11-16"}
+    r = next(r for r in snap["solar_forecast"] if r["t"].startswith("2026-11-15T12"))
+    assert r["p10"] <= r["p50"] <= r["p90"] and r["plan"] > 0
+    assert p._pv_dayahead == {}                                          # not before 20:00
+    p.run_once(datetime(2026, 11, 14, 19, 10, tzinfo=UTC))               # 20:10 local
+    key = datetime(2026, 11, 15, 12, tzinfo=TZ).astimezone(UTC).isoformat()
+    first = dict(p._pv_dayahead[key])
+    assert all(k.startswith("2026-11-1") for k in p._pv_dayahead)
+    ha.attrs["sensor.solcast_pv_forecast_forecast_tomorrow"]["detailedHourly"][12]["pv_estimate"] = 0.01
+    p.run_once(datetime(2026, 11, 14, 21, 10, tzinfo=UTC))               # a later read does not replace it
+    assert p._pv_dayahead[key] == first
+    p2 = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    assert p2._pv_dayahead[key] == first                                 # persisted
+
+
+def test_solar_report_for_a_past_day_and_today(tmp_path):
+    p, ha = _solar_planner(tmp_path)
+    now = datetime(2026, 11, 14, 11, 30, tzinfo=UTC)                     # 12:30 local
+    p.run_once(now)
+    from datetime import date
+    y = p.solar_report(date(2026, 11, 13), now)
+    rows = {r["t"][11:13]: r for r in y["hours"]}
+    assert len(y["hours"]) == 24 and rows["12"]["actual"] == pytest.approx(rows["12"]["p90"] * 0.6, abs=0.01)
+    assert rows["12"]["p10"] < rows["12"]["p50"] < rows["12"]["p90"] and "c50" in rows["12"]
+    assert y["totals"]["actual"] < y["totals"]["p50"] and y["totals"]["hours_actual"] == 8
+    t = p.solar_report(date(2026, 11, 14), now)
+    assert t["totals"]["hours_actual"] == 4                               # 08-11 finished, 12 not yet
+    assert t["totals"]["day_p50"] > t["totals"]["p50"]
+    days = p.solar_days(3, now)
+    assert [d["day"] for d in days] == ["2026-11-14", "2026-11-13", "2026-11-12"]
+    assert days[1]["actual"] == pytest.approx(y["totals"]["actual"])

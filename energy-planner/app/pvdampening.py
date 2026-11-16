@@ -36,7 +36,8 @@ LAMBDA = 0.1                # shrinkage (kWh^2): with few clear hours shade stay
 MIN_HOURS = 3               # per hour of day, at least this many usable days
 MIN_FACTOR = 0.05           # keeps every factor invertible (value / applied)
 CLIP_SHARE = 0.95           # actual above this share of the inverter's power is clipping
-HISTORY_DAYS = 60
+HISTORY_DAYS = 180
+REF_WINDOW_DAYS = 10.5     # clear-sky reference of a past hour: the highest p90 within this many days of it
 CLEAR_REF_DAYS = 21
 
 
@@ -141,12 +142,35 @@ def clearness(p50_undamped: float, ref: float) -> float:
     return min(max(p50_undamped / ref, 0.0), 1.0)
 
 
-def fit(history: dict, actual_w: dict, ref: list, tz, now: datetime, days: int, inverter_kw: float) -> dict:
-    """-> {"shade": [24], "hours": [24] usable hours, "forecast": [24] mean undampened kWh,
-    "actual": [24] mean kWh, "corrected": [24] mean kWh after correction}."""
-    sxy, sxx, n = [0.0] * 24, [0.0] * 24, [0] * 24
+def _reference_index(history: dict, tz) -> list:
+    """Per local hour: [(utc time, undampened p90)], for the clear-sky reference around a date."""
+    idx = [[] for _ in range(24)]
+    for k, e in history.items():
+        t = datetime.fromisoformat(k)
+        idx[t.astimezone(tz).hour].append((t, _undamped(e, "p90")))
+    return idx
+
+
+def reference_at(idx: list, h: int, t: datetime, fallback: float) -> float:
+    """The clear-sky reference for hour h around the date of t (the sun's path changes over the
+    season, so an old hour is measured against the clear sky of its own weeks)."""
+    win = timedelta(days=REF_WINDOW_DAYS)
+    vals = [v for (u, v) in idx[h] if abs(u - t) <= win]
+    return max(vals) if vals else fallback
+
+
+def fit(history: dict, actual_w: dict, ref: list, tz, now: datetime, days: int, inverter_kw: float,
+        half_life_days: float = None) -> dict:
+    """-> {"shade": [24], "hours": [24] usable hours, "weight": [24] effective (weighted) hours,
+    "forecast": [24] mean undampened kWh, "actual": [24] mean kWh, "corrected": [24] mean kWh
+    after correction}.
+
+    half_life_days: an hour `age` days old counts 0.5^(age / half_life) in the fit, so recent weeks
+    (the sun's path, growing trees) count most while older clear days still help. None = equal."""
+    sxy, sxx, n, wsum = [0.0] * 24, [0.0] * 24, [0] * 24, [0.0] * 24
     sum_f, sum_a = [0.0] * 24, [0.0] * 24
     samples = []
+    idx = _reference_index(history, tz)
     cutoff = now - timedelta(days=days)
     for k, e in history.items():
         t = datetime.fromisoformat(k)
@@ -160,11 +184,13 @@ def fit(history: dict, actual_w: dict, ref: list, tz, now: datetime, days: int, 
         if f < MIN_FORECAST_KWH or a >= CLIP_SHARE * inverter_kw:
             continue
         h = t.astimezone(tz).hour
-        kc = clearness(f, ref[h])
+        kc = clearness(f, reference_at(idx, h, t, ref[h]))
         x = f * kc
-        sxy[h] += x * (f - a)
-        sxx[h] += x * x
+        w = 0.5 ** (((now - t).total_seconds() / 86400.0) / half_life_days) if half_life_days else 1.0
+        sxy[h] += w * x * (f - a)
+        sxx[h] += w * x * x
         n[h] += 1
+        wsum[h] += w
         sum_f[h] += f
         sum_a[h] += a
         samples.append((h, f, kc, a))
@@ -178,6 +204,7 @@ def fit(history: dict, actual_w: dict, ref: list, tz, now: datetime, days: int, 
     return {
         "shade": shade,
         "hours": n,
+        "weight": [round(v, 1) for v in wsum],
         "forecast": [round(sum_f[h] / n[h], 3) if n[h] else None for h in range(24)],
         "actual": [round(sum_a[h] / n[h], 3) if n[h] else None for h in range(24)],
         "corrected": [round(corr[h] / n[h], 3) if n[h] else None for h in range(24)],
