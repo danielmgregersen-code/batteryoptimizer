@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.1
+
+- **Smoothed timing for appliances that run when needed** (washer/dryer, dishwasher, hob): they have
+  no fixed hour, so their expected energy is no longer placed hour by hour from a few days of
+  history. Weekdays and weekends are pooled and each hour takes a triangular-weighted mean of ±2 h
+  (`load_submeters_smooth_hours`); the day's energy is unchanged. Meters in `load_submeters_steady`
+  (default the heat pump) keep their profile per hour. Their energy still counts untrimmed, and
+  the current hour still uses their live power.
+
 ## 0.10.0
 
 - **Expected house load follows the season:** the profile uses 56 days (`profile_days`) where

@@ -843,7 +843,12 @@
     if (d.half_life_days) out.push({ text: `Nyere dage tæller mest: halveringstid ${fmt(d.half_life_days, 0)} dage.` + (d.last_year_hours ? ` Inkl. ${fmt(d.last_year_hours, 0)} timer fra de samme uger sidste år (vægt ${fmt(d.last_year_weight, 1)}).` : d.last_year_weight ? ' Ingen statistik fra samme periode sidste år.' : '') });
     const sm = d.submeters || {};
     const ok = Object.keys(sm).filter((e) => sm[e] > 0), missing = Object.keys(sm).filter((e) => !sm[e]);
-    if (ok.length) out.push({ text: `Egne målere: ${ok.map(subName).join(', ')} får hver deres gennemsnit (ikke trimmet), så apparater, der kun kører nogle dage, tæller med. Den aktuelle time bruger det, de trækker lige nu.` });
+    if (ok.length) {
+      const sm2 = d.smoothed_submeters || [];
+      const steady = ok.filter((e) => !sm2.includes(e));
+      out.push({ text: `Egne målere: ${ok.map(subName).join(', ')} får hver deres gennemsnit (ikke trimmet), så apparater, der kun kører nogle dage, tæller med. Den aktuelle time bruger det, de trækker lige nu.` });
+      if (sm2.length) out.push({ text: `Udglattet tidspunkt for ${sm2.map(subName).join(', ')} (kører efter behov): hverdag og weekend slået sammen og fordelt over ±${d.smooth_hours} timer. Dagens energi er den samme.` + (steady.length ? ` ${steady.map(subName).join(', ')} beholder sin profil time for time.` : '') });
+    }
     if (missing.length) out.push({ warn: true, text: `Ingen langtidsstatistik for ${missing.join(', ')} (giv dem state_class: measurement).` });
     return out;
   }

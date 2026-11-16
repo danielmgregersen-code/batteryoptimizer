@@ -51,6 +51,8 @@ DEFAULTS = {
     "profile_half_life_days": 10,
     "profile_last_year_weight": 0.5,
     "load_submeters": "sensor.shelly_varmepumpe_power,sensor.shelly_opvaskemaskine_power,sensor.bryggers_shelly_vask_og_torre_effekt,sensor.kokken_shelly_kogeplade_effekt",
+    "load_submeters_steady": "sensor.shelly_varmepumpe_power",
+    "load_submeters_smooth_hours": 2,
     "default_load_kw": 0.8,
     # Does sensor.growatt_total_house_load count the battery's charging as house load? On the
     # SPH10000TL3 it does not. auto = detect from the statistics, yes = always subtract.
