@@ -91,6 +91,11 @@ Replaces the HA automation *"Solcelle- & Prisstyret ladning: IONIQ 9"* in two la
   days), at most every `car_full_min_days` (14) days, never forced.
 - **Trips**: `input_datetime.ioniq9_afgang` (date and time) and optionally
   `input_number.ioniq9_afgang_soc` (default 100 %). Planned once the departure is inside the horizon.
+- **"Hvis bilen sættes til nu"**: while the car is unplugged (and its SoC is known), the plan is also
+  solved as if it were plugged in now, without writing anything. The Bil tab shows whether and when
+  it would charge, how much and at what grid cost, with the chart; `sensor.energy_planner_car` has
+  `preview_kwh`, `preview_window` and `preview_text`. An extra charge can be ordered before plugging
+  in and shows in the preview at once.
 - **Extra charge** (Bil tab, card "Ekstra ladning"): +10 % or +20 % on top of the car's SoC now, or
   an own target SoC. The target is locked when ordered (it does not creep up while the car charges)
   and is reached by the next deadline, or by the trip if one is set, in the cheapest hours; the

@@ -1217,7 +1217,8 @@
         : x.status === 'waiting' ? ' · venter på, at bilen bliver tilsluttet' : x.status === 'too_soon' ? ' · for kort tid til deadline' : '';
       statusLine = `Mål ${fmt(x.target_pct, 0)} % ${until}${ordered}${plan}`;
     } else {
-      statusLine = connected ? 'Ingen bestilling. Planen lægger den ekstra energi i de billigste timer før deadline.' : 'Bilen er ikke tilsluttet.';
+      statusLine = connected ? 'Ingen bestilling. Planen lægger den ekstra energi i de billigste timer før deadline.'
+        : state.plan && state.plan.car_preview ? 'Bilen er ikke tilsluttet. En bestilling gælder, når den sættes til, og ses straks under "Hvis bilen sættes til nu".' : 'Bilen er ikke tilsluttet.';
     }
     const input = h('input', { type: 'number', min: 1, max: 100, step: 1, class: 'num', placeholder: carSoc != null ? String(Math.min(100, Math.round(carSoc) + 15)) : '80', 'aria-label': 'Mål-SoC i procent' });
     const setTarget = () => {
@@ -1227,7 +1228,7 @@
       orderExtra({ target: v });
     };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') setTarget(); });
-    const dis = !connected;
+    const dis = !connected && !(state.plan && state.plan.car_preview);   // unplugged: order ahead, seen in the preview
     return h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('h2', {}, 'Ekstra ladning'),
         h('span', { class: 'hint' }, 'Gælder til næste deadline eller afgang · udløber af sig selv')),
@@ -1261,8 +1262,13 @@
       tile('Lader', h('span', { style: { fontSize: '20px' } }, CHARGER_STATUS[status] || status || '–'),
         live.charger_w != null ? `${fmt((live.charger_w || 0) / 1000, 1)} kW · ${live.amps != null ? fmt(live.amps, 0) + ' A sat' : ''}` : ''),
       tile('Styringen', h('span', { style: { fontSize: '20px' } }, action + (c && c.target_amps ? ` · ${c.target_amps} A` : '')), c ? (c.reason_da || translateReason(c.reason)) : 'venter på første cyklus'),
-      tile('Planlagt', carInfo && carInfo.connected ? h('span', {}, fmt(carInfo.planned_kwh, 1), h('small', {}, ' kWh')) : '–',
-        carInfo && carInfo.connected ? `frem til ${carUntil(carInfo).label} · net-del ca. ${fmt(carInfo.planned_cost_dkk, 0)} kr` + (carInfo.shortfall_kwh > 0.05 ? ` · mangler ${fmt(carInfo.shortfall_kwh, 1)} kWh` : '') : 'bilen er ikke tilsluttet'),
+      carInfo && carInfo.connected
+        ? tile('Planlagt', h('span', {}, fmt(carInfo.planned_kwh, 1), h('small', {}, ' kWh')),
+          `frem til ${carUntil(carInfo).label} · net-del ca. ${fmt(carInfo.planned_cost_dkk, 0)} kr` + (carInfo.shortfall_kwh > 0.05 ? ` · mangler ${fmt(carInfo.shortfall_kwh, 1)} kWh` : ''))
+        : p && p.car_preview
+          ? tile('Hvis sat til nu', h('span', {}, fmt(p.car_preview.planned_kwh, 1), h('small', {}, ' kWh')),
+            p.car_preview.planned_kwh > 0.1 ? `når ${fmt(p.car_preview.soc_at_deadline, 0)} % kl. ${p.car_preview.deadline.slice(11, 16)} · net-del ca. ${fmt(p.car_preview.cost_dkk, 0)} kr` : 'ville ikke lade før deadline')
+          : tile('Planlagt', '–', 'bilen er ikke tilsluttet'),
       fullTile(carInfo), departureTile(carInfo));
 
     const live_ = c && (c.production === true || c.dry_run === false);
@@ -1288,9 +1294,12 @@
 
     const chartBox = h('div', { class: 'chart' });
     const rows = p ? p.plan : [];
-    const showChart = carInfo && carInfo.connected && rows.length;
+    const preview = !(carInfo && carInfo.connected) && p && p.car_preview;
+    const showChart = (carInfo && carInfo.connected && rows.length) || (preview && preview.rows.length);
     const chartCard = h('div', { class: 'card' },
-      h('div', { class: 'card-head' }, h('h2', {}, 'Bilens plan'), h('span', { class: 'hint' }, showChart ? `Tilsluttet frem til ${carUntil(carInfo).label} (antaget)` : '')),
+      h('div', { class: 'card-head' }, h('h2', {}, preview ? 'Hvis bilen sættes til nu' : 'Bilens plan'),
+        h('span', { class: 'hint' }, preview ? `Bilen er på ${fmt(preview.soc_now, 0)} % · beregnet som om den var tilsluttet nu` : showChart ? `Tilsluttet frem til ${carUntil(carInfo).label} (antaget)` : '')),
+      preview ? h('p', { class: 'preview-text' }, preview.text) : null,
       showChart ? [chartBox, h('div', { class: 'stack', style: { gap: '6px', marginTop: '10px' } },
         legend([{ color: C.buy, label: 'Købspris', line: true }, { color: C.sell, label: 'Salgspris', line: true }]),
         legend([{ color: C.car, label: 'Net → bil' }, { color: C.sun, label: 'Sol → bil' }, { color: C.batt, label: 'Husbatteri → bil' }]))]
@@ -1314,10 +1323,21 @@
     root.replaceChildren(h('div', { class: 'stack' }, carWarn, tiles, extraCard(carInfo, live.car_soc), h('div', { class: 'grid-2' }, chartCard, callsCard), logCard));
 
     if (showChart) {
-      const end = rows.findIndex((r) => r.car_grid === undefined || new Date(r.t) >= new Date(carUntil(carInfo).at));
-      const crow = rows.slice(0, Math.max(2, end < 0 ? rows.length : Math.min(rows.length, end + 2)));
+      let crow, startSoc, maxSoc;
+      if (preview) {
+        const fc = {};
+        rows.forEach((r) => { fc[r.t] = r.forecast_price; });
+        crow = preview.rows.map((r) => ({ ...r, forecast_price: fc[r.t] }));
+        startSoc = preview.soc_now;
+        maxSoc = preview.max_soc_pct || 90;
+      } else {
+        const end = rows.findIndex((r) => r.car_grid === undefined || new Date(r.t) >= new Date(carUntil(carInfo).at));
+        crow = rows.slice(0, Math.max(2, end < 0 ? rows.length : Math.min(rows.length, end + 2)));
+        startSoc = carInfo.soc_pct;
+        maxSoc = carInfo.max_soc_pct || 90;
+      }
       timeChart(chartBox, {
-        rows: crow, endLabels: true, label: 'Bilens planlagte opladning',
+        rows: crow, endLabels: true, label: preview ? 'Bilens opladning, hvis den sættes til nu' : 'Bilens planlagte opladning',
         tooltip: (i) => {
           const r = crow[i];
           return h('div', {}, h('div', { class: 'tt-head' }, `${dayName(dayKey(r.t))} · ${hhmm(r.t)}–${addHour(r.t)}`),
@@ -1332,8 +1352,8 @@
             up: [{ label: 'Husbatteri → bil', color: C.batt, get: (r) => perH(r, r.car_bat) }, { label: 'Sol → bil', color: C.sun, get: (r) => perH(r, r.car_pv) }, { label: 'Net → bil', color: C.car, get: (r) => perH(r, r.car_grid) }],
             down: [] },
           { kind: 'soc', title: 'Bilens batteri (%)', height: 100,
-            refs: [{ v: 42, label: 'minimum 42 %', color: C.muted }, { v: 90, label: 'maks 90 %', color: C.muted }],
-            lines: [{ label: 'Bil', short: 'Bil', color: C.car, start: carInfo.soc_pct, get: (r) => r.car_soc }] },
+            refs: [{ v: 42, label: 'minimum 42 %', color: C.muted }, { v: maxSoc, label: `maks ${fmt(maxSoc, 0)} %`, color: C.muted }],
+            lines: [{ label: 'Bil', short: 'Bil', color: C.car, start: startSoc, get: (r) => r.car_soc }] },
         ],
       });
     }
