@@ -106,11 +106,13 @@ PHASE_KV = 0.23          # kV per phase: 1 kW on one phase = 4.35 A, 1 kW over t
 
 def solve(buy, sell, pv, load, dt, soc0_kwh, params: BatteryParams,
           terminal_value: float, allow_grid_charge: bool = True, car: CarParams = None,
-          fuse_amps: float = None, export_min_price: float = None) -> Plan:
+          fuse_amps: float = None, export_min_price: float = None, charge_lines: list = None) -> Plan:
     """fuse_amps: amps per phase available for the main fuse (fuse minus margin), or None.
     Per step the worst phase is kept below it: car and grid charging of the battery are
     three-phase, the house load is counted as if it were all on one phase (conservative).
-    export_min_price: no export in hours whose (hourly) sell price is below it."""
+    export_min_price: no export in hours whose (hourly) sell price is below it.
+    charge_lines: per step [(a, b)]: kWh stored in the step <= a + b * SoC at its start (the BMS
+    tapering the last part, see batterycurve.step_lines)."""
     buy, sell, pv, load, dt = (np.asarray(a, dtype=float) for a in (buy, sell, pv, load, dt))
     T = len(buy)
     if T == 0:
@@ -163,6 +165,12 @@ def solve(buy, sell, pv, load, dt, soc0_kwh, params: BatteryParams,
         ub({(t, PV_BAT): params.eta_pv_bat, (t, GRID_BAT): params.eta_grid_bat}, params.max_power_kw * dt[t])
         ub({(t, BAT_LOAD): 1.0 / params.eta_discharge, (t, BAT_CAR): 1.0 / params.eta_discharge},
            params.max_power_kw * dt[t])
+        for a, b in ((charge_lines[t] if charge_lines and t < len(charge_lines) else None) or []):
+            stored = {(t, PV_BAT): params.eta_pv_bat, (t, GRID_BAT): params.eta_grid_bat}
+            if t == 0:
+                ub(stored, max(0.0, a + b * soc0_kwh))
+            else:
+                ub({**stored, (t - 1, SOC): -b}, a)
         if car:
             avail = 1.0 if car.available[t] else 0.0
             ub({(t, PV_CAR): 1.0, (t, BAT_CAR): 1.0, (t, GRID_CAR): 1.0}, car.max_kw * dt[t] * avail)

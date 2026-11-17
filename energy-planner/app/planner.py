@@ -6,6 +6,7 @@ import os
 import threading
 from datetime import datetime, timedelta, timezone
 
+import batterycurve
 import car as carmod
 import heatpump
 from inputs import UTC, build_horizon, hour_floor, parse_prices, parse_solcast, parse_ts, persistence_forecast
@@ -114,6 +115,7 @@ class Planner:
         self._thor_stopped = False     # emergency stop on the charger done: no restart from here
         self._pause_wanted_since = None   # since when the controller has wanted a charging car paused
         self._hp_written_hour = None      # the heat pump's setpoint is changed at most once per hour
+        self._bat_curve = None            # learned charge power at high SoC (batterycurve.learn)
         self._car_status_prev = None      # charger status at the previous car cycle
         self._session_ended_at = None     # the charger ended the session on its own (not through HA)
         self._car_prod_prev = False
@@ -206,6 +208,7 @@ class Planner:
                     except Exception as e:
                         log.info("solar statistics for %s days unavailable: %s", days, e)
             self._refresh_car_history(opts, now)
+            self._learn_battery_curve(opts, now)
             for i in ids:
                 if not stats.get(i):
                     log.warning("no long-term statistics for %s (does it have a state_class?)", i)
@@ -325,14 +328,15 @@ class Planner:
             "next_change": nxt["t"] if nxt else None, "next_setpoint": nxt["setpoint"] if nxt else None})
         return d
 
-    def _car_preview(self, horizon, now, opts, params, soc0, tv, fuse_amps, exp_min, car_soc, full, departure):
+    def _car_preview(self, horizon, now, opts, params, soc0, tv, fuse_amps, exp_min, car_soc, full, departure,
+                     charge_lines=None):
         """What the plan would do with the car if it were plugged in now (nothing is written)."""
         cp, info = carmod.build_car_params(horizon, now, self.tz, opts, "suspended_evse", car_soc,
                                            full=full, departure=departure, extra=self._car_extra)
         if cp is None:
             return None
         pl = solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
-                   car=cp, fuse_amps=fuse_amps, export_min_price=exp_min)
+                   car=cp, fuse_amps=fuse_amps, export_min_price=exp_min, charge_lines=charge_lines)
         cap = float(opts["car_battery_kwh"])
         rows, windows, cur = [], [], None
         for i, start in enumerate(horizon.starts):
@@ -411,6 +415,36 @@ class Planner:
             return None
         return (f"THOR har sin egen ladeplan ({sched[0]}–{sched[1]}). Den kan afslutte add-on'ens session ved de "
                 "tider, og så kan bilen ikke lade igen, før kablet tages ud og ind. Slå den fra i ShinePhone.")
+
+    def _learn_battery_curve(self, opts: dict, now: datetime):
+        """The battery's charge power at high SoC from the 5-minute statistics (about 10 days)."""
+        ids = [opts.get("battery_charge_power_entity"), opts.get("battery_soc_entity")]
+        if not all(ids):
+            return
+        try:
+            stats = self.ha.statistics(ids, now - timedelta(days=10), now, "5minute")
+        except Exception as e:  # best effort: without it the default curve is used
+            log.info("battery curve: 5-minute statistics unavailable: %s", e)
+            return
+        self._bat_curve = batterycurve.learn(stats.get(ids[0]), stats.get(ids[1]), float(opts["battery_max_power_kw"]),
+                                             float(opts.get("battery_taper_start_pct", 90)),
+                                             float(opts.get("battery_taper_end_kw", 1.0)))
+
+    def _charge_lines(self, opts: dict, horizon) -> tuple:
+        """Per step, the LP lines for the BMS taper (see batterycurve), and the curve used."""
+        max_kw = float(opts["battery_max_power_kw"])
+        info = self._bat_curve or {"curve": batterycurve.default_curve(
+            max_kw, float(opts.get("battery_taper_start_pct", 90)), float(opts.get("battery_taper_end_kw", 1.0))),
+            "learned": False, "samples": {}}
+        cap = float(opts["battery_capacity_kwh"])
+        cache = {}
+        lines = []
+        for dt in horizon.dt:
+            key = round(float(dt), 2)
+            if key not in cache:
+                cache[key] = batterycurve.step_lines(info["curve"], cap, max_kw, key)
+            lines.append(cache[key])
+        return lines, info
 
     def _refresh_car_history(self, opts: dict, now: datetime):
         """Car SoC (90 days, for the last full charge) and buy prices (30 days, for "rock bottom")."""
@@ -609,10 +643,12 @@ class Planner:
         fuse_amps = (float(opts["main_fuse_amps"]) - float(opts.get("fuse_margin_amps", 0))
                      if opts.get("main_fuse_amps") else None)
         exp_min = float(opts["export_min_price"]) if opts.get("export_control") and opts.get("export_min_price") is not None else None
+        charge_lines, curve_info = self._charge_lines(opts, horizon)
         plan = solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
-                     car=car_params, fuse_amps=fuse_amps, export_min_price=exp_min)
+                     car=car_params, fuse_amps=fuse_amps, export_min_price=exp_min, charge_lines=charge_lines)
         solar_only = solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
-                           allow_grid_charge=False, car=car_params, fuse_amps=fuse_amps, export_min_price=exp_min)
+                           allow_grid_charge=False, car=car_params, fuse_amps=fuse_amps, export_min_price=exp_min,
+                           charge_lines=charge_lines)
         phases = self._phase_amps(opts)
         if opts.get("main_fuse_amps") and split_csv(opts.get("grid_current_entities") or "") and phases is None:
             warnings.append("the phase current sensors (grid_current_entities) are unavailable - "
@@ -641,7 +677,8 @@ class Planner:
         car_preview = None
         if preview_args:
             try:
-                car_preview = self._car_preview(horizon, now, opts, params, soc0, tv, fuse_amps, exp_min, *preview_args)
+                car_preview = self._car_preview(horizon, now, opts, params, soc0, tv, fuse_amps, exp_min, *preview_args,
+                                                charge_lines=charge_lines)
             except Exception as e:  # the preview must never stop planning
                 log.info("car preview skipped: %s", e)
 
@@ -723,6 +760,11 @@ class Planner:
             "setpoints_live": live_sp,
             "fuse": fuse,
             "car_preview": car_preview,
+            "battery_curve": {"curve": curve_info["curve"], "learned": curve_info["learned"],
+                              "samples": curve_info.get("samples", {}),
+                              "default": curve_info.get("default") or batterycurve.default_curve(
+                                  float(opts["battery_max_power_kw"]), float(opts.get("battery_taper_start_pct", 90)),
+                                  float(opts.get("battery_taper_end_kw", 1.0)))},
             "export_min_price": exp_min,
             "actual_registers": actual,
             "counters": counters,

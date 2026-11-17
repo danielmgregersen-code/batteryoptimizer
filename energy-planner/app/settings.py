@@ -129,6 +129,8 @@ DEFAULTS = {
     "heat_pump_room_max": 17,
     "heat_pump_humidity_max": 70,
     "heat_pump_production_switch_entity": "input_boolean.energy_planner_varmepumpe_produktion",
+    "battery_taper_start_pct": 90,
+    "battery_taper_end_kw": 1.0,
     "export_control": True,
     "export_min_price": 0.0,
     "export_car_min_price": -0.10,
