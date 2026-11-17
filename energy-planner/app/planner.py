@@ -67,6 +67,34 @@ def _solar_totals(rows: list) -> dict:
             "day_c50": tot(rows, "c50"), "day_dayahead": tot(rows, "dayahead")}
 
 
+def _preview_text(pv: dict, tz, now: datetime) -> str:
+    """A Danish one-liner for the car preview (panel and sensor)."""
+    def num(v, d=1):
+        return f"{v:.{d}f}".replace(".", ",")
+    today = now.astimezone(tz).date()
+
+    def when(w):
+        a, b = datetime.fromisoformat(w["start"]), datetime.fromisoformat(w["end"])
+        day = a.date()
+        rel = "i dag" if day == today else ("i nat" if (day - today).days == 1 and a.hour < 8
+                                            else "i morgen" if (day - today).days == 1 else f"{day:%d.%m}")
+        if day == today and a.hour >= 18:
+            rel = "i aften"
+        return f"{rel} kl. {a:%H}–{b:%H}"
+    dl = datetime.fromisoformat(pv["deadline"]).astimezone(tz)
+    if pv["reason"] == "none":
+        if pv["soc_now"] >= (pv.get("max_soc_pct") or 100) - 0.5:
+            return f"Ville ikke lade: bilen er på {num(pv['soc_now'], 0)} % (loftet)."
+        return (f"Ville ikke lade før kl. {dl:%H}: bilen er på {num(pv['soc_now'], 0)} % (over minimum "
+                f"{num(pv['min_soc_pct'], 0)} %), og ingen timer er billigere end {num(pv['value_dkk'], 2)} kr.")
+    ws = pv["windows"][:2]
+    parts = ", ".join(when(w) for w in ws) + (" m.fl." if len(pv["windows"]) > 2 else "")
+    solar = all(w["solar"] for w in pv["windows"])
+    cost = "på sol (gratis)" if solar and pv["cost_dkk"] < 0.5 else f"(net ca. {num(pv['cost_dkk'], 0)} kr)"
+    return (f"Ville lade {num(pv['planned_kwh'])} kWh {parts} {cost} og nå {num(pv['soc_at_deadline'], 0)} % "
+            f"kl. {dl:%H}.")
+
+
 class Planner:
     def __init__(self, ha, tz=None, log_path: str = DECISION_LOG, options_fn=load_options,
                  car_log_path: str = CAR_LOG):
@@ -251,6 +279,60 @@ class Planner:
         if self._fuse_rate_cap is not None and self._fuse_rate_cap < rate:
             return {**live, "charge_rate_pct": self._fuse_rate_cap, "fuse_capped": True}
         return live
+
+    def _car_preview(self, horizon, now, opts, params, soc0, tv, fuse_amps, exp_min, car_soc, full, departure):
+        """What the plan would do with the car if it were plugged in now (nothing is written)."""
+        cp, info = carmod.build_car_params(horizon, now, self.tz, opts, "suspended_evse", car_soc,
+                                           full=full, departure=departure, extra=self._car_extra)
+        if cp is None:
+            return None
+        pl = solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
+                   car=cp, fuse_amps=fuse_amps, export_min_price=exp_min)
+        cap = float(opts["car_battery_kwh"])
+        rows, windows, cur = [], [], None
+        for i, start in enumerate(horizon.starts):
+            if not cp.available[i]:
+                break
+            kwh = float(pl.pv_car[i] + pl.grid_car[i] + pl.bat_car[i])
+            t = start.astimezone(self.tz)
+            rows.append({"t": t.isoformat(), "dt": round(float(horizon.dt[i]), 3), "buy": round(float(pl.buy[i]), 4),
+                         "sell": round(float(pl.sell[i]), 4), "car_grid": round(float(pl.grid_car[i]), 2),
+                         "car_pv": round(float(pl.pv_car[i]), 2), "car_bat": round(float(pl.bat_car[i]), 2),
+                         "car_soc": round(float(pl.car_end[i]) / cap * 100.0, 1)})
+            if kwh > 0.1:
+                if cur and cur["end_i"] == i - 1:
+                    cur.update(end=(t + timedelta(hours=1)).isoformat(), end_i=i,
+                               solar=cur["solar"] and pl.pv_car[i] >= pl.grid_car[i])
+                else:
+                    cur = {"start": t.isoformat(), "end": (t + timedelta(hours=1)).isoformat(), "end_i": i,
+                           "solar": bool(pl.pv_car[i] >= pl.grid_car[i])}
+                    windows.append(cur)
+        for w in windows:
+            w.pop("end_i", None)
+        planned = float((pl.pv_car + pl.grid_car + pl.bat_car).sum())
+        cost = float((pl.grid_car * pl.buy).sum())
+        deadline = datetime.fromisoformat(info["deadline"])
+        steps = [i for i, st in enumerate(horizon.starts) if st + timedelta(hours=1) <= deadline]
+        at_deadline = float(pl.car_end[steps[-1]]) / cap * 100.0 if steps else float(car_soc)
+        ext = info.get("extra") or {}
+        if planned <= 0.1:
+            reason = "none"
+        elif carmod.needs(car_soc, False, opts)["minimum"]:
+            reason = "minimum"
+        elif ext.get("status") == "planned":
+            reason = "extra"
+        elif (departure or {}).get("status") == "planned":
+            reason = "departure"
+        elif (full or {}).get("active"):
+            reason = "full"
+        else:
+            reason = "cheap"
+        out = {"soc_now": car_soc, "planned_kwh": round(planned, 2), "cost_dkk": round(cost, 2),
+               "soc_at_deadline": round(at_deadline, 1), "deadline": info["deadline"],
+               "max_soc_pct": info.get("max_soc_pct"), "windows": windows, "reason": reason, "rows": rows,
+               "min_soc_pct": float(opts["car_min_stop_pct"]), "value_dkk": float(opts["car_value_dkk_per_kwh"])}
+        out["text"] = _preview_text(out, self.tz, now)
+        return out
 
     @staticmethod
     def _car_needs_export(plan, car_info: dict, opts: dict) -> bool:
@@ -456,6 +538,7 @@ class Planner:
         tv = terminal_value_for(horizon.buy, params)
 
         car_params, car_info = None, {"enabled": bool(opts.get("car_enabled"))}
+        preview_args = None
         if opts.get("car_enabled"):
             status = self.ha.text(opts["charger_status_entity"])
             car_soc = self.ha.number(opts["car_soc_entity"])
@@ -468,6 +551,8 @@ class Planner:
                                                        full=full, departure=departure, extra=self._car_extra)
             car_info.update(info)
             car_info.update(full_charge=full, departure=departure)
+            if status not in carmod.CONNECTED and car_soc is not None:
+                preview_args = (car_soc, full, departure)
             if self._car_extra and "extra" not in car_info:   # ordered, but the car is not connected
                 car_info["extra"] = {**self._car_extra, "set": True, "status": "waiting"}
             sched_warn = self._charger_schedule_warning(opts)
@@ -508,6 +593,12 @@ class Planner:
             if plan.car_shortfall > 0.05:
                 warnings.append(f"car minimum cannot be reached by the deadline ({plan.car_shortfall:.1f} kWh short)")
         savings = solar_only.net_cost - plan.net_cost
+        car_preview = None
+        if preview_args:
+            try:
+                car_preview = self._car_preview(horizon, now, opts, params, soc0, tv, fuse_amps, exp_min, *preview_args)
+            except Exception as e:  # the preview must never stop planning
+                log.info("car preview skipped: %s", e)
 
         sp = derive_setpoints(plan, soc_pct, params, float(opts["inverter_kw"]),
                               float(opts["soc_floor_pct"]), float(opts["soc_ceiling_pct"]),
@@ -585,6 +676,7 @@ class Planner:
             "setpoints": sp,
             "setpoints_live": live_sp,
             "fuse": fuse,
+            "car_preview": car_preview,
             "export_min_price": exp_min,
             "actual_registers": actual,
             "counters": counters,
@@ -757,6 +849,10 @@ class Planner:
             "departure": (car_info.get("departure") or {}).get("at"),
             "departure_soc": (car_info.get("departure") or {}).get("soc"),
             "departure_ok": car_info.get("departure_ok"),
+            "preview_kwh": ((snap or {}).get("car_preview") or {}).get("planned_kwh"),
+            "preview_window": (lambda w: f"{w[0]['start'][11:16]}–{w[0]['end'][11:16]}" if w else None)(
+                ((snap or {}).get("car_preview") or {}).get("windows")),
+            "preview_text": ((snap or {}).get("car_preview") or {}).get("text"),
             "extra": ({k: car_info["extra"].get(k) for k in ("label", "target_pct", "until", "planned_pct")}
                       if (car_info.get("extra") or {}).get("set") else None)})
         key = (d["action"], d["target_amps"], d["reason"].split(" (")[0], live["status"], live["amps"])

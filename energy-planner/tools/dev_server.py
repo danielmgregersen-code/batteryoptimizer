@@ -268,6 +268,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8010)
     ap.add_argument("--no-car", action="store_true")
+    ap.add_argument("--unplugged", action="store_true", help="the car is known (SoC 30 %) but not plugged in")
     ap.add_argument("--production", action="store_true", help="turn both production helpers on")
     ap.add_argument("--departure", action="store_true", help="a trip tomorrow 09:00 at 100 %%")
     ap.add_argument("--kia-pin-error", action="store_true",
@@ -297,6 +298,8 @@ def main():
     with open(os.path.join(data, "pv_dayahead.json"), "w") as fh:
         json.dump(dayahead, fh)
     fake = FakeHA(car=not args.no_car)
+    if args.unplugged:
+        fake.states[DEFAULTS["charger_status_entity"]] = "available"
     for key in ("production_switch_entity", "car_production_switch_entity"):
         fake.states[DEFAULTS[key]] = "on" if args.production else "off"
     if args.departure:

@@ -951,3 +951,48 @@ def test_export_stays_open_while_the_car_charges_on_sun_down_to_the_car_limit(tm
     assert _negative_noon(tmp_path, -0.05, connected=False)["setpoints"]["export_reason"] == "stopped"
     assert _negative_noon(tmp_path, -0.05, car_soc=100.0)["setpoints"]["export_limit_pct"] == 0  # full (a negative sell price lifts the limit to 100 %)
     assert _negative_noon(tmp_path, 0.2)["setpoints"]["export_reason"] == "price"
+
+
+def _unplugged(soc):
+    ha = car_ha()
+    ha.texts[DEFAULTS["charger_status_entity"]] = "available"
+    ha.numbers[DEFAULTS["car_soc_entity"]] = soc
+    return ha
+
+
+def test_preview_shows_what_would_happen_if_the_car_were_plugged_in(tmp_path):
+    ha = _unplugged(30.0)
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    snap = p.run_once(datetime(2026, 11, 14, 19, 30, tzinfo=UTC))       # 20:30 local
+    pv = snap["car_preview"]
+    assert pv["reason"] == "minimum" and pv["soc_at_deadline"] == pytest.approx(42.0, abs=0.5)
+    assert pv["planned_kwh"] == pytest.approx(0.12 * 110 / 0.92, abs=0.5) and pv["windows"]   # at the plug
+    assert pv["text"].startswith("Ville lade") and "42 %" in pv["text"]
+    # the real plan has no car and the house setpoints are what they would be without it
+    assert not snap["car"]["connected"] and "car_grid" not in snap["plan"][0]
+    alone = Planner(make_ha(), tz=TZ, log_path=str(tmp_path / "e.jsonl")).run_once(datetime(2026, 11, 14, 19, 30, tzinfo=UTC))
+    assert snap["setpoints"]["mode"] == alone["setpoints"]["mode"]
+    p.car_cycle(datetime(2026, 11, 14, 19, 30, tzinfo=UTC))
+    attrs = ha.published["sensor.energy_planner_car"][1]
+    assert attrs["preview_kwh"] == pv["planned_kwh"] and attrs["preview_text"] == pv["text"]
+
+
+def test_preview_says_no_when_nothing_is_worth_charging_and_is_absent_when_plugged_or_unknown(tmp_path):
+    p = Planner(_unplugged(70.0), tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    pv = p.run_once(datetime(2026, 11, 14, 19, 30, tzinfo=UTC))["car_preview"]
+    assert pv["reason"] == "none" and pv["planned_kwh"] < 0.1 and pv["text"].startswith("Ville ikke lade")
+    plugged = Planner(car_ha(), tz=TZ, log_path=str(tmp_path / "e.jsonl"), car_log_path=str(tmp_path / "f.jsonl"))
+    assert plugged.run_once(datetime(2026, 11, 14, 19, 30, tzinfo=UTC))["car_preview"] is None
+    ha = _unplugged(50.0)
+    ha.numbers[DEFAULTS["car_soc_entity"]] = None
+    unknown = Planner(ha, tz=TZ, log_path=str(tmp_path / "g.jsonl"), car_log_path=str(tmp_path / "h.jsonl"))
+    assert unknown.run_once(datetime(2026, 11, 14, 19, 30, tzinfo=UTC))["car_preview"] is None
+
+
+def test_an_extra_order_shows_in_the_preview(tmp_path):
+    ha = _unplugged(70.0)
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    now = datetime(2026, 11, 14, 19, 30, tzinfo=UTC)
+    p.set_car_extra("pct", 10, now)
+    pv = p.run_once(now)["car_preview"]
+    assert pv["reason"] == "extra" and pv["soc_at_deadline"] == pytest.approx(80.0, abs=0.5)

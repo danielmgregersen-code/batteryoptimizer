@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.0
+
+- **"Hvis bilen sættes til nu":** while the car is unplugged, a second plan is solved as if it were
+  plugged in now (nothing is written; the house battery follows the real plan). The Bil tab shows a
+  one-liner ("Ville lade 14,3 kWh i nat kl. 04–06 (net ca. 28 kr) og nå 42 % kl. 06." or why it
+  would not charge), the chart and a "Hvis sat til nu" tile. The car sensor gets `preview_kwh`,
+  `preview_window` and `preview_text` for dashboards.
+- Extra charge can be ordered while unplugged; it shows in the preview straight away.
+- Dev server: `--unplugged`.
+
 ## 0.12.0
 
 - **Production is the normal mode; dry-run is gone from the panel, sensors and dashboards.** The
