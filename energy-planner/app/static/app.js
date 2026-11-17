@@ -629,7 +629,7 @@
       ['Min SoC (gulv)', sp.min_soc_pct + ' %', a.reg_min_soc, (x) => Math.abs(+x - sp.min_soc_pct) <= 1, 'reg_min_soc'],
       ['Ladehastighed', sp.charge_rate_pct + ' %', a.reg_charge_rate, (x) => !sp.battery_first || Math.abs(+x - sp.charge_rate_pct) <= 5, 'reg_charge_rate'],
       sp.export_limit_pct != null
-        ? ['Eksportgrænse', sp.export_limit_pct + ' %' + (sp.export_allowed ? '' : ' (stop)'), a.reg_export_limit, (x) => Math.abs(+x - sp.export_limit_pct) <= 1, 'reg_export_limit']
+        ? ['Eksportgrænse', sp.export_limit_pct + ' %' + (sp.export_reason === 'car' ? ' (bil)' : sp.export_allowed ? '' : ' (stop)'), a.reg_export_limit, (x) => Math.abs(+x - sp.export_limit_pct) <= 1, 'reg_export_limit']
         : ['Eksport', sp.export_hint === 'export' ? 'Sælg' : 'Ingen', a.reg_export_limit, null, null],
     ];
     return rows.map(([name, planned, actual, same, key]) => {
@@ -697,6 +697,7 @@
     else if (sp.mode === 'discharge') modeDetail = `${fmt(sp.discharge_kw, 1)} kW · gulv ${sp.min_soc_pct} %`;
     else modeDetail = sp.export_hint === 'export' ? 'solen sælges, batteriet gemmes' : 'batteriet gemmes til senere';
     if (sp.export_allowed === false) modeDetail += ` · eksport stoppet (salgspris ${fmt(sp.export_sell_price, 2)} kr)`;
+    else if (sp.export_reason === 'car') modeDetail += ` · eksport åben for bilens solopladning (salgspris ${fmt(sp.export_sell_price, 2)} kr)`;
 
     const tiles = h('div', { class: 'tiles' },
       tile('Nu', h('span', { class: 'mode-badge', style: { fontSize: '20px' } }, h('span', { class: 'mode-dot', style: { background: m.color } }), m.label), modeDetail),

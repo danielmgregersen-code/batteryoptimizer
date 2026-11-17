@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.1
+
+- **The car can charge on sun while export is closed.** With export at 0 % and the house battery
+  full, the inverter throttles the panels to the house load, so the car controller saw no surplus.
+  Export now stays open while the plan charges the car on sun in the current hour (car connected,
+  below its limit), down to `export_car_min_price` (−0.10 kr). The car takes nearly all of the
+  surplus, so only a few øre are exported. Shown as "100 % (bil)" and on the mode sensor as
+  `export_reason` (price / car / stopped).
+
 ## 0.11.0
 
 - **Export control** (`export_control`, `export_min_price` 0.00 kr): with battery production on, the
