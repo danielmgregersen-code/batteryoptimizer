@@ -150,3 +150,14 @@ def test_main_fuse_limits_car_plus_grid_charging_per_phase():
 def test_house_load_above_the_fuse_is_not_infeasible():
     lim, _ = run([1.0] * 3, [0.1] * 3, [0.0] * 3, [6.0] * 3, soc0_pct=10, fuse_amps=22)
     assert lim.grid_bat.sum() == pytest.approx(0.0, abs=1e-6)
+
+
+def test_no_export_in_hours_below_the_export_price():
+    buy = [2.0] * 4
+    sell = [0.3, -0.02, 0.0, 0.4]
+    pv = [5.0] * 4
+    free, _ = run(buy, sell, pv, [0.5] * 4, soc0_pct=100)
+    lim, _ = run(buy, sell, pv, [0.5] * 4, soc0_pct=100, export_min_price=0.0)
+    assert lim.pv_exp[1] == pytest.approx(0.0, abs=1e-9) and lim.pv_curt[1] > 4.0      # curtailed (battery full)
+    assert lim.pv_exp[2] >= 0.0 and lim.pv_exp[0] > 4.0 and lim.pv_exp[3] > 4.0
+    assert free.pv_exp[0] == pytest.approx(lim.pv_exp[0])

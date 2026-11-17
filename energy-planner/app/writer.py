@@ -11,7 +11,8 @@ Order matters so the inverter never passes through an unintended state:
   3. switch on what goes on (battery first before charge from grid).
 
 Battery first is only the one all-day slot (`reg_battery_first`, Enabled/Disabled); time slots are
-never touched. The export limit is not written (it stays with Node-RED).
+never touched. The export limit (0 = no export, 100 = free) is written only with `export_control`,
+from the current hour's sell price, after the battery registers.
 """
 from datetime import datetime
 
@@ -55,6 +56,8 @@ def desired(sp: dict, opts: dict) -> dict:
            "reg_min_soc": min_soc, "reg_charge_rate": int(min(max(sp["charge_rate_pct"], 10), 100))}
     if sp.get("max_soc_pct") is not None:
         out["reg_max_soc"] = int(min(max(sp["max_soc_pct"], min_soc, floor), ceiling))
+    if opts.get("export_control") and sp.get("export_limit_pct") is not None and opts.get("reg_export_limit"):
+        out["reg_export_limit"] = int(sp["export_limit_pct"])
     return out
 
 
@@ -89,7 +92,7 @@ def apply(ha, opts: dict, sp: dict, now: datetime) -> list:
         limits = ["reg_max_soc", "reg_min_soc"]          # raise max first so min never exceeds it
     limits.append("reg_charge_rate")
 
-    for key in offs + limits + ons:
+    for key in offs + limits + ons + ["reg_export_limit"]:
         if key not in want or not differs(key):
             continue
         entity = opts[key]
@@ -123,7 +126,7 @@ def apply(ha, opts: dict, sp: dict, now: datetime) -> list:
 
 def allowed_entities(opts: dict) -> list:
     """Entities the entity services may act on: the written registers and the charger's controls."""
-    from settings import WRITE_REGISTER_KEYS
-    ids = [opts.get(k) for k in WRITE_REGISTER_KEYS]
+    from settings import write_register_keys
+    ids = [opts.get(k) for k in write_register_keys(opts)]
     ids += [opts.get("charger_current_entity"), opts.get("charger_start_button"), opts.get("charger_stop_button")]
     return [e for e in ids if e]

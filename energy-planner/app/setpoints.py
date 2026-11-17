@@ -17,7 +17,8 @@ How the modes map onto the Growatt priorities (verify on the inverter before wri
 Every value is chosen so that, if the planner stops refreshing it, the inverter stops at the
 planned state instead of carrying on (no "charge from the grid to 100 %" left behind).
 
-Export limit and the car-charging guard stay in Node-RED in this version; the export
+The export limit is set from the hour's sell price (export_allowed); the car-charging guard stays
+outside. The export
 decision is only reported as a hint.
 """
 import math
@@ -52,8 +53,13 @@ def step_mode(plan, j: int) -> str:
     return "hold"
 
 
+def export_allowed(sell_hour: float, export_min_price: float) -> bool:
+    """Export only while the hour's sell price (what is settled) is at least the limit."""
+    return sell_hour is None or export_min_price is None or float(sell_hour) >= float(export_min_price)
+
+
 def derive_setpoints(plan, soc_now_pct: float, battery, inverter_kw: float,
-                     soc_floor_pct: float, soc_ceiling_pct: float) -> dict:
+                     soc_floor_pct: float, soc_ceiling_pct: float, export_min_price: float = None) -> dict:
     T = len(plan)
     cap = battery.capacity_kwh
 
@@ -146,6 +152,10 @@ def derive_setpoints(plan, soc_now_pct: float, battery, inverter_kw: float,
         "grid_target_pct": max_soc if mode == "grid_charge" else None,
         "run_target_pct": run_target,
         "solar_rate_pct": solar_rate,
+        # Export limit from the current hour's sell price (the hourly price is what is settled).
+        "export_allowed": export_allowed(float(plan.sell[0]), export_min_price),
+        "export_limit_pct": None if export_min_price is None else (100 if export_allowed(float(plan.sell[0]), export_min_price) else 0),
+        "export_sell_price": round(float(plan.sell[0]), 4),
     }
 
 

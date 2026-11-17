@@ -106,10 +106,11 @@ PHASE_KV = 0.23          # kV per phase: 1 kW on one phase = 4.35 A, 1 kW over t
 
 def solve(buy, sell, pv, load, dt, soc0_kwh, params: BatteryParams,
           terminal_value: float, allow_grid_charge: bool = True, car: CarParams = None,
-          fuse_amps: float = None) -> Plan:
+          fuse_amps: float = None, export_min_price: float = None) -> Plan:
     """fuse_amps: amps per phase available for the main fuse (fuse minus margin), or None.
     Per step the worst phase is kept below it: car and grid charging of the battery are
-    three-phase, the house load is counted as if it were all on one phase (conservative)."""
+    three-phase, the house load is counted as if it were all on one phase (conservative).
+    export_min_price: no export in hours whose (hourly) sell price is below it."""
     buy, sell, pv, load, dt = (np.asarray(a, dtype=float) for a in (buy, sell, pv, load, dt))
     T = len(buy)
     if T == 0:
@@ -183,6 +184,8 @@ def solve(buy, sell, pv, load, dt, soc0_kwh, params: BatteryParams,
             if k == SOC:
                 bounds.append((lo, hi))
             elif k == GRID_BAT and not allow_grid_charge:
+                bounds.append((0.0, 0.0))
+            elif k == PV_EXP and export_min_price is not None and sell[t] < export_min_price:
                 bounds.append((0.0, 0.0))
             elif k in (PV_CAR, BAT_CAR, GRID_CAR, SHORT) and not car:
                 bounds.append((0.0, 0.0))

@@ -381,6 +381,7 @@ def test_production_switch_off_means_no_writes(tmp_path):
 
 def test_production_switch_on_writes_the_registers(tmp_path):
     ha = make_ha()
+    ha.texts[DEFAULTS["reg_export_limit"]] = "100"                # export free; the price is positive
     ha.texts.update({DEFAULTS["production_switch_entity"]: "on", DEFAULTS["reg_grid_charge"]: "Enabled",
                      DEFAULTS["reg_battery_first"]: "Enabled"})
     calls = []
@@ -893,3 +894,36 @@ def test_a_hob_on_right_now_lifts_the_current_hour(tmp_path):
     assert snap["pred"]["load_kw"] == pytest.approx(0.5 + 2.0, abs=0.01)
     assert snap["pred"]["submeters_now_kw"] == pytest.approx(2.0) and snap["submeters_now"][hob] == 2.0
     assert snap["profile"]["parts"]["weekday"]["rest"][12] == pytest.approx(0.5, abs=0.01)
+
+
+
+def test_export_is_stopped_in_an_hour_with_a_negative_hourly_price(tmp_path):
+    from fixtures import SELL_TODAY, price_attrs
+    exp = DEFAULTS["reg_export_limit"]
+    ha = make_ha()
+    sell = list(SELL_TODAY)
+    sell[12] = -0.05                                                    # 12-13 local: negative hourly price
+    ha.attrs[DEFAULTS["price_sell_entity"]] = price_attrs(sell)
+    ha.numbers[exp] = 100.0
+    calls = []
+
+    def call_service(domain, service, data=None, return_response=False):
+        if domain == "number":
+            calls.append((data["entity_id"], data["value"]))
+            ha.numbers[data["entity_id"]] = data["value"]
+        elif domain == "select":
+            ha.texts[data["entity_id"]] = data["option"]
+    ha.call_service = call_service
+    ha.state = lambda e: ({"state": str(ha.numbers.get(e, ha.texts.get(e))), "attributes": {}}
+                          if e in ha.numbers or e in ha.texts else None)
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    snap = p.run_once(datetime(2026, 11, 14, 11, 0, 20, tzinfo=UTC))      # 12:00 local, dry-run
+    assert snap["setpoints"]["export_allowed"] is False and snap["setpoints"]["export_limit_pct"] == 0
+    assert calls == []
+    assert all(r["pv_exp"] == 0 for r in snap["plan"] if r["t"][11:13] == "12")
+    ha.texts[DEFAULTS["production_switch_entity"]] = "on"
+    p.run_once(datetime(2026, 11, 14, 11, 0, 20, tzinfo=UTC))
+    assert (exp, 0) in calls
+    calls.clear()
+    snap = p.run_once(datetime(2026, 11, 14, 12, 0, 20, tzinfo=UTC))      # 13:00: positive again
+    assert snap["setpoints"]["export_allowed"] is True and (exp, 100) in calls

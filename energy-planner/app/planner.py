@@ -464,10 +464,11 @@ class Planner:
 
         fuse_amps = (float(opts["main_fuse_amps"]) - float(opts.get("fuse_margin_amps", 0))
                      if opts.get("main_fuse_amps") else None)
+        exp_min = float(opts["export_min_price"]) if opts.get("export_control") and opts.get("export_min_price") is not None else None
         plan = solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
-                     car=car_params, fuse_amps=fuse_amps)
+                     car=car_params, fuse_amps=fuse_amps, export_min_price=exp_min)
         solar_only = solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
-                           allow_grid_charge=False, car=car_params, fuse_amps=fuse_amps)
+                           allow_grid_charge=False, car=car_params, fuse_amps=fuse_amps, export_min_price=exp_min)
         phases = self._phase_amps(opts)
         if opts.get("main_fuse_amps") and split_csv(opts.get("grid_current_entities") or "") and phases is None:
             warnings.append("the phase current sensors (grid_current_entities) are unavailable - "
@@ -495,7 +496,8 @@ class Planner:
         savings = solar_only.net_cost - plan.net_cost
 
         sp = derive_setpoints(plan, soc_pct, params, float(opts["inverter_kw"]),
-                              float(opts["soc_floor_pct"]), float(opts["soc_ceiling_pct"]))
+                              float(opts["soc_floor_pct"]), float(opts["soc_ceiling_pct"]),
+                              export_min_price=exp_min)
 
         rows = []
         for i, start in enumerate(horizon.starts):
@@ -563,6 +565,7 @@ class Planner:
             "setpoints": sp,
             "setpoints_live": live_sp,
             "fuse": fuse,
+            "export_min_price": exp_min,
             "actual_registers": actual,
             "counters": counters,
             "price_now": {"buy": round(float(plan.buy[0]), 4), "sell": round(float(plan.sell[0]), 4)},
