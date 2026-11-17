@@ -1,4 +1,4 @@
-"""One planning cycle: read HA -> build horizon -> solve -> setpoints -> publish + log (dry-run)."""
+"""One planning cycle: read HA -> build horizon -> solve -> setpoints -> write (production) -> publish + log."""
 import json
 import math
 import logging
@@ -559,7 +559,7 @@ class Planner:
         }
         samples = {"house_load_w": self.ha.number(opts["house_load_entity"]),
                    "car_w": self.ha.number(opts["charger_power_entity"]) if opts.get("charger_power_entity") else None}
-        # Production: write the registers when the helper is on (otherwise dry-run, as before).
+        # Production: write the registers when the helper is on (off = manual control, nothing written).
         production = writer.switch_on(self.ha, opts.get("production_switch_entity"))
         writes = []
         live_sp = adjust_for_soc(sp, soc_pct)
@@ -577,7 +577,6 @@ class Planner:
                 actual = {k: self.ha.text(opts[k]) for k in REGISTER_KEYS if opts.get(k)}
         snapshot = {
             "updated": now.astimezone(self.tz).isoformat(timespec="seconds"),
-            "dry_run": not production,
             "production": {"battery": production,
                            "car": writer.switch_on(self.ha, opts.get("car_production_switch_entity")),
                            "writes": writes},
@@ -628,7 +627,7 @@ class Planner:
     # ---- outputs -------------------------------------------------------------
     def _publish(self, snap: dict):
         sp = snap["setpoints"]
-        common = {"dry_run": snap["dry_run"], "updated": snap["updated"]}
+        common = {"production": snap["production"]["battery"], "updated": snap["updated"]}
         self.ha.set_state("sensor.energy_planner_mode", snap["mode"], {
             **common, "friendly_name": "Energy Planner mode", "icon": "mdi:home-battery", **sp,
             **snap.get("summary", {}),
@@ -661,9 +660,10 @@ class Planner:
                                           "savings_vs_solar_only_dkk", "net_cost_dkk", "horizon_hours", "car")}
         self._append(self.log_path, entry)
 
-    # ---- car control (fast loop, dry-run) --------------------------------------
+    # ---- car control (fast loop) ---------------------------------------------------
     def car_cycle(self, now: datetime = None) -> dict:
-        """What the car charger *would* be told now. Publishes and logs; calls nothing."""
+        """The car controller's decision; carried out when the car production helper is on (off =
+        manual control, nothing is called). Publishes and logs."""
         opts = self.options_fn()
         if not opts.get("car_enabled"):
             return None
@@ -701,7 +701,7 @@ class Planner:
             pvd.save_json(self.car_full_path, {"at": self._car_full_seen})
         d = carmod.decide(live, row, opts)
         car_production = writer.switch_on(self.ha, opts.get("car_production_switch_entity"))
-        d.update({"updated": now.astimezone(self.tz).isoformat(timespec="seconds"), "dry_run": not car_production,
+        d.update({"updated": now.astimezone(self.tz).isoformat(timespec="seconds"), "production": car_production,
                   "live": live, "plan_row": row, "executed": [], "warning": None})
         if car_production and not self._car_prod_prev:
             # switching the car helper on (again) clears a Kia block and an earlier charger stop
@@ -741,7 +741,7 @@ class Planner:
         car_info = (snap or {}).get("car") or {}
         nxt = car_items[0] if car_items else None
         self.ha.set_state("sensor.energy_planner_car", d["action"], {
-            "friendly_name": "Energy Planner car", "icon": "mdi:car-electric", "dry_run": d["dry_run"], "updated": d["updated"],
+            "friendly_name": "Energy Planner car", "icon": "mdi:car-electric", "production": d["production"], "updated": d["updated"],
             "label": CAR_ACTION_LABEL.get(d["action"], d["action"]),
             "target_amps": d["target_amps"], "reason": d["reason"], "reason_da": d["reason_da"], "calls": d["calls"],
             "executed": d["executed"], "warning": d.get("warning"),
@@ -764,7 +764,7 @@ class Planner:
             self._car_last_logged = key
             self._append(self.car_log_path, {k: d[k] for k in ("updated", "action", "target_amps", "reason",
                                                                 "reason_da", "calls", "executed", "warning",
-                                                                "dry_run", "live")})
+                                                                "production", "live")})
         return d
 
     def _car_production_step(self, d: dict, opts: dict, live: dict, snap: dict, now: datetime):

@@ -73,7 +73,7 @@ DEFAULTS = {
     "battery_input_counter": "sensor.growatt_total_battery_input_energy",
     "battery_output_counter": "sensor.growatt_total_battery_output_energy",
     "solar_counter": "sensor.growatt_total_solar_energy",
-    # --- car (replaces the "Solcelle- & Prisstyret ladning: IONIQ 9" automation; dry-run) ---
+    # --- car (replaces the "Solcelle- & Prisstyret ladning: IONIQ 9" automation) ---
     "car_enabled": True,
     "car_soc_entity": "sensor.ioniq_9_ev_battery_level",
     "charger_status_entity": "sensor.garage_growatt_thor_ev_charger_status",
@@ -110,7 +110,7 @@ DEFAULTS = {
     "car_min_charge_s": 1200,
     "car_cooldown_s": 1800,
     "car_interval_seconds": 120,
-    # --- production: HA helpers that switch each part from dry-run to writing (missing = dry-run) ---
+    # --- production: HA helpers that let the add-on write (off or missing = manual control, nothing written) ---
     "production_switch_entity": "input_boolean.energy_planner_produktion",
     "car_production_switch_entity": "input_boolean.energy_planner_bil_produktion",
     "car_device_id": "",               # the IONIQ 9's device id for kia_uvo.start_charge / stop_charge

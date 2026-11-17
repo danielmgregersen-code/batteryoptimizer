@@ -269,7 +269,8 @@ details[open] > summary { margin-bottom: 10px; }
 .chip.wrap { word-break: break-all; white-space: normal; max-width: 100%; }
 .tiles.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 @media (max-width: 900px) { .tiles.four { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.pill.live { color: #ffffff; background: var(--critical); }
+.pill.live { color: var(--good-ink); background: color-mix(in srgb, var(--good) 16%, transparent); }
+.pill.manual { color: #3a2a00; background: var(--warning); }
 
 /* Extra car charge */
 .extra-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
