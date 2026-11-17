@@ -819,6 +819,11 @@
       h('dt', {}, 'Hvorfor'), h('dd', {}, hp.reason),
       h('dt', {}, 'Garagen'), h('dd', {}, `${hp.room_temp != null ? fmt(hp.room_temp, 1) + ' °C' : '–'} · fugt ${hp.humidity != null ? fmt(hp.humidity, 0) + ' %' : '–'}`),
       h('dt', {}, 'Varmepumpen'), h('dd', {}, hp.hvac_mode === 'off' ? 'slukket (røres ikke)' : ({ heat: 'varme', heat_cool: 'auto', auto: 'auto', cool: 'køl', dry: 'affugt', fan_only: 'blæser' }[hp.hvac_mode] || hp.hvac_mode || '–')),
+      h('dt', {}, 'Forventet forbrug'), h('dd', {}, (() => {
+        const e = hp.expected || {};
+        const parts = ['cheap', 'normal', 'dear'].filter((k) => e[k]).map((k) => `${HP_LEVEL[k].label.toLowerCase()} ${fmt(e[k].kwh, 2)}`);
+        return parts.length ? parts.join(' · ') + ' kWh/time' + (parts.length < 3 ? ' (lærer resten)' : '') : 'lærer endnu (kræver et par dages styring)';
+      })()),
       w ? [h('dt', {}, 'Skrevet'), h('dd', {}, w.status === 'ok' ? `${fmt(w.from, 0)} → ${fmt(w.to, 0)} °C` : `fejl: ${w.error}`)] : null);
     const strip = h('div', { class: 'hp-strip', role: 'img', 'aria-label': 'Sætpunkt de næste 24 timer' },
       (hp.plan || []).map((x, i) => h('div', { class: 'hp-cell', title: `${hhmm(x.t)}: ${(HP_LEVEL[x.level] || HP_LEVEL.normal).label} · ${fmt(x.setpoint, 0)} °C`, style: { background: (HP_LEVEL[x.level] || HP_LEVEL.normal).color } },

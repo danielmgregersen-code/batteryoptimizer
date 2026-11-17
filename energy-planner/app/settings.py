@@ -122,6 +122,7 @@ DEFAULTS = {
     "charger_schedule_entities": "time.garage_growatt_thor_ev_charger_automatic_charging_start,time.garage_growatt_thor_ev_charger_automatic_charging_stop",
     "heat_pump_entity": "climate.varmepumpe",
     "heat_pump_setpoint": 12,
+    "heat_pump_power_entity": "sensor.shelly_varmepumpe_power",
     "heat_pump_band": 2,
     "heat_pump_temp_entity": "sensor.lumi_lumi_weather_temperature",
     "heat_pump_humidity_entity": "sensor.lumi_lumi_weather_humidity",

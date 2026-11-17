@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning and control of a Growatt hybrid inverter, home battery and EV charging."
-version: "0.15.0"
+version: "0.16.0"
 slug: "energy_planner"
 init: false
 arch:
@@ -102,6 +102,7 @@ options:
   charger_schedule_entities: "time.garage_growatt_thor_ev_charger_automatic_charging_start,time.garage_growatt_thor_ev_charger_automatic_charging_stop"
   heat_pump_entity: "climate.varmepumpe"
   heat_pump_setpoint: 12
+  heat_pump_power_entity: "sensor.shelly_varmepumpe_power"
   heat_pump_band: 2
   heat_pump_temp_entity: "sensor.lumi_lumi_weather_temperature"
   heat_pump_humidity_entity: "sensor.lumi_lumi_weather_humidity"
@@ -206,6 +207,7 @@ schema:
   charger_schedule_entities: str?
   heat_pump_entity: str?
   heat_pump_setpoint: float(5,30)
+  heat_pump_power_entity: str?
   heat_pump_band: float(0,4)
   heat_pump_temp_entity: str?
   heat_pump_humidity_entity: str?

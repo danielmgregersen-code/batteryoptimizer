@@ -72,3 +72,39 @@ def decide(rows: list, now_local: datetime, room_temp, humidity, opts: dict) -> 
         "room_temp": room_temp, "humidity": humidity,
         "plan": [{"t": r["t"], "level": lv, "setpoint": setpoint_for(lv, opts)} for r, lv in levels],
     }
+
+
+# ---- expected consumption per level (for the load forecast) ---------------------------------
+MIN_LEVEL_HOURS = 3       # (weighted) hours per level before its learned value is used
+LEVEL_DAYS = 28
+
+
+def learn_levels(levels: dict, power_w: dict, now_utc: datetime, half_life_days: float = 10.0) -> dict:
+    """Mean kWh per hour of the heat pump in cheap / normal / dear hours, from the levels it actually
+    ran with (`levels`: {utc hour iso: {"level", "applied"}}) and its meter's hourly mean power
+    (`power_w`: {utc datetime: W}). Recent days count most. -> {level: {"kwh", "hours"}} for the levels
+    with enough data."""
+    sums = {}
+    cutoff = now_utc - timedelta(days=LEVEL_DAYS)
+    for key, rec in levels.items():
+        t = datetime.fromisoformat(key)
+        if t < cutoff or t + timedelta(hours=1) > now_utc or not rec.get("applied"):
+            continue
+        w = power_w.get(t)
+        if w is None:
+            continue
+        age = (now_utc - t).total_seconds() / 86400.0
+        wt = 0.5 ** (age / half_life_days) if half_life_days else 1.0
+        s = sums.setdefault(rec["level"], [0.0, 0.0, 0])
+        s[0] += wt * max(0.0, w) / 1000.0
+        s[1] += wt
+        s[2] += 1
+    return {lv: {"kwh": round(a / b, 3), "hours": n} for lv, (a, b, n) in sums.items()
+            if b > 0 and n >= MIN_LEVEL_HOURS}
+
+
+def record_level(levels: dict, hour_utc: datetime, level: str, setpoint: float, applied: bool, now_utc: datetime):
+    levels[hour_utc.isoformat()] = {"level": level, "setpoint": setpoint, "applied": bool(applied)}
+    cutoff = (now_utc - timedelta(days=LEVEL_DAYS + 7)).isoformat()
+    for k in [k for k in levels if k < cutoff]:
+        del levels[k]

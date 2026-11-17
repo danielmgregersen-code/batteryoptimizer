@@ -55,3 +55,18 @@ def test_humidity_and_missing_readings_never_lower():
     assert d["setpoint"] == 12 and "fugt" in d["reason"]
     assert heatpump.decide(dear_first(), NOW, None, None, OPTS)["setpoint"] == 12
     assert heatpump.decide(cheap_first(), NOW, None, None, OPTS)["setpoint"] == 14
+
+
+def test_learns_the_heat_pumps_use_per_level():
+    from datetime import timezone
+    now = datetime(2026, 11, 17, 12, tzinfo=timezone.utc)
+    levels, power = {}, {}
+    for i in range(1, 15 * 24):
+        t = now - timedelta(hours=i)
+        lv = ["cheap", "normal", "dear"][i % 3]
+        heatpump.record_level(levels, t, lv, 12, applied=(i % 7 != 0), now_utc=now)
+        power[t] = {"cheap": 450.0, "normal": 250.0, "dear": 80.0}[lv]
+    got = heatpump.learn_levels(levels, power, now)
+    assert got["cheap"]["kwh"] == 0.45 and got["normal"]["kwh"] == 0.25 and got["dear"]["kwh"] == 0.08
+    assert got["cheap"]["hours"] < 15 * 8                              # hours without control are left out
+    assert heatpump.learn_levels({}, power, now) == {}

@@ -116,6 +116,9 @@ class Planner:
         self._pause_wanted_since = None   # since when the controller has wanted a charging car paused
         self._hp_written_hour = None      # the heat pump's setpoint is changed at most once per hour
         self._bat_curve = None            # learned charge power at high SoC (batterycurve.learn)
+        self.hp_levels_path = os.path.join(os.path.dirname(log_path) or ".", "heat_pump_levels.json")
+        self._hp_levels = pvd.load_json(self.hp_levels_path, {})   # the level the heat pump ran with, per hour
+        self._hp_power = {}               # its meter's hourly mean power (W)
         self._car_status_prev = None      # charger status at the previous car cycle
         self._session_ended_at = None     # the charger ended the session on its own (not through HA)
         self._car_prod_prev = False
@@ -162,6 +165,8 @@ class Planner:
                     ids.append(opts[key])
             submeters = [e for e in split_csv(opts.get("load_submeters") or "") if e not in ids]
             ids += submeters
+            if opts.get("heat_pump_power_entity") and opts["heat_pump_power_entity"] not in ids:
+                ids.append(opts["heat_pump_power_entity"])
             start = now - timedelta(days=int(opts["profile_days"]))
             stats = self.ha.statistics(ids, start, now, "hour")
             ly_weight = float(opts.get("profile_last_year_weight") or 0.0)
@@ -209,6 +214,8 @@ class Planner:
                         log.info("solar statistics for %s days unavailable: %s", days, e)
             self._refresh_car_history(opts, now)
             self._learn_battery_curve(opts, now)
+            if opts.get("heat_pump_power_entity"):
+                self._hp_power = _by_start(stats.get(opts["heat_pump_power_entity"]))
             for i in ids:
                 if not stats.get(i):
                     log.warning("no long-term statistics for %s (does it have a state_class?)", i)
@@ -285,6 +292,36 @@ class Planner:
             return {**live, "charge_rate_pct": self._fuse_rate_cap, "fuse_capped": True}
         return live
 
+    def _heat_pump_forecast(self, opts, profile, buy, sell, pv, h_now, now):
+        """{utc hour: kWh to add to the base load} for the next 24 hours: what the heat pump uses at the
+        level it will run with (learned) minus its clock-hour profile. Only while the add-on controls it."""
+        meter, entity = opts.get("heat_pump_power_entity"), opts.get("heat_pump_entity")
+        learned = heatpump.learn_levels(self._hp_levels, self._hp_power, now,
+                                        float(opts.get("profile_half_life_days") or 10))
+        if not meter or not entity or not learned:
+            return {}, learned
+        st = self.ha.state(entity) if hasattr(self.ha, "state") else None
+        if (not writer.switch_on(self.ha, opts.get("heat_pump_production_switch_entity"))
+                or not st or st.get("state") in ("off", "unavailable", "unknown")):
+            return {}, learned
+        rows = []
+        for i in range(24):
+            h = h_now + timedelta(hours=i)
+            if h not in buy:
+                break
+            free = sell.get(h, 1.0) <= 0 and pv.get(h, 0.0) > load_for_hour(profile, h, self.tz)
+            rows.append({"t": h.astimezone(self.tz).isoformat(), "buy": buy[h], "sell": sell.get(h, 0.0),
+                         "pv_exp": 0.0, "pv_curt": 1.0 if free else 0.0})
+        parts = profile.get("parts") or {}
+        adj = {}
+        for r, level in heatpump.price_levels(rows, now.astimezone(self.tz)):
+            h = datetime.fromisoformat(r["t"]).astimezone(UTC)
+            local = h.astimezone(self.tz)
+            part = parts.get((local.weekday() >= 5, local.hour))
+            if level in learned and part and meter in part["subs"]:
+                adj[h] = learned[level]["kwh"] - part["subs"][meter]
+        return adj, learned
+
     def _heat_pump_step(self, opts: dict, rows: list, now: datetime):
         """Decide the garage heat pump's setpoint for this hour and set it (production helper on)."""
         entity = opts.get("heat_pump_entity")
@@ -302,6 +339,11 @@ class Planner:
         production = writer.switch_on(self.ha, opts.get("heat_pump_production_switch_entity"))
         d.update(entity=entity, available=True, current_setpoint=current, hvac_mode=hvac,
                  production=production, written=None)
+        heatpump.record_level(self._hp_levels, hour_floor(now), d["level"], d["setpoint"],
+                              production and hvac not in ("off", "unavailable", "unknown", None), now)
+        pvd.save_json(self.hp_levels_path, self._hp_levels)
+        d["expected"] = heatpump.learn_levels(self._hp_levels, self._hp_power, now,
+                                              float(opts.get("profile_half_life_days") or 10))
         hour = now.astimezone(self.tz).replace(minute=0, second=0, microsecond=0)
         if production and hvac not in ("off", "unavailable", "unknown", None):
             try:
@@ -600,9 +642,16 @@ class Planner:
             if v is not None:
                 live_subs[e] = max(0.0, v) / 1000.0
         h_now = hour_floor(now)
-        horizon = build_horizon(now, buy, sell, pv,
-                                lambda h: load_for_hour(profile, h, self.tz, live=live_subs, now_hour=h_now),
-                                forecast_hours=forecast_hours)
+        hp_adj, hp_expected = self._heat_pump_forecast(opts, profile, buy, sell, pv, h_now, now)
+
+        def load_fn(h):
+            base = load_for_hour(profile, h, self.tz, live=live_subs, now_hour=h_now)
+            # from two hours ahead (the live meters cover the first two), the heat pump's expected use for
+            # the level it will run with replaces its clock-hour profile
+            if h >= h_now + timedelta(hours=2):
+                base = max(0.0, base + hp_adj.get(h, 0.0))
+            return base
+        horizon = build_horizon(now, buy, sell, pv, load_fn, forecast_hours=forecast_hours)
         if len(horizon) == 0:
             raise PlannerError("no prices for the current hour")
         diag = profile.get("diagnostics") or {}
