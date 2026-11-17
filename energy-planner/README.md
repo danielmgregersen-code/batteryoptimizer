@@ -5,9 +5,9 @@ store solar instead of selling it, when to discharge, and when to charge the car
 Node-RED flow (forecast ≥ 10 / 7 / 4 kWh → SoC 10 / 30 / 45 %) with one optimisation over the next
 24-48 hours.
 
-**Dry-run by default.** It reads Home Assistant, computes a plan, publishes it as sensors and logs
-it next to what Node-RED and the car automation actually did. Two HA helpers switch each part to
-production (see *Production* below); while a helper is missing or off, that part writes nothing.
+It writes the inverter registers and controls the charger and the car while its two HA helpers are
+on (see *Production* below). Switching a helper off is the emergency stop: that part then writes
+and calls nothing (shown as "Manuel styring" in the panel), so it can be controlled by hand.
 
 ## Production
 
@@ -262,18 +262,6 @@ The sidebar panel shows the same plan hour by hour, plus the register values cur
 `hold` relies on battery first not discharging and stopping at max SoC, with surplus sun going to
 export. **Verify that on the SPH10000TL3 before anything is written.** Every value is chosen so a
 planner that stops refreshing leaves the inverter at the planned state, not charging on.
-
-## Dry-run checklist
-
-1. Let it run for a week or two.
-2. Compare `/api/decisions` (also `/data/decisions.jsonl`): the planned mode and setpoints versus
-   `actual_registers`. Look at the hours where they disagree and decide who was right.
-   `/api/evaluation` gives the realised grid cost per day from the logged counters and prices.
-3. Check the entity warnings in the panel: every configured entity must exist.
-4. Only then move the night-charging and SoC-target branches out of Node-RED.
-
-When the planner takes over, the Node-RED car guard must restore the **planner's floor**
-(`sensor.energy_planner_soc_floor`) instead of a fixed 10 % when the house load drops below 4 kW.
 
 ## Not in this version
 

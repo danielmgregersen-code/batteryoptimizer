@@ -1,16 +1,16 @@
-"""Evaluation of the dry-run from the decision log: what actually happened, how good the forecasts
-were, and how often the planner agreed with what Node-RED actually did.
+"""Evaluation from the decision log: what actually happened and how good the forecasts were.
 
 Every planning cycle logs the energy counters, the current prices, the plan's expectation for the
-current hour (`pred`) and the register values Node-RED has set. Between two consecutive entries:
+current hour (`pred`) and the register values. Between two consecutive entries:
 
     realised cost      = d(import) * buy - d(export) * sell             (at the earlier entry's prices)
     solar actual       = d(solar counter)        vs  pred.pv_kw * dt  (and the p50 / p10 forecasts)
     consumption actual = d(import) - d(export) + d(solar) + d(battery out) - d(battery in)
     base load actual   ~ consumption - car power sample * dt         (approximate: the car is sampled)
 
-The planner and Node-RED are compared on what the registers express, in three categories:
-grid charging / battery first (sun or hold) / load first.
+The planned mode is also compared with what the registers express (grid charging / battery first /
+load first): from the dry-run era, when Node-RED set them. In production they follow the plan, so the
+panel no longer shows it.
 """
 from datetime import datetime
 

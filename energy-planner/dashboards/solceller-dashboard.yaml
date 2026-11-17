@@ -27,7 +27,7 @@ views:
             content: >-
               {% set m = states.sensor.energy_planner_mode %}
               {% if m and m.attributes.label is defined %}
-              ### {{ m.attributes.label }} <small>(dry-run)</small>
+              ### {{ m.attributes.label }}{% if m.attributes.production is defined and not m.attributes.production %} <small>(manuel styring)</small>{% endif %}
 
               {{ m.attributes.detail }}
 
@@ -283,9 +283,9 @@ views:
               | Max SoC (mål) | {{ a.max_soc_pct ~ ' %' if a.max_soc_pct is not none else '–' }} | {{ mx }} % | {{ '' if a.max_soc_pct is none else ('✅' if (mx | float(0) - a.max_soc_pct) | abs <= 1 else '⚠️ afviger') }} |
               | Min SoC (gulv) | {{ a.min_soc_pct }} % | {{ mn }} % | {{ '✅' if (mn | float(0) - a.min_soc_pct) | abs <= 1 else '⚠️ afviger' }} |
               | Ladehastighed | {{ a.charge_rate_pct }} % | {{ cr }} % | {{ '' if not a.battery_first else ('✅' if (cr | float(0) - a.charge_rate_pct) | abs <= 5 else '⚠️ afviger') }} |
-              | Eksport | {{ 'Sælg' if a.export_hint == 'export' else 'Ingen' }} | {{ states('number.growatt_grid_export_limit') }} % | |
+              | Eksportgrænse | {{ (a.export_limit_pct ~ ' %') if a.export_limit_pct is not none else ('Sælg' if a.export_hint == 'export' else 'Ingen') }} | {{ states('number.growatt_grid_export_limit') }} % | {{ '' if a.export_limit_pct is none else ('✅' if (states('number.growatt_grid_export_limit') | float(0) - a.export_limit_pct) | abs <= 1 else '⚠️ afviger') }} |
 
-              <small>Dry-run: planneren skriver ikke til inverteren. Node-RED styrer stadig.</small>
+              <small>{{ 'Add-on’en skriver registrene.' if a.production else 'Manuel styring: add-on’en skriver intet.' }}</small>
               {% else %}
               Ingen plan endnu.
               {% endif %}

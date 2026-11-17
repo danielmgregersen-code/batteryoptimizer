@@ -54,7 +54,7 @@ def test_run_once_produces_a_plan_publishes_sensors_and_logs(tmp_path):
     ha = make_ha()
     p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
     snap = p.run_once(datetime(2026, 11, 14, 11, 30, tzinfo=UTC))   # 12:30 local
-    assert snap["dry_run"] is True
+    assert snap["production"]["battery"] is False
     # 12 known hours (to midnight) + estimated prices up to 30 h from the current hour
     assert snap["horizon_hours"] == 30
     assert sum(r["forecast_price"] for r in snap["plan"]) == 18
@@ -186,7 +186,7 @@ def test_car_cycle_publishes_and_logs_only_changes(tmp_path):
     for minute in (30, 32, 34):
         d = p.car_cycle(now.replace(minute=minute))
     state, attrs = ha.published["sensor.energy_planner_car"]
-    assert attrs["dry_run"] is True and state == d["action"]
+    assert attrs["production"] is False and state == d["action"]
     assert len(p.recent_car_decisions()) == 1
 
 
@@ -374,9 +374,9 @@ def test_production_switch_off_means_no_writes(tmp_path):
     ha.calls = []
     ha.call_service = lambda *a, **k: ha.calls.append(a)
     snap = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl")).run_once(datetime(2026, 11, 14, 16, 30, tzinfo=UTC))
-    assert snap["dry_run"] is True and snap["production"]["writes"] == []
+    assert snap["production"]["battery"] is False and snap["production"]["writes"] == []
     assert not any(c[0] in ("select", "number") for c in ha.calls)
-    assert ha.published["sensor.energy_planner_mode"][1]["dry_run"] is True
+    assert ha.published["sensor.energy_planner_mode"][1]["production"] is False
 
 
 def test_production_switch_on_writes_the_registers(tmp_path):
@@ -394,13 +394,13 @@ def test_production_switch_on_writes_the_registers(tmp_path):
             raise RuntimeError("no dampening")
     ha.call_service = call_service
     snap = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl")).run_once(datetime(2026, 11, 14, 16, 30, tzinfo=UTC))
-    assert snap["dry_run"] is False and snap["production"]["battery"] is True
+    assert snap["production"]["battery"] is True
     assert snap["mode"] == "discharge"                                  # 17:30 local, the peak
     written = [c[2] for c in calls if c[0] in ("select", "number")]
     assert written[:2] == [DEFAULTS["reg_grid_charge"], DEFAULTS["reg_battery_first"]]
     assert DEFAULTS["reg_export_limit"] not in written
     assert snap["actual_registers"]["reg_battery_first"] == "Disabled"   # re-read after writing
-    assert ha.published["sensor.energy_planner_mode"][1]["dry_run"] is False
+    assert ha.published["sensor.energy_planner_mode"][1]["production"] is True
 
 
 def test_car_production_executes_calls_and_guards_the_kia_quota(tmp_path):
@@ -414,7 +414,7 @@ def test_car_production_executes_calls_and_guards_the_kia_quota(tmp_path):
                 options_fn=lambda: opts)
     now = datetime(2026, 11, 14, 19, 30, tzinfo=UTC)
     d = p.car_cycle(now)
-    assert d["dry_run"] is False
+    assert d["production"] is True
     kia = [c for c in calls if c[0] == "kia_uvo"]
     assert kia == [("kia_uvo", "start_charge", {"device_id": "abc123"})]
     p.car_cycle(now + timedelta(minutes=2))                             # still suspended: no new Kia call
@@ -917,7 +917,7 @@ def test_export_is_stopped_in_an_hour_with_a_negative_hourly_price(tmp_path):
     ha.state = lambda e: ({"state": str(ha.numbers.get(e, ha.texts.get(e))), "attributes": {}}
                           if e in ha.numbers or e in ha.texts else None)
     p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
-    snap = p.run_once(datetime(2026, 11, 14, 11, 0, 20, tzinfo=UTC))      # 12:00 local, dry-run
+    snap = p.run_once(datetime(2026, 11, 14, 11, 0, 20, tzinfo=UTC))      # 12:00 local, production off
     assert snap["setpoints"]["export_allowed"] is False and snap["setpoints"]["export_limit_pct"] == 0
     assert calls == []
     assert all(r["pv_exp"] == 0 for r in snap["plan"] if r["t"][11:13] == "12")

@@ -31,7 +31,7 @@ def _loop():
     while not _stop.is_set():
         try:
             snap = planner.run_once()
-            log.info("plan: mode=%s soc=%s%% savings_vs_solar_only=%s DKK (dry-run)",
+            log.info("plan: mode=%s soc=%s%% savings_vs_solar_only=%s DKK",
                      snap["mode"], snap["soc_pct"], snap["savings_vs_solar_only_dkk"])
         except PlannerError as e:
             planner.last_error = str(e)

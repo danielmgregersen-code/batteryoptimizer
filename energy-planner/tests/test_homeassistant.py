@@ -46,10 +46,10 @@ def test_rest_state_number_and_set_state():
     assert ha.number("sensor.missing") is None          # 404 -> None
     assert ha.number("sensor.text") is None             # "unavailable" -> None
     assert ha.attributes("sensor.exists") == {"unit": "%"}
-    ha.set_state("sensor.energy_planner_mode", "hold", {"dry_run": True})
+    ha.set_state("sensor.energy_planner_mode", "hold", {"production": True})
     path, auth, body = _Rest.posted[-1]
     assert path == "/api/states/sensor.energy_planner_mode" and auth == "Bearer tok"
-    assert body == {"state": "hold", "attributes": {"dry_run": True}}
+    assert body == {"state": "hold", "attributes": {"production": True}}
     srv.shutdown()
 
 

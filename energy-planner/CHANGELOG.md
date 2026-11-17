@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.12.0
+
+- **Production is the normal mode; dry-run is gone from the panel, sensors and dashboards.** The
+  production helpers stay as the emergency stop: switched off, the panel shows "Manuel styring"
+  (the add-on writes and calls nothing). Header pill "Produktion" (green) / "Manuel styring"
+  (amber); the car tab says "Styringen", "Kald nu" and "Handling" instead of "ville".
+- The Node-RED comparison (agreement tile, planner-vs-Node-RED strip, agreement column) is removed
+  from the evaluation tab: in production the registers follow the plan.
+- Sensor attribute `dry_run` is replaced by `production` (true / false) on
+  `sensor.energy_planner_mode` and `sensor.energy_planner_car`; the dashboards show the export limit
+  as a controlled register and "manuel styring" only when production is off.
+
 ## 0.11.1
 
 - **The car can charge on sun while export is closed.** With export at 0 % and the house battery

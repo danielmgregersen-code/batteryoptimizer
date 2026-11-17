@@ -96,11 +96,6 @@
     discharge: { label: 'Aflader til huset', color: C.batt },
     hold: { label: 'Holder batteriet', color: C.hold },
   };
-  const CATS = {
-    grid: { label: 'Lad fra nettet', color: C.gridbat },
-    battery_first: { label: 'Battery first (sol / hold)', color: C.sun },
-    load_first: { label: 'Load first (aflad)', color: C.batt },
-  };
   const CAR_ACTIONS = {
     charge: 'Lader', pause: 'Pause', idle: 'Venter', none: 'Ikke tilsluttet',
   };
@@ -516,63 +511,6 @@
     });
   }
 
-  /* Two-row strip: what the planner wanted vs what Node-RED had set, over time. */
-  function stripChart(container, runs) {
-    container.replaceChildren();
-    if (!runs.length) { container.appendChild(h('div', { class: 'empty' }, 'Ingen sammenligning endnu.')); return; }
-    const t0 = new Date(runs[0].start).getTime();
-    const t1 = new Date(runs[runs.length - 1].end).getTime();
-    observe(container, (W) => {
-      const ml = W < 560 ? 66 : 78, mr = 8, rowH = 16, gap = 8, top = 4;
-      const H = top + rowH * 3 + gap * 2 + 22;
-      const pw = W - ml - mr;
-      const x = (t) => ml + ((t - t0) / Math.max(1, t1 - t0)) * pw;
-      const root = svg('svg', { viewBox: `0 0 ${W} ${H}`, height: H, role: 'img', 'aria-label': 'Planner mod Node-RED over tid' });
-      hatchDefs(root);
-      const labels = ['Planner', 'Node-RED', 'Uenige'];
-      labels.forEach((l, r) => svg('text', { x: 0, y: top + r * (rowH + gap) + 12, class: 'tick' }, root, l));
-      // day ticks
-      const d0 = new Date(t0); d0.setHours(24, 0, 0, 0);
-      const dayW = 864e5 * pw / Math.max(1, t1 - t0);
-      const short = dayW < 72;
-      const every = Math.max(1, Math.ceil((short ? 34 : 72) / dayW));
-      let k = 0;
-      for (let d = d0.getTime(); d < t1; d += 864e5, k++) {
-        svg('line', { x1: x(d), x2: x(d), y1: top, y2: H - 18, class: 'gridline' }, root);
-        const dd = new Date(d);
-        if (k % every === 0 && x(d) + 30 < W) {
-          svg('text', { x: x(d) + 3, y: H - 4, class: 'tick' }, root,
-            dd.toLocaleDateString('da-DK', short ? { day: 'numeric', month: 'numeric' } : { weekday: 'short', day: 'numeric' }));
-        }
-      }
-      for (const run of runs) {
-        const a = new Date(run.start).getTime(), b = new Date(run.end).getTime();
-        const xa = x(a), w = Math.max(1, x(b) - xa);
-        const g = svg('g', {}, root);
-        [run.planned, run.actual].forEach((c, r) => {
-          const cat = CATS[c];
-          svg('rect', { x: xa, y: top + r * (rowH + gap), width: w, height: rowH,
-            style: cat ? { fill: cat.color } : {}, fill: cat ? null : 'url(#hatch)' }, g);
-        });
-        if (run.planned && run.actual && run.planned !== run.actual) {
-          svg('rect', { x: xa, y: top + 2 * (rowH + gap) + 4, width: w, height: rowH - 8, rx: 2, style: { fill: 'var(--ink-2)' } }, g);
-        }
-        svg('rect', { x: xa, y: top, width: w, height: rowH * 3 + gap * 2, fill: 'transparent' }, g);
-        g.addEventListener('pointermove', (e) => {
-          const fmtT = (t) => new Date(t).toLocaleString('da-DK', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
-          const agree = run.planned && run.actual ? (run.planned === run.actual ? 'Enige' : 'Uenige') : 'Ukendt';
-          tip.show(h('div', {},
-            h('div', { class: 'tt-head' }, fmtT(a) + ' – ' + fmtT(b)),
-            ttRow(CATS[run.planned]?.color || C.muted, 'Planner', CATS[run.planned]?.label || 'ukendt', ''),
-            ttRow(CATS[run.actual]?.color || C.muted, 'Node-RED', CATS[run.actual]?.label || 'ukendt', ''),
-            h('div', { class: 'tt-sec' }, agree)), e.clientX, e.clientY);
-        });
-        g.addEventListener('pointerleave', () => tip.hide());
-      }
-      container.replaceChildren(root);
-    });
-  }
-
   const legend = (items) => h('div', { class: 'legend' },
     items.map((it) => h('span', {}, h('span', { class: 'key' + (it.line ? ' line' : '') + (it.wash ? ' wash' : ''), style: { background: it.color } }), it.label)));
 
@@ -736,7 +674,7 @@
     const prodOn = p.production && p.production.battery;
     const regCard = h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('h2', {}, 'Planner mod inverteren nu'),
-        h('span', { class: 'hint' }, prodOn ? 'Produktion: add-on’en skriver registrene (manuelle ændringer overskrives ved næste cyklus)' : 'Dry-run: hvad planneren ville sætte, og hvad Node-RED har sat')),
+        h('span', { class: 'hint' }, prodOn ? 'Add-on’en skriver registrene (manuelle ændringer overskrives ved næste cyklus)' : 'Manuel styring: add-on’en skriver intet')),
       h('div', { class: 'table-wrap' }, h('table', { class: 'cmp' },
         h('thead', {}, h('tr', {}, h('th', {}, 'Register'), h('th', {}, 'Planner'), h('th', {}, 'Nu'), h('th', {}, ''))),
         h('tbody', {}, registerRows(p)))));
@@ -1209,7 +1147,7 @@
     return r + suffix;
   }
 
-  // Calls in the car log: what was executed with its result (production), else what it would call.
+  // Calls in the car log: what was executed with its result, else the calls the decision implied.
   function callCell(e) {
     const short = (svc) => svc.replace('kia_uvo.', 'kia ').replace('number.set_value', 'strøm').replace('button.press', 'knap');
     if (e.executed && e.executed.length) {
@@ -1218,7 +1156,7 @@
         return h('div', { title: x.error || '' }, `${mark} ${short(x.service)}${x.value != null ? ' ' + x.value : ''}${x.error ? ': ' + x.error : ''}`);
       });
     }
-    return (e.calls || []).length ? (e.dry_run === false ? '' : 'ville: ') + (e.calls || []).map((x) => short(x.service)).join(', ') : '';
+    return (e.calls || []).length ? (e.calls || []).map((x) => short(x.service)).join(', ') : '';
   }
 
   // Until when the car is assumed connected: the next deadline, or a later planned trip.
@@ -1322,12 +1260,12 @@
         meter(live.car_soc, [{ v: 42, title: 'Minimum' }, { v: (carInfo && carInfo.max_soc_pct) || 90, ghost: true, title: 'Maks' }], 'car')),
       tile('Lader', h('span', { style: { fontSize: '20px' } }, CHARGER_STATUS[status] || status || '–'),
         live.charger_w != null ? `${fmt((live.charger_w || 0) / 1000, 1)} kW · ${live.amps != null ? fmt(live.amps, 0) + ' A sat' : ''}` : ''),
-      tile('Styringen ville', h('span', { style: { fontSize: '20px' } }, action + (c && c.target_amps ? ` · ${c.target_amps} A` : '')), c ? (c.reason_da || translateReason(c.reason)) : 'venter på første cyklus'),
+      tile('Styringen', h('span', { style: { fontSize: '20px' } }, action + (c && c.target_amps ? ` · ${c.target_amps} A` : '')), c ? (c.reason_da || translateReason(c.reason)) : 'venter på første cyklus'),
       tile('Planlagt', carInfo && carInfo.connected ? h('span', {}, fmt(carInfo.planned_kwh, 1), h('small', {}, ' kWh')) : '–',
         carInfo && carInfo.connected ? `frem til ${carUntil(carInfo).label} · net-del ca. ${fmt(carInfo.planned_cost_dkk, 0)} kr` + (carInfo.shortfall_kwh > 0.05 ? ` · mangler ${fmt(carInfo.shortfall_kwh, 1)} kWh` : '') : 'bilen er ikke tilsluttet'),
       fullTile(carInfo), departureTile(carInfo));
 
-    const live_ = c && c.dry_run === false;
+    const live_ = c && (c.production === true || c.dry_run === false);
     const executed = (c && c.executed) || [];
     const calls = live_ && executed.length
       ? h('div', { class: 'chips' }, executed.map((x) => h('span', { class: 'chip', title: x.error || '' },
@@ -1336,8 +1274,8 @@
         ? h('div', { class: 'chips' }, c.calls.map((x) => h('span', { class: 'chip' }, x.service + (x.value != null ? ` → ${x.value}` : ''))))
         : h('div', { class: 'hint' }, 'Ingen kald lige nu.');
     const callsCard = h('div', { class: 'card' },
-      h('div', { class: 'card-head' }, h('h2', {}, live_ ? 'Kaldte nu' : 'Ville kalde nu'),
-        h('span', { class: 'hint' }, live_ ? 'Produktion: add-on’en styrer laderen og bilen' : 'Dry-run: intet sendes til laderen eller bilen')),
+      h('div', { class: 'card-head' }, h('h2', {}, 'Kald nu'),
+        h('span', { class: 'hint' }, live_ ? 'Add-on’en styrer laderen og bilen' : 'Manuel styring: intet sendes til laderen eller bilen')),
       calls,
       c ? h('dl', { class: 'kv', style: { marginTop: '14px' } },
         h('dt', {}, 'Soloverskud'), h('dd', {}, c.surplus_w != null ? fmt(c.surplus_w / 1000, 2) + ' kW' : '–'),
@@ -1362,7 +1300,7 @@
     const logCard = h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('h2', {}, 'Styringens log'), h('span', { class: 'hint' }, 'Kun ændringer · nyeste først')),
       log.length ? h('div', { class: 'table-wrap' }, h('table', {},
-        h('thead', {}, h('tr', {}, ['Tid', 'Ville', 'A', 'Begrundelse', 'Lader', 'Sat A', 'Bil %', 'Kald'].map((t) => h('th', {}, t)))),
+        h('thead', {}, h('tr', {}, ['Tid', 'Handling', 'A', 'Begrundelse', 'Lader', 'Sat A', 'Bil %', 'Kald'].map((t) => h('th', {}, t)))),
         h('tbody', {}, log.slice().reverse().slice(0, 150).map((e) => h('tr', {},
           h('td', {}, e.updated ? dayName(e.updated.slice(0, 10), { weekday: 'short' }) + ' ' + e.updated.slice(11, 16) : ''),
           h('td', {}, CAR_ACTIONS[e.action] || e.action), h('td', {}, e.target_amps ?? ''),
@@ -1425,7 +1363,6 @@
       tile('Netudgift', h('span', {}, fmt(s.cost_dkk, 0), h('small', {}, ' kr')), `${fmt(s.import_kwh, 0)} kWh købt · ${fmt(s.export_kwh, 0)} kWh solgt over ${s.days} dage`),
       tile('Betalt pr. kWh', h('span', {}, fmt(avgPaid, 2), h('small', {}, ' kr')),
         avgPaid != null && avgMarket != null ? `gns. pris i perioden ${fmt(avgMarket, 2)} kr · ${avgPaid <= avgMarket ? 'køber i billigere timer end gennemsnittet' : 'køber i dyrere timer end gennemsnittet'}` : ''),
-      tile('Enighed med Node-RED', h('span', {}, s.agreement_pct != null ? fmt(s.agreement_pct, 0) : '–', h('small', {}, ' %')), 'andel af tiden hvor planneren ville samme tilstand'),
       tile('Solprognose', h('span', {}, s.pv_bias_pct != null ? fmtSigned(s.pv_bias_pct, 0) : '–', h('small', {}, ' %')),
         s.pv_bias_pct == null ? 'for lidt sol i perioden til at vurdere'
           : `${s.pv_bias_pct > 0 ? 'over' : 'under'}vurderet · foreslået pv_p10_weight ${s.suggested_p10_weight ?? '–'} (nu ${s.current_p10_weight ?? '–'})`));
@@ -1433,10 +1370,6 @@
     const costBox = h('div', { class: 'chart' });
     const costCard = h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', {}, 'Netudgift pr. dag (kr)'), h('span', { class: 'hint' }, 'Købt × købspris − solgt × salgspris, det der faktisk skete')), costBox);
 
-    const stripBox = h('div', { class: 'chart' });
-    const stripCard = h('div', { class: 'card' },
-      h('div', { class: 'card-head' }, h('h2', {}, 'Planner mod Node-RED'), h('span', { class: 'hint' }, 'Hvad planneren ville, og hvad registrene faktisk stod på')),
-      stripBox, h('div', { style: { marginTop: '10px' } }, legend([...Object.values(CATS).map((c) => ({ color: c.color, label: c.label })), { color: 'var(--ink-2)', label: 'Uenige' }])));
 
     const pvBox = h('div', { class: 'chart' });
     const pvCard = h('div', { class: 'card' },
@@ -1444,14 +1377,13 @@
       pvBox, h('div', { style: { marginTop: '10px' } }, legend([{ color: C.batt, label: 'Faktisk' }, { color: C.sun, label: 'Prognose' }])));
 
     const table = h('table', {},
-      h('thead', {}, h('tr', {}, ['Dag', 'Købt', 'Solgt', 'Netudgift', 'Betalt/kWh', 'Gns. pris', 'Batteri ind/ud', 'Sol faktisk', 'Sol prognose', 'Forbrug*', 'Forbrug prognose', 'Enighed'].map((t) => h('th', {}, t)))),
+      h('thead', {}, h('tr', {}, ['Dag', 'Købt', 'Solgt', 'Netudgift', 'Betalt/kWh', 'Gns. pris', 'Batteri ind/ud', 'Sol faktisk', 'Sol prognose', 'Forbrug*', 'Forbrug prognose'].map((t) => h('th', {}, t)))),
       h('tbody', {}, days.slice().reverse().map((d) => h('tr', {},
         h('td', {}, dayName(d.day)), h('td', {}, fmt(d.import_kwh, 1)), h('td', {}, fmt(d.export_kwh, 1)), h('td', {}, fmt(d.cost_dkk, 2) + ' kr'),
         h('td', {}, fmt(d.avg_buy_paid, 2)), h('td', {}, fmt(d.avg_buy_market, 2)),
         h('td', {}, `${fmt(d.battery_in_kwh, 1)} / ${fmt(d.battery_out_kwh, 1)}`),
         h('td', {}, fmt(d.pv_actual_kwh, 1)), h('td', {}, fmt(d.pv_plan_kwh, 1)),
-        h('td', {}, fmt(d.load_actual_kwh, 1)), h('td', {}, fmt(d.load_pred_kwh, 1)),
-        h('td', {}, d.agreement_pct != null ? fmt(d.agreement_pct, 0) + ' %' : '–')))));
+        h('td', {}, fmt(d.load_actual_kwh, 1)), h('td', {}, fmt(d.load_pred_kwh, 1))))));
     const tableCard = h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('h2', {}, 'Pr. dag'), h('span', { class: 'hint' }, 'kWh og kr · *forbrug uden bil, anslået ud fra tællerne og billaderens effekt')),
       h('div', { class: 'table-wrap' }, table));
@@ -1471,7 +1403,7 @@
             h('td', {}, e.price_now ? fmt(e.price_now.buy, 2) : '–'));
         }))))));
 
-    root.replaceChildren(h('div', { class: 'stack' }, filters, tiles, costCard, stripCard, pvCard, tableCard, decCard));
+    root.replaceChildren(h('div', { class: 'stack' }, filters, tiles, costCard, pvCard, tableCard, decCard));
 
     const shortDay = (k) => dayName(k, { day: 'numeric', month: 'numeric' });
     columnChart(costBox, {
@@ -1483,7 +1415,6 @@
         ttRow(C.ink2, 'Betalt pr. kWh', fmt(it.d.avg_buy_paid, 2) + ' kr'), ttRow(C.ink2, 'Gns. købspris', fmt(it.d.avg_buy_market, 2) + ' kr'),
         it.d.hours < 23 ? h('div', { class: 'tt-sec' }, `Kun ${fmt(it.d.hours, 1)} timers data`) : null),
     });
-    stripChart(stripBox, ev.timeline || []);
     columnChart(pvBox, {
       label: 'Sol faktisk mod prognose', height: 190, empty: 'Ingen soldata endnu.',
       items: days.filter((d) => d.pv_actual_kwh != null).map((d) => ({ label: shortDay(d.day), values: [d.pv_actual_kwh, d.pv_plan_kwh], d })),
@@ -1614,11 +1545,12 @@
     const pill = $('#mode-pill');
     const prod = (p && p.production) || {};
     const parts = [prod.battery ? 'batteri' : null, prod.car ? 'bil' : null].filter(Boolean);
-    pill.textContent = parts.length ? 'Produktion: ' + parts.join(' + ') : 'Dry-run';
+    pill.textContent = parts.length === 2 ? 'Produktion' : parts.length ? 'Produktion: ' + parts[0] : 'Manuel styring';
     pill.classList.toggle('live', parts.length > 0);
+    pill.classList.toggle('manual', p != null && parts.length === 0);
     pill.title = parts.length
-      ? 'Add-on’en styrer ' + parts.join(' og ') + '. Slå hjælperen fra for at gå tilbage til dry-run.'
-      : 'Planen beregnes og vises, men intet skrives til inverteren eller laderen';
+      ? 'Add-on’en styrer ' + parts.join(' og ') + '. Slå hjælperen fra for at styre manuelt.'
+      : 'Add-on’en skriver intet. Tænd hjælperen igen for at give styringen tilbage.';
     $('#updated').textContent = p ? `Opdateret ${p.updated.slice(11, 16)} · ${p.horizon_hours} timers horisont` : (state.planError || '');
   }
   async function loadPlan() {

@@ -21,7 +21,7 @@ OFF = ("disabled", "disable", "off", "false", "0")
 
 
 def switch_on(ha, entity_id: str) -> bool:
-    """Production helper state; missing or anything but 'on' means dry-run."""
+    """Production helper state; missing or anything but 'on' means manual control (nothing written)."""
     return bool(entity_id) and str(ha.text(entity_id) or "").lower() == "on"
 
 
