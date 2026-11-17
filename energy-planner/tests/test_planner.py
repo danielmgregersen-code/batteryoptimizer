@@ -1035,3 +1035,40 @@ def test_heat_pump_manual_control_writes_nothing(tmp_path):
     snap = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl")).run_once(datetime(2026, 11, 14, 16, 0, 20, tzinfo=UTC))
     assert snap["heat_pump"]["setpoint"] == 10 and snap["heat_pump"]["production"] is False and calls == []
     assert ha.published["sensor.energy_planner_heat_pump"][1]["production"] is False
+
+
+def test_heat_pump_level_forecast_replaces_its_profile_in_the_load(tmp_path):
+    hp_meter = DEFAULTS["heat_pump_power_entity"]
+    now = datetime(2026, 11, 14, 10, 30, tzinfo=UTC)
+    start = now - timedelta(days=14)
+    hours = [start + timedelta(hours=i) for i in range(24 * 14)]
+    stats = {DEFAULTS["house_load_entity"]: [{"start": t.timestamp() * 1000, "mean": 800.0} for t in hours]}
+    for e in DEFAULTS["load_submeters"].split(","):
+        stats[e] = [{"start": t.timestamp() * 1000, "mean": 250.0 if e == hp_meter else 0.0} for t in hours]
+    ha, calls = _hp_ha(production=True)
+    ha.stats = stats
+    base = Planner(ha, tz=TZ, log_path=str(tmp_path / "a" / "d.jsonl")).run_once(now)
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "b" / "d.jsonl"))
+    # 10 days of history: 0.6 kWh in cheap hours, 0.05 kWh in dear hours
+    import heatpump as hpmod
+    for i in range(1, 240):
+        t = hour_floor_utc(now) - timedelta(hours=i)
+        lv = ["cheap", "dear", "normal"][i % 3]
+        hpmod.record_level(p._hp_levels, t, lv, 12, True, now)
+        stats[hp_meter].append({"start": t.timestamp() * 1000, "mean": {"cheap": 600.0, "dear": 50.0, "normal": 250.0}[lv]})
+    snap = p.run_once(now)
+    assert set(snap["heat_pump"]["expected"]) == {"cheap", "normal", "dear"}
+    key = lambda t: datetime.fromisoformat(t).astimezone(UTC)
+    by_t = {key(r["t"]): r for r in snap["plan"]}
+    base_t = {key(r["t"]): r for r in base["plan"]}
+    levels = {key(x["t"]): x["level"] for x in snap["heat_pump"]["plan"]}
+    later = hour_floor_utc(now) + timedelta(hours=2)                     # the live meters cover the first two
+    dear = [k for k, v in levels.items() if v == "dear" and k in by_t and k >= later]
+    cheap = [k for k, v in levels.items() if v == "cheap" and k in by_t and k >= later]
+    assert dear and cheap
+    assert by_t[dear[0]]["load"] < base_t[dear[0]]["load"] - 0.1
+    assert by_t[cheap[0]]["load"] > base_t[cheap[0]]["load"] + 0.1
+
+
+def hour_floor_utc(t):
+    return t.replace(minute=0, second=0, microsecond=0)

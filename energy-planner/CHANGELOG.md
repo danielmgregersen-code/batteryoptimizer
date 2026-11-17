@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.0
+
+- **Heat pump use forecast by level:** the level the garage heat pump runs with is logged every hour
+  and its mean use in cheap / normal / dear hours is learned from its meter. The load forecast for
+  the next 24 hours (from two hours ahead) uses the learned value for each hour's level instead of
+  the clock-hour profile, which cannot know where the cheap hours fall. Only while the add-on
+  controls the heat pump; the profile is used until a level has data. Shown in the heat pump card.
+
 ## 0.15.0
 
 - **Battery taper in the plan:** the charge power at high SoC is learned from the 5-minute

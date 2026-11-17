@@ -149,6 +149,11 @@ lower below `heat_pump_room_min` (11 °C, warm up below 10 °C), never raise abo
 compressor regulates by itself; the mode (heat/off) is never touched. Written with
 `climate.set_temperature` at most once per hour while the helper
 `input_boolean.energy_planner_varmepumpe_produktion` is on (create it; off = manual control). The
+The load forecast follows the control: every hour the level the heat pump ran with is logged
+(`/data/heat_pump_levels.json`), its mean use per level is learned from its meter
+(`heat_pump_power_entity`, recent days weighted most), and from two hours ahead the next 24 hours use
+that value for the hour's level instead of the heat pump's clock-hour profile (until a level has 3
+hours of data, the profile stays). The
 Plan tab shows the setpoint, why, the garage's temperature and humidity and the next 24 hours;
 `sensor.energy_planner_heat_pump` has the same for dashboards.
 
