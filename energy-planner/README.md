@@ -15,7 +15,7 @@ Create two helpers (Settings → Devices & services → Helpers → Toggle):
 
 | Helper | When on |
 | --- | --- |
-| `input_boolean.energy_planner_produktion` | Every planning cycle (15 min) the add-on writes the house-battery registers: battery first (the all-day slot, Enabled/Disabled), charge from grid, max SoC, load-first min SoC and charge rate. Only values that differ are written; there is no rate limit. Time slots and the export limit are never written. |
+| `input_boolean.energy_planner_produktion` | Every planning cycle (5 min and at each hour) the add-on writes the house-battery registers: battery first (the all-day slot, Enabled/Disabled), charge from grid, max SoC, load-first min SoC and charge rate, and with `export_control` the export limit (0 % when the current hour's sell price is below `export_min_price`, 0.00 kr; otherwise 100 %). Remove the export limit from Node-RED when switching over. Only values that differ are written; there is no rate limit. Time slots are never written. |
 | `input_boolean.energy_planner_bil_produktion` | Every car cycle (2 min) the add-on carries out the car controller's calls: charger current, the start button and `kia_uvo.start_charge` / `stop_charge` (needs `car_device_id`). The same Kia call is not repeated within 10 minutes while the charger status is unchanged (Kia's cloud quota). |
 
 - **Turn off the THOR's own automatic charging schedule** (ShinePhone; in HA
@@ -277,9 +277,6 @@ When the planner takes over, the Node-RED car guard must restore the **planner's
 
 ## Not in this version
 
-- Writing to the inverter, and the export limit. The export decision is only reported as `export_hint`.
-- Calling the charger or the car. The car plan and controller are dry-run like the rest.
-- Knowing when the car leaves: it is assumed connected until the next deadline.
 - Temperature dependence of the heat pump (it is part of the base load for now).
 - Selling battery energy to the grid.
 

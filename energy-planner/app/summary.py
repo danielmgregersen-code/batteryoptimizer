@@ -135,6 +135,8 @@ def summary_attributes(sp: dict, items: list) -> dict:
         "next_action": f"{nxt['label']} {nxt['when']}" if nxt else None,
         "next_change": nxt["start"] if nxt else None,
         "upcoming": [{k: it[k] for k in ("label", "when", "text", "start", "end")} for it in items[:6]],
+        "export_allowed": sp.get("export_allowed"),
+        "export_limit_pct": sp.get("export_limit_pct"),
     }
 
 

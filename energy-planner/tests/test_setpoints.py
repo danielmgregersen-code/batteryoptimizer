@@ -150,3 +150,16 @@ def test_no_hand_over_without_sun_after_the_grid_charge():
     assert adjust_for_soc(s, 100) is s
     hold = sp(plan_for([2.8, 3.0, 3.0], 40, load=1.5), 40)
     assert adjust_for_soc(hold, 40) is hold
+
+
+def test_export_allowed_from_the_hourly_price():
+    from setpoints import export_allowed
+    assert not export_allowed(-0.01, 0.0) and export_allowed(0.0, 0.0) and export_allowed(0.05, 0.0)
+    assert export_allowed(-1.0, None)
+    s = derive_setpoints(plan_for([2.0] * 3, 50, sell=[-0.05, 0.3, 0.3]), 50, P, 10.0, 10, 100, export_min_price=0.0)
+    assert s["export_allowed"] is False and s["export_limit_pct"] == 0 and s["export_sell_price"] == -0.05
+
+
+def test_no_export_limit_without_export_control():
+    s = derive_setpoints(plan_for([2.0] * 3, 50, sell=[-0.05, 0.3, 0.3]), 50, P, 10.0, 10, 100)
+    assert s["export_limit_pct"] is None and s["export_allowed"] is True

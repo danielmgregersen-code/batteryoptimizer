@@ -99,12 +99,30 @@ def test_unconfirmed_and_failed_writes_are_reported():
     assert res["reg_charge_rate"]["status"] == "error" and "modbus" in res["reg_charge_rate"]["error"]
 
 
-def test_export_limit_is_never_written_and_not_allowed():
-    assert OPTS["reg_export_limit"] not in writer.allowed_entities(OPTS)
-    ha = HomeAssistant(token="t", base_url="http://127.0.0.1:9/api")
-    ha.set_allowed_entities(writer.allowed_entities(OPTS))
+def test_export_limit_follows_the_hourly_price_and_is_only_written_with_export_control():
+    exp = OPTS["reg_export_limit"]
+    ha = RegHA({**regs(bf="Enabled", mx=80, mn=73), exp: 100})
+    stop = {**sp("hold", True, False, 80, 73), "export_limit_pct": 0}
+    res = writer.apply(ha, OPTS, stop, NOW)
+    assert [(r["key"], r["to"], r["status"]) for r in res] == [("reg_export_limit", 0, "confirmed")]
+    assert writer.apply(ha, OPTS, stop, NOW) == []                       # only on a difference
+    free = {**stop, "export_limit_pct": 100}
+    assert [r["to"] for r in writer.apply(ha, OPTS, free, NOW)] == [100]
+    off = {**OPTS, "export_control": False}
+    ha.regs[exp] = 100
+    assert writer.apply(ha, off, stop, NOW) == []                        # Node-RED keeps it
+    assert exp in writer.allowed_entities(OPTS) and exp not in writer.allowed_entities(off)
+    h = HomeAssistant(token="t", base_url="http://127.0.0.1:9/api")
+    h.set_allowed_entities(writer.allowed_entities(off))
     with pytest.raises(ServiceNotAllowed):
-        ha.call_service("number", "set_value", {"entity_id": OPTS["reg_export_limit"], "value": 0})
+        h.call_service("number", "set_value", {"entity_id": exp, "value": 0})
+
+
+def test_export_limit_goes_after_the_battery_registers():
+    exp = OPTS["reg_export_limit"]
+    ha = RegHA({**regs(), exp: 100})
+    writer.apply(ha, OPTS, {**sp("grid_charge", True, True, 90, 20, rate=40), "export_limit_pct": 0}, NOW)
+    assert ha.calls[-1][2] == exp
 
 
 def test_switch_state():

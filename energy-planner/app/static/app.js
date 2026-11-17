@@ -628,7 +628,9 @@
       ['Max SoC (mål)', sp.max_soc_pct == null ? '–' : sp.max_soc_pct + ' %', a.reg_max_soc, (x) => sp.max_soc_pct == null || Math.abs(+x - sp.max_soc_pct) <= 1, 'reg_max_soc'],
       ['Min SoC (gulv)', sp.min_soc_pct + ' %', a.reg_min_soc, (x) => Math.abs(+x - sp.min_soc_pct) <= 1, 'reg_min_soc'],
       ['Ladehastighed', sp.charge_rate_pct + ' %', a.reg_charge_rate, (x) => !sp.battery_first || Math.abs(+x - sp.charge_rate_pct) <= 5, 'reg_charge_rate'],
-      ['Eksport', sp.export_hint === 'export' ? 'Sælg' : 'Ingen', a.reg_export_limit, null, null],
+      sp.export_limit_pct != null
+        ? ['Eksportgrænse', sp.export_limit_pct + ' %' + (sp.export_allowed ? '' : ' (stop)'), a.reg_export_limit, (x) => Math.abs(+x - sp.export_limit_pct) <= 1, 'reg_export_limit']
+        : ['Eksport', sp.export_hint === 'export' ? 'Sælg' : 'Ingen', a.reg_export_limit, null, null],
     ];
     return rows.map(([name, planned, actual, same, key]) => {
       const known = actual != null && actual !== 'unknown' && actual !== 'unavailable';
@@ -650,6 +652,8 @@
       h('div', { class: 'tt-row' }, h('span', { class: 'mode-dot', style: { background: m.color } }), h('span', { class: 'lbl' }, m.label))];
     kids.push(ttSec('Pris, kr/kWh' + (r.forecast_price ? ' (estimeret)' : '')));
     kids.push(ttRow(C.buy, 'Køb', fmt(r.buy, 2)), ttRow(C.sell, 'Salg', fmt(r.sell, 2)));
+    const expMin = p.setpoints && p.setpoints.export_limit_pct != null ? (p.export_min_price ?? 0) : null;
+    if (expMin != null && r.sell < expMin) kids.push(ttRow(C.export, 'Eksport stoppet', 'salgspris under ' + fmt(expMin, 2)));
     kids.push(ttSec('Energi, kWh' + (r.dt < 1 ? ` (resten af timen)` : '')));
     const flows = [[C.gridbat, 'Net → batteri', r.grid_bat], [C.sun, 'Sol → batteri', r.pv_bat], [C.car, 'Til bil', carIn(r)],
       [C.batt, 'Batteri → hus', r.bat_load + (r.car_bat || 0)], [C.export, 'Eksport', r.pv_exp]];
@@ -692,6 +696,7 @@
     else if (sp.mode === 'solar_charge') modeDetail = `til ${sp.max_soc_pct} %` + (sp.charge_rate_pct < 100 ? ` · ladehastighed ${sp.charge_rate_pct} %` : '');
     else if (sp.mode === 'discharge') modeDetail = `${fmt(sp.discharge_kw, 1)} kW · gulv ${sp.min_soc_pct} %`;
     else modeDetail = sp.export_hint === 'export' ? 'solen sælges, batteriet gemmes' : 'batteriet gemmes til senere';
+    if (sp.export_allowed === false) modeDetail += ` · eksport stoppet (salgspris ${fmt(sp.export_sell_price, 2)} kr)`;
 
     const tiles = h('div', { class: 'tiles' },
       tile('Nu', h('span', { class: 'mode-badge', style: { fontSize: '20px' } }, h('span', { class: 'mode-dot', style: { background: m.color } }), m.label), modeDetail),

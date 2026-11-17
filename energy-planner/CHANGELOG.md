@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.0
+
+- **Export control** (`export_control`, `export_min_price` 0.00 kr): with battery production on, the
+  add-on now writes the export limit (`number.growatt_grid_export_limit`): 0 % when the current
+  hour's sell price is below the limit, otherwise 100 %. The hourly price is what is settled, so
+  quarter-hour prices are never used. Written right after each hour change; remove the export limit
+  from Node-RED when switching over. Exporting wears neither battery nor panels, hence 0.00 kr.
+- The plan never exports in hours below the limit (stores the sun in the battery or car, or
+  curtails). The panel shows the export limit as a written register and "eksport stoppet"; the
+  mode sensor has `export_allowed` / `export_limit_pct`.
+
 ## 0.10.1
 
 - **Smoothed timing for appliances that run when needed** (washer/dryer, dishwasher, hob): they have
