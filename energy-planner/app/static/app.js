@@ -583,6 +583,18 @@
     });
   }
 
+  // Why the cheap hour's grid power is split as it is between car and house battery.
+  function shareNote(p, r) {
+    const car = r.car_grid || 0, bat = r.grid_bat || 0, dt = r.dt || 1;
+    if (car < 0.05) return null;
+    const lim = p.fuse && p.fuse.plan_limit_amps;
+    const amps = (car + bat) / dt / 0.69 + (r.grid_load || 0) / dt / 0.23;
+    if (bat > 0.05 && lim && amps >= lim - 0.5) return `Sikringen deler nettet: bilen ${fmt(car / dt, 1)} kW, batteriet ${fmt(bat / dt, 1)} kW`;
+    if (bat > 0.05) return `Bil og batteri lader begge: bilen ${fmt(car / dt, 1)} kW, batteriet ${fmt(bat / dt, 1)} kW`;
+    if (r.soc_pct < 95 && lim && amps >= lim - 0.5) return p.car && p.car.need_minimum ? 'Bilens minimum går forrest (sikringen giver ikke plads til batteriet)' : 'Bilen bruger sikringens plads; batteriet lades ikke i denne time';
+    return null;
+  }
+
   function planTooltip(p, i) {
     const r = p.plan[i];
     const m = MODES[r.mode] || MODES.hold;
@@ -596,6 +608,8 @@
     const flows = [[C.gridbat, 'Net → batteri', r.grid_bat], [C.sun, 'Sol → batteri', r.pv_bat], [C.car, 'Til bil', carIn(r)],
       [C.batt, 'Batteri → hus', r.bat_load + (r.car_bat || 0)], [C.export, 'Eksport', r.pv_exp]];
     flows.forEach(([c, l, v]) => { if (v > 0.005) kids.push(ttRow(c, l, fmt(v, 2), '')); });
+    const note = shareNote(p, r);
+    if (note) kids.push(h('div', { class: 'tt-note' }, note));
     kids.push(ttRow(C.ink2, 'Net → hus', fmt(r.grid_load, 2)), ttRow(C.sun, 'Sol (prognose)', fmt(r.pv, 2) + (r.pv_p90 > r.pv_p10 ? `  (${fmt(r.pv_p10, 1)}–${fmt(r.pv_p90, 1)})` : '')),
       r.pv_factor != null && r.pv_factor < 0.995 ? ttRow(C.ink2, 'Skyggekorrektion', '× ' + fmt(r.pv_factor, 2)) : null, ttRow(C.ink2, 'Husforbrug', fmt(r.load, 2)));
     kids.push(ttSec('Batteri ved timens slut'));
@@ -634,6 +648,8 @@
     else if (sp.mode === 'solar_charge') modeDetail = `til ${sp.max_soc_pct} %` + (sp.charge_rate_pct < 100 ? ` · ladehastighed ${sp.charge_rate_pct} %` : '');
     else if (sp.mode === 'discharge') modeDetail = `${fmt(sp.discharge_kw, 1)} kW · gulv ${sp.min_soc_pct} %`;
     else modeDetail = sp.export_hint === 'export' ? 'solen sælges, batteriet gemmes' : 'batteriet gemmes til senere';
+    const share0 = r0 && shareNote(p, r0);
+    if (share0) modeDetail += ' · ' + share0.charAt(0).toLowerCase() + share0.slice(1);
     if (sp.export_allowed === false) modeDetail += ` · eksport stoppet (salgspris ${fmt(sp.export_sell_price, 2)} kr)`;
     else if (sp.export_reason === 'car') modeDetail += ` · eksport åben for bilens solopladning (salgspris ${fmt(sp.export_sell_price, 2)} kr)`;
 
@@ -699,6 +715,14 @@
 
     const prof = p.profile;
     const profBox = h('div', { class: 'chart' });
+    const bc = p.battery_curve;
+    const curveBox = h('div', { class: 'chart' });
+    const nSamples = bc ? Object.values(bc.samples || {}).reduce((a, b) => a + b, 0) : 0;
+    const curveCard = bc ? h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', {}, 'Batteriets ladekurve (kW mod SoC)'),
+        h('span', { class: 'hint' }, bc.learned ? `Lært af ${fmt(nSamples, 0)} 5-minutters målinger over 80 %` : `Standardkurve (for få målinger over 80 %: ${fmt(nSamples, 0)})`)),
+      curveBox, h('div', { style: { marginTop: '10px' } }, legend([{ color: C.batt, label: bc.learned ? 'Lært' : 'Brugt' }, { color: C.muted, label: 'Standard' }])),
+      h('div', { class: 'hint', style: { marginTop: '6px' } }, 'Planen regner med, at batteriet trapper ned i den sidste del og ikke kan tage fuld effekt helt op til 100 %.')) : null;
     const split = prof && prof.parts ? profileSeries(prof) : null;
     const profKind = state.profKind || 'weekday';
     const profCard = prof ? h('div', { class: 'card' },
@@ -711,7 +735,21 @@
         : legend([{ color: C.batt, label: 'Hverdag' }, { color: C.export, label: 'Weekend' }])),
       h('ul', { class: 'diag' }, profileDiagnostics(prof).map((d) => h('li', { class: d.warn ? 'warn' : '' }, d.text)))) : null;
 
-    root.replaceChildren(h('div', { class: 'stack' }, banners, tiles, chartCard, h('div', { class: 'grid-2' }, upCard, regCard), heatPumpCard(p.heat_pump), profCard, tableCard));
+    root.replaceChildren(h('div', { class: 'stack' }, banners, tiles, chartCard, h('div', { class: 'grid-2' }, upCard, regCard), heatPumpCard(p.heat_pump), profCard, curveCard, tableCard));
+    if (bc) {
+      const at = (curve, soc) => {
+        if (soc <= curve[0][0]) return curve[0][1];
+        for (let k = 1; k < curve.length; k++) if (soc <= curve[k][0]) return curve[k - 1][1] + (curve[k][1] - curve[k - 1][1]) * (soc - curve[k - 1][0]) / (curve[k][0] - curve[k - 1][0]);
+        return curve[curve.length - 1][1];
+      };
+      const socs = [80, 82, 84, 86, 88, 90, 92, 94, 96, 98, 100];
+      columnChart(curveBox, {
+        label: 'Ladeeffekt mod SoC', height: 150,
+        items: socs.map((sv) => ({ label: sv + ' %', values: [at(bc.curve, sv), at(bc.default, sv)] })),
+        series: [{ label: bc.learned ? 'Lært' : 'Brugt', color: C.batt }, { label: 'Standard', color: C.muted }],
+        tooltip: (it) => h('div', {}, h('div', { class: 'tt-head' }, 'SoC ' + it.label), ttRow(C.batt, bc.learned ? 'Lært' : 'Brugt', fmt(it.values[0], 2) + ' kW', ''), ttRow(C.muted, 'Standard', fmt(it.values[1], 2) + ' kW', '')),
+      });
+    }
     if (split) {
       const pk = prof.parts[profKind];
       const total = prof[profKind];

@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning and control of a Growatt hybrid inverter, home battery and EV charging."
-version: "0.14.0"
+version: "0.15.0"
 slug: "energy_planner"
 init: false
 arch:
@@ -109,6 +109,8 @@ options:
   heat_pump_room_max: 17
   heat_pump_humidity_max: 70
   heat_pump_production_switch_entity: "input_boolean.energy_planner_varmepumpe_produktion"
+  battery_taper_start_pct: 90
+  battery_taper_end_kw: 1.0
   export_control: true
   export_min_price: 0.0
   export_car_min_price: -0.10
@@ -211,6 +213,8 @@ schema:
   heat_pump_room_max: float(5,35)
   heat_pump_humidity_max: int(30,100)
   heat_pump_production_switch_entity: str?
+  battery_taper_start_pct: int(50,100)
+  battery_taper_end_kw: float(0.1,50)
   export_control: bool
   export_min_price: float(-1,2)
   export_car_min_price: float(-2,0)

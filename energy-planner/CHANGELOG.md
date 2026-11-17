@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.0
+
+- **Battery taper in the plan:** the charge power at high SoC is learned from the 5-minute
+  statistics (default: full up to 90 %, then down to 1 kW at 100 %) and limits the energy stored per
+  hour from the SoC at the start of the hour. New card "Batteriets ladekurve" in the Plan tab.
+- **Why car and battery share a cheap hour as they do:** the plan tooltip and the "Nu" tile say e.g.
+  "Sikringen deler nettet: bilen 11,0 kW, batteriet 1,7 kW" or that the car's minimum goes first.
+
 ## 0.14.0
 
 - **Garage heat pump on cheap hours:** the setpoint of `climate.varmepumpe` moves ±2 °C around 12 °C

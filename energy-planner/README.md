@@ -121,6 +121,22 @@ start button from `preparing`, `kia_uvo.start_charge` / `stop_charge` to resume/
 `sensor.energy_planner_car` shows the decision (`charge` / `pause` / `idle` / `none`) with
 `target_amps`, `reason` and the service calls it would make. `/api/car` has the log of changes.
 
+## Battery taper and car vs battery
+
+The battery's BMS takes less power in the last part. The add-on learns the charge power per 2 % SoC
+bin above 80 % from HA's 5-minute statistics (`battery_charge_power_entity` and `battery_soc_entity`,
+about 10 days; 90th percentile, non-increasing, never above `battery_max_power_kw`). Without enough
+data it uses the default: full power up to `battery_taper_start_pct` (90 %), then down to
+`battery_taper_end_kw` (1 kW) at 100 %. The plan limits the energy stored per hour to what the curve
+allows from the SoC at the start of the hour, so it does not count on reaching 100 % faster than
+the battery can. The Plan tab shows the curve. For a 4 kW / 7.75 kWh battery it matters little
+(it is full within the hour anyway); it matters when the last cheap hour starts high.
+
+Car and battery in the same cheap hours: no fixed priority. The car's minimum by the deadline comes
+first (a near-hard target), the main fuse shares the grid, and beyond that the cheapest overall
+result wins (the battery when tomorrow's peak saves more than the car's 1.25 kr/kWh). The plan's
+tooltip and the "Nu" tile say how an hour is split and why.
+
 ## Garage heat pump
 
 `climate.varmepumpe` (`heat_pump_entity`) gets its setpoint from the price: the garage is a heat
