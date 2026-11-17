@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.0
+
+- **Garage heat pump on cheap hours:** the setpoint of `climate.varmepumpe` moves ±2 °C around 12 °C
+  with the price (14 °C in the cheapest third of the next 24 hours, 10 °C in the dearest third),
+  with limits from the garage's temperature (11–17 °C) and humidity (no lowering above 70 %). Set at
+  most once per hour while `input_boolean.energy_planner_varmepumpe_produktion` is on. New card in
+  the Plan tab and `sensor.energy_planner_heat_pump`.
+
 ## 0.13.0
 
 - **"Hvis bilen sættes til nu":** while the car is unplugged, a second plan is solved as if it were

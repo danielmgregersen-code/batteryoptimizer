@@ -996,3 +996,42 @@ def test_an_extra_order_shows_in_the_preview(tmp_path):
     p.set_car_extra("pct", 10, now)
     pv = p.run_once(now)["car_preview"]
     assert pv["reason"] == "extra" and pv["soc_at_deadline"] == pytest.approx(80.0, abs=0.5)
+
+
+def _hp_ha(production, temp=14.0):
+    ha = make_ha()
+    hp = DEFAULTS["heat_pump_entity"]
+    ha.numbers.update({DEFAULTS["heat_pump_temp_entity"]: temp, DEFAULTS["heat_pump_humidity_entity"]: 55.0})
+    ha.texts[DEFAULTS["heat_pump_production_switch_entity"]] = "on" if production else "off"
+    ha.climate = {"state": "heat", "attributes": {"temperature": 12}}
+    real_state = ha.state
+    ha.state = lambda e: ha.climate if e == hp else real_state(e)
+    calls = []
+
+    def call_service(domain, service, data=None, return_response=False):
+        if domain == "climate":
+            calls.append(data)
+            ha.climate["attributes"]["temperature"] = data["temperature"]
+    ha.call_service = call_service
+    return ha, calls
+
+
+def test_heat_pump_setpoint_follows_the_price_and_is_set_once(tmp_path):
+    ha, calls = _hp_ha(production=True)
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    snap = p.run_once(datetime(2026, 11, 14, 2, 0, 20, tzinfo=UTC))       # 03:00 local, among the cheapest
+    hp = snap["heat_pump"]
+    assert hp["level"] == "cheap" and hp["setpoint"] == 14
+    assert calls == [{"entity_id": DEFAULTS["heat_pump_entity"], "temperature": 14}]
+    p.run_once(datetime(2026, 11, 14, 2, 10, tzinfo=UTC))
+    assert len(calls) == 1                                                # unchanged: nothing written
+    snap = p.run_once(datetime(2026, 11, 14, 16, 0, 20, tzinfo=UTC))      # 17:00, the peak
+    assert snap["heat_pump"]["setpoint"] == 10 and calls[-1]["temperature"] == 10
+    assert ha.published["sensor.energy_planner_heat_pump"][0] == 10
+
+
+def test_heat_pump_manual_control_writes_nothing(tmp_path):
+    ha, calls = _hp_ha(production=False)
+    snap = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl")).run_once(datetime(2026, 11, 14, 16, 0, 20, tzinfo=UTC))
+    assert snap["heat_pump"]["setpoint"] == 10 and snap["heat_pump"]["production"] is False and calls == []
+    assert ha.published["sensor.energy_planner_heat_pump"][1]["production"] is False
