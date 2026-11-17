@@ -121,6 +121,21 @@ start button from `preparing`, `kia_uvo.start_charge` / `stop_charge` to resume/
 `sensor.energy_planner_car` shows the decision (`charge` / `pause` / `idle` / `none`) with
 `target_amps`, `reason` and the service calls it would make. `/api/car` has the log of changes.
 
+## Garage heat pump
+
+`climate.varmepumpe` (`heat_pump_entity`) gets its setpoint from the price: the garage is a heat
+store, so in the cheapest third of the next 24 hours the setpoint goes up by `heat_pump_band` (2 °C),
+in the dearest third down by it, otherwise it stays at `heat_pump_setpoint` (12 °C, the garage then
+measures about 14 °C). Hours where the plan curtails sun or exports at a sell price <= 0 count as
+cheap. Safety from the garage sensors (`heat_pump_temp_entity`, `heat_pump_humidity_entity`): never
+lower below `heat_pump_room_min` (11 °C, warm up below 10 °C), never raise above `heat_pump_room_max`
+(17 °C), never lower at humidity above `heat_pump_humidity_max` (70 %) or without a reading. The
+compressor regulates by itself; the mode (heat/off) is never touched. Written with
+`climate.set_temperature` at most once per hour while the helper
+`input_boolean.energy_planner_varmepumpe_produktion` is on (create it; off = manual control). The
+Plan tab shows the setpoint, why, the garage's temperature and humidity and the next 24 hours;
+`sensor.energy_planner_heat_pump` has the same for dashboards.
+
 ## Main fuse
 
 The car (16 A = 11 kW over three phases) and grid charging of the house battery (4 kW ≈ 6 A per

@@ -7,6 +7,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 
 import car as carmod
+import heatpump
 from inputs import UTC, build_horizon, hour_floor, parse_prices, parse_solcast, parse_ts, persistence_forecast
 from optimizer import BatteryParams, solve, terminal_value_for
 from loadprofile import _by_start, build_profile, load_for_hour, profile_view
@@ -112,6 +113,7 @@ class Planner:
         self._stop_ok_at = None        # last successful kia stop while the car was charging
         self._thor_stopped = False     # emergency stop on the charger done: no restart from here
         self._pause_wanted_since = None   # since when the controller has wanted a charging car paused
+        self._hp_written_hour = None      # the heat pump's setpoint is changed at most once per hour
         self._car_status_prev = None      # charger status at the previous car cycle
         self._session_ended_at = None     # the charger ended the session on its own (not through HA)
         self._car_prod_prev = False
@@ -279,6 +281,49 @@ class Planner:
         if self._fuse_rate_cap is not None and self._fuse_rate_cap < rate:
             return {**live, "charge_rate_pct": self._fuse_rate_cap, "fuse_capped": True}
         return live
+
+    def _heat_pump_step(self, opts: dict, rows: list, now: datetime):
+        """Decide the garage heat pump's setpoint for this hour and set it (production helper on)."""
+        entity = opts.get("heat_pump_entity")
+        if not entity:
+            return None
+        st = self.ha.state(entity) if hasattr(self.ha, "state") else None
+        if not st:
+            return {"available": False, "entity": entity}
+        num = lambda key: self.ha.number(opts[key]) if opts.get(key) else None
+        d = heatpump.decide(rows, now.astimezone(self.tz), num("heat_pump_temp_entity"),
+                            num("heat_pump_humidity_entity"), opts)
+        attrs = st.get("attributes") or {}
+        current = attrs.get("temperature")
+        hvac = st.get("state")
+        production = writer.switch_on(self.ha, opts.get("heat_pump_production_switch_entity"))
+        d.update(entity=entity, available=True, current_setpoint=current, hvac_mode=hvac,
+                 production=production, written=None)
+        hour = now.astimezone(self.tz).replace(minute=0, second=0, microsecond=0)
+        if production and hvac not in ("off", "unavailable", "unknown", None):
+            try:
+                differs = current is None or abs(float(current) - d["setpoint"]) >= 0.5
+            except (TypeError, ValueError):
+                differs = True
+            if differs and self._hp_written_hour != hour:
+                try:
+                    if hasattr(self.ha, "set_allowed_entities"):
+                        self.ha.set_allowed_entities(writer.allowed_entities(opts))
+                    self.ha.call_service("climate", "set_temperature",
+                                         {"entity_id": entity, "temperature": d["setpoint"]})
+                    self._hp_written_hour = hour
+                    d["written"] = {"from": current, "to": d["setpoint"], "status": "ok"}
+                    log.info("heat pump: %s -> %s °C (%s)", current, d["setpoint"], d["reason"])
+                except Exception as e:
+                    d["written"] = {"from": current, "to": d["setpoint"], "status": "error", "error": str(e)}
+                    log.warning("heat pump: could not set %s °C: %s", d["setpoint"], e)
+        nxt = next((x for x in d["plan"][1:] if x["setpoint"] != d["plan"][0]["setpoint"]), None) if d["plan"] else None
+        self.ha.set_state("sensor.energy_planner_heat_pump", d["setpoint"], {
+            "friendly_name": "Energy Planner varmepumpe", "icon": "mdi:heat-pump", "unit_of_measurement": "°C",
+            "level": d["level"], "reason": d["reason"], "room_temp": d["room_temp"], "humidity": d["humidity"],
+            "current_setpoint": current, "production": production,
+            "next_change": nxt["t"] if nxt else None, "next_setpoint": nxt["setpoint"] if nxt else None})
+        return d
 
     def _car_preview(self, horizon, now, opts, params, soc0, tv, fuse_amps, exp_min, car_soc, full, departure):
         """What the plan would do with the car if it were plugged in now (nothing is written)."""
@@ -619,6 +664,7 @@ class Planner:
                 "pv": round(float(plan.pv[i]), 2), "load": round(float(plan.load[i]), 2),
                 "pv_bat": round(float(plan.pv_bat[i]), 2), "grid_bat": round(float(plan.grid_bat[i]), 2),
                 "bat_load": round(float(plan.bat_load[i]), 2), "pv_exp": round(float(plan.pv_exp[i]), 2),
+                "pv_curt": round(float(plan.pv_curt[i]), 2),
                 "soc_pct": round(float(plan.soc_end[i]) / params.capacity_kwh * 100.0, 1),
                 "forecast_price": bool(horizon.forecast[i]),
                 "dt": round(float(plan.dt[i]), 3),
@@ -705,6 +751,7 @@ class Planner:
             car_label = f"Lader bilen til {car_info['extra']['target_pct']:.0f} % (ekstra)"
         elif car_info.get("full_charge", {}).get("active"):
             car_label = "Lader bilen til 100 % (bundpris)"
+        snapshot["heat_pump"] = self._heat_pump_step(opts, rows, now)
         snapshot["upcoming"] = upcoming(rows, bool(car_params), now.astimezone(self.tz).date(), car_label)
         snapshot["summary"] = summary_attributes(sp, snapshot["upcoming"])
         with self._lock:

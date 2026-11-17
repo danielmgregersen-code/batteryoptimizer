@@ -177,3 +177,12 @@ def test_solar_api(tmp_path, monkeypatch):
     r = client.get("/api/solar?day=2026-11-13").json()
     assert r["day"] == "2026-11-13" and len(r["hours"]) == 24
     assert len(client.get("/api/solar/days?days=5").json()) == 5
+
+
+def test_climate_set_temperature_needs_an_allowed_entity():
+    import pytest
+    from homeassistant import HomeAssistant, ServiceNotAllowed
+    ha = HomeAssistant(token="t", base_url="http://127.0.0.1:9/api")
+    ha.set_allowed_entities(["climate.varmepumpe"])
+    with pytest.raises(ServiceNotAllowed):
+        ha.call_service("climate", "set_temperature", {"entity_id": "climate.other", "temperature": 14})

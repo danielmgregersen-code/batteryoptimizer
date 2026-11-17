@@ -22,7 +22,8 @@ ALLOWED_SERVICES = {
 }
 # Entity services: only on the entities the planner allows (the inverter registers it writes and the
 # charger's current / start button). The export limit and everything else stay off limits.
-ENTITY_SERVICES = {("select", "select_option"), ("number", "set_value"), ("button", "press")}
+ENTITY_SERVICES = {("select", "select_option"), ("number", "set_value"), ("button", "press"),
+                   ("climate", "set_temperature")}
 
 
 class ServiceNotAllowed(Exception):

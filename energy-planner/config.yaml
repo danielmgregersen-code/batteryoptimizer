@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning and control of a Growatt hybrid inverter, home battery and EV charging."
-version: "0.13.0"
+version: "0.14.0"
 slug: "energy_planner"
 init: false
 arch:
@@ -100,6 +100,15 @@ options:
   car_thor_stop_fallback: true
   charger_stop_button: "button.garage_growatt_thor_ev_charger_stop_charging"
   charger_schedule_entities: "time.garage_growatt_thor_ev_charger_automatic_charging_start,time.garage_growatt_thor_ev_charger_automatic_charging_stop"
+  heat_pump_entity: "climate.varmepumpe"
+  heat_pump_setpoint: 12
+  heat_pump_band: 2
+  heat_pump_temp_entity: "sensor.lumi_lumi_weather_temperature"
+  heat_pump_humidity_entity: "sensor.lumi_lumi_weather_humidity"
+  heat_pump_room_min: 11
+  heat_pump_room_max: 17
+  heat_pump_humidity_max: 70
+  heat_pump_production_switch_entity: "input_boolean.energy_planner_varmepumpe_produktion"
   export_control: true
   export_min_price: 0.0
   export_car_min_price: -0.10
@@ -193,6 +202,15 @@ schema:
   car_thor_stop_fallback: bool
   charger_stop_button: str
   charger_schedule_entities: str?
+  heat_pump_entity: str?
+  heat_pump_setpoint: float(5,30)
+  heat_pump_band: float(0,4)
+  heat_pump_temp_entity: str?
+  heat_pump_humidity_entity: str?
+  heat_pump_room_min: float(0,30)
+  heat_pump_room_max: float(5,35)
+  heat_pump_humidity_max: int(30,100)
+  heat_pump_production_switch_entity: str?
   export_control: bool
   export_min_price: float(-1,2)
   export_car_min_price: float(-2,0)

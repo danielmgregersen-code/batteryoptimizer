@@ -96,6 +96,10 @@ class FakeHA:
         for e, v in synthetic_submeters(datetime.now(TZ)).items():
             self.states[e] = str(v)
         self.states[DEFAULTS["load_submeters"].split(",")[2]] = "1950"     # the dryer runs right now
+        self.states[DEFAULTS["heat_pump_entity"]] = "heat"
+        self.attrs[DEFAULTS["heat_pump_entity"]] = {"temperature": 12, "current_temperature": 14}
+        self.states[DEFAULTS["heat_pump_temp_entity"]] = "13.6"
+        self.states[DEFAULTS["heat_pump_humidity_entity"]] = "58"
         for e in counter_ids(DEFAULTS).values():
             self.states[e] = "1000"
         for e, amps in zip(DEFAULTS["grid_current_entities"].split(","), ("21.4", "18.9", "19.6")):
@@ -136,6 +140,9 @@ class FakeHA:
             return {}
         if domain == "number":
             self.states[data["entity_id"]] = str(data["value"])
+            return {}
+        if domain == "climate":
+            self.attrs.setdefault(data["entity_id"], {})["temperature"] = data["temperature"]
             return {}
         if domain in ("button", "kia_uvo"):
             return {}

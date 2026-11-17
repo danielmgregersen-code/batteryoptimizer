@@ -711,7 +711,7 @@
         : legend([{ color: C.batt, label: 'Hverdag' }, { color: C.export, label: 'Weekend' }])),
       h('ul', { class: 'diag' }, profileDiagnostics(prof).map((d) => h('li', { class: d.warn ? 'warn' : '' }, d.text)))) : null;
 
-    root.replaceChildren(h('div', { class: 'stack' }, banners, tiles, chartCard, h('div', { class: 'grid-2' }, upCard, regCard), profCard, tableCard));
+    root.replaceChildren(h('div', { class: 'stack' }, banners, tiles, chartCard, h('div', { class: 'grid-2' }, upCard, regCard), heatPumpCard(p.heat_pump), profCard, tableCard));
     if (split) {
       const pk = prof.parts[profKind];
       const total = prof[profKind];
@@ -765,6 +765,31 @@
     const ids = Object.keys((prof.parts.weekday || prof.parts.weekend).subs);
     return [{ id: 'rest', label: 'Resten af huset', color: C.hold },
       ...ids.map((e, i) => ({ id: e, label: subName(e), color: SUB_COLORS[i % SUB_COLORS.length] }))];
+  }
+
+  // Garage heat pump: the setpoint now and for the next 24 hours.
+  const HP_LEVEL = { cheap: { label: 'Billig', color: C.gridbat }, normal: { label: 'Normal', color: C.hold }, dear: { label: 'Dyr', color: C.export } };
+  function heatPumpCard(hp) {
+    if (!hp) return null;
+    const head = h('div', { class: 'card-head' }, h('h2', {}, 'Varmepumpe (garage)'),
+      h('span', { class: 'hint' }, hp.available === false ? '' : hp.production ? 'Add-on’en styrer sætpunktet' : 'Manuel styring: add-on’en skriver intet'));
+    if (hp.available === false) return h('div', { class: 'card' }, head, h('div', { class: 'empty' }, `${hp.entity} findes ikke eller er utilgængelig.`));
+    const lv = HP_LEVEL[hp.level] || HP_LEVEL.normal;
+    const w = hp.written;
+    const facts = h('dl', { class: 'kv' },
+      h('dt', {}, 'Sætpunkt nu'), h('dd', {}, `${fmt(hp.setpoint, 0)} °C` + (hp.current_setpoint != null && Math.abs(hp.current_setpoint - hp.setpoint) >= 0.5 ? ` (står på ${fmt(hp.current_setpoint, 0)} °C)` : '')),
+      h('dt', {}, 'Hvorfor'), h('dd', {}, hp.reason),
+      h('dt', {}, 'Garagen'), h('dd', {}, `${hp.room_temp != null ? fmt(hp.room_temp, 1) + ' °C' : '–'} · fugt ${hp.humidity != null ? fmt(hp.humidity, 0) + ' %' : '–'}`),
+      h('dt', {}, 'Varmepumpen'), h('dd', {}, hp.hvac_mode === 'off' ? 'slukket (røres ikke)' : ({ heat: 'varme', heat_cool: 'auto', auto: 'auto', cool: 'køl', dry: 'affugt', fan_only: 'blæser' }[hp.hvac_mode] || hp.hvac_mode || '–')),
+      w ? [h('dt', {}, 'Skrevet'), h('dd', {}, w.status === 'ok' ? `${fmt(w.from, 0)} → ${fmt(w.to, 0)} °C` : `fejl: ${w.error}`)] : null);
+    const strip = h('div', { class: 'hp-strip', role: 'img', 'aria-label': 'Sætpunkt de næste 24 timer' },
+      (hp.plan || []).map((x, i) => h('div', { class: 'hp-cell', title: `${hhmm(x.t)}: ${(HP_LEVEL[x.level] || HP_LEVEL.normal).label} · ${fmt(x.setpoint, 0)} °C`, style: { background: (HP_LEVEL[x.level] || HP_LEVEL.normal).color } },
+        i % 3 === 0 ? h('span', {}, hhmm(x.t).slice(0, 2)) : null)));
+    return h('div', { class: 'card' }, head,
+      h('div', { class: 'grid-2', style: { alignItems: 'start' } },
+        h('div', {}, h('div', { class: 'mode-badge', style: { fontSize: '20px', marginBottom: '8px' } }, h('span', { class: 'mode-dot', style: { background: lv.color } }), `${lv.label} time · ${fmt(hp.setpoint, 0)} °C`), facts),
+        h('div', {}, h('div', { class: 'hint', style: { marginBottom: '6px' } }, 'Sætpunkt de næste 24 timer'), strip,
+          h('div', { style: { marginTop: '8px' } }, legend(Object.values(HP_LEVEL).map((x) => ({ color: x.color, label: x.label })))))));
   }
 
   function profileDiagnostics(prof) {
