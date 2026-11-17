@@ -137,6 +137,7 @@ def summary_attributes(sp: dict, items: list) -> dict:
         "upcoming": [{k: it[k] for k in ("label", "when", "text", "start", "end")} for it in items[:6]],
         "export_allowed": sp.get("export_allowed"),
         "export_limit_pct": sp.get("export_limit_pct"),
+        "export_reason": sp.get("export_reason"),
     }
 
 

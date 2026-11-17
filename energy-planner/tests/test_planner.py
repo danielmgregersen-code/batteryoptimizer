@@ -927,3 +927,27 @@ def test_export_is_stopped_in_an_hour_with_a_negative_hourly_price(tmp_path):
     calls.clear()
     snap = p.run_once(datetime(2026, 11, 14, 12, 0, 20, tzinfo=UTC))      # 13:00: positive again
     assert snap["setpoints"]["export_allowed"] is True and (exp, 100) in calls
+
+
+def _negative_noon(tmp_path, sell_noon, connected=True, car_soc=50.0):
+    from fixtures import SELL_TODAY, price_attrs
+    ha = car_ha() if connected else make_ha()
+    if connected:
+        ha.numbers[DEFAULTS["car_soc_entity"]] = car_soc
+    sell = list(SELL_TODAY)
+    sell[12] = sell_noon
+    ha.attrs[DEFAULTS["price_sell_entity"]] = price_attrs(sell)
+    ha.numbers[DEFAULTS["battery_soc_entity"]] = 100.0                    # house battery full
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    return p.run_once(datetime(2026, 11, 14, 11, 0, 20, tzinfo=UTC))      # 12:00 local
+
+
+def test_export_stays_open_while_the_car_charges_on_sun_down_to_the_car_limit(tmp_path):
+    snap = _negative_noon(tmp_path, -0.05)
+    assert snap["plan"][0]["car_pv"] > 0.1
+    sp = snap["setpoints"]
+    assert sp["export_allowed"] is True and sp["export_limit_pct"] == 100 and sp["export_reason"] == "car"
+    assert _negative_noon(tmp_path, -0.15)["setpoints"]["export_limit_pct"] == 0           # below -0.10
+    assert _negative_noon(tmp_path, -0.05, connected=False)["setpoints"]["export_reason"] == "stopped"
+    assert _negative_noon(tmp_path, -0.05, car_soc=100.0)["setpoints"]["export_limit_pct"] == 0  # full (a negative sell price lifts the limit to 100 %)
+    assert _negative_noon(tmp_path, 0.2)["setpoints"]["export_reason"] == "price"

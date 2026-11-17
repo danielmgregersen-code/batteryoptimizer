@@ -252,6 +252,20 @@ class Planner:
             return {**live, "charge_rate_pct": self._fuse_rate_cap, "fuse_capped": True}
         return live
 
+    @staticmethod
+    def _car_needs_export(plan, car_info: dict, opts: dict) -> bool:
+        """Open export for the car's solar charging: connected, below its limit, sun for the car in the
+        plan this hour, and the hour's sell price not below export_car_min_price."""
+        if plan.pv_car is None or not car_info.get("connected"):
+            return False
+        soc, limit = car_info.get("soc_pct"), car_info.get("max_soc_pct")
+        if soc is None or (limit is not None and soc >= float(limit) - 0.5):
+            return False
+        dt0 = float(plan.dt[0]) or 1.0
+        if float(plan.pv_car[0]) / dt0 <= 0.1:
+            return False
+        return float(plan.sell[0]) >= float(opts.get("export_car_min_price", -0.10))
+
     def _charger_schedule(self, opts: dict):
         """The THOR's own automatic charging window as ("03:00", "05:00"), or None when it is off
         (entities not configured / unavailable, or start = stop)."""
@@ -498,6 +512,13 @@ class Planner:
         sp = derive_setpoints(plan, soc_pct, params, float(opts["inverter_kw"]),
                               float(opts["soc_floor_pct"]), float(opts["soc_ceiling_pct"]),
                               export_min_price=exp_min)
+        if exp_min is not None:
+            sp["export_reason"] = "price" if sp["export_allowed"] else "stopped"
+            if not sp["export_allowed"] and self._car_needs_export(plan, car_info, opts):
+                # Export closed and the house battery full: the inverter throttles the panels to the
+                # load and the car controller would see no surplus. Keep export open while the plan
+                # charges the car on sun (the car takes nearly all of it; a few øre exported).
+                sp.update(export_allowed=True, export_limit_pct=100, export_reason="car")
 
         rows = []
         for i, start in enumerate(horizon.starts):

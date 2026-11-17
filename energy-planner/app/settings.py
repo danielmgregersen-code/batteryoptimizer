@@ -122,6 +122,7 @@ DEFAULTS = {
     "charger_schedule_entities": "time.garage_growatt_thor_ev_charger_automatic_charging_start,time.garage_growatt_thor_ev_charger_automatic_charging_stop",
     "export_control": True,
     "export_min_price": 0.0,
+    "export_car_min_price": -0.10,
     "main_fuse_amps": 25,
     "fuse_margin_amps": 3,
     "grid_current_entities": "sensor.growatt_grid_current_l1,sensor.growatt_grid_current_l2,sensor.growatt_grid_current_l3",
