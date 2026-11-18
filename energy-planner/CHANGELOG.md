@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.18.0
+
+- **Found: why the THOR ended the session 3 minutes after a pause.** The diagnosis traces show that
+  after `kia_uvo.stop_charge` the THOR registers an *unplug* (session end and unplug time at the same
+  moment, voltage 0 on all phases) 3:01 later, while a pause from the Kia app keeps the session.
+  Turning off `switch.ioniq_9_ev_charging` pauses the same way the app does, and
+  `kia_uvo.start_charge` resumes.
+- The car is now paused with `car_charge_switch_entity` (default `switch.ioniq_9_ev_charging`);
+  resuming still uses `kia_uvo.start_charge`. The same Kia safeguards apply (quota, backoff, the
+  charger emergency stop only as a last resort). The car log shows "bil pause (ladeswitch)".
+
 ## 0.17.0
 
 - **No pause for a short gap that saves little:** when the plan wants to pause the car between two

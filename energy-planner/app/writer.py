@@ -129,5 +129,5 @@ def allowed_entities(opts: dict) -> list:
     from settings import write_register_keys
     ids = [opts.get(k) for k in write_register_keys(opts)]
     ids += [opts.get("charger_current_entity"), opts.get("charger_start_button"), opts.get("charger_stop_button"),
-            opts.get("heat_pump_entity")]
+            opts.get("heat_pump_entity"), opts.get("car_charge_switch_entity")]
     return [e for e in ids if e]

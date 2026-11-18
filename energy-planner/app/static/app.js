@@ -1221,7 +1221,8 @@
     if (e.executed && e.executed.length) {
       return e.executed.map((x) => {
         const mark = x.status === 'ok' ? '✓' : x.status === 'skipped' ? '–' : x.status === 'unknown' ? '?' : '✗';
-        return h('div', { title: x.error || '' }, `${mark} ${short(x.service)}${x.value != null ? ' ' + x.value : ''}${x.error ? ': ' + x.error : ''}`);
+        const name = x.via ? 'bil pause (ladeswitch)' : short(x.service);
+        return h('div', { title: x.error || x.via || '' }, `${mark} ${name}${x.value != null ? ' ' + x.value : ''}${x.error ? ': ' + x.error : ''}`);
       });
     }
     return (e.calls || []).length ? (e.calls || []).map((x) => short(x.service)).join(', ') : '';
@@ -1370,7 +1371,7 @@
     const executed = (c && c.executed) || [];
     const calls = live_ && executed.length
       ? h('div', { class: 'chips' }, executed.map((x) => h('span', { class: 'chip', title: x.error || '' },
-        x.service + (x.value != null ? ` → ${x.value}` : '') + (x.status === 'ok' ? ' ✓' : ` (${x.status === 'skipped' ? 'sprunget over' : 'fejl'})`))))
+        (x.via ? `${x.via} → off` : x.service) + (x.value != null ? ` → ${x.value}` : '') + (x.status === 'ok' ? ' ✓' : ` (${x.status === 'skipped' ? 'sprunget over' : 'fejl'})`))))
       : c && c.calls && c.calls.length
         ? h('div', { class: 'chips' }, c.calls.map((x) => h('span', { class: 'chip' }, x.service + (x.value != null ? ` → ${x.value}` : ''))))
         : h('div', { class: 'hint' }, 'Ingen kald lige nu.');
