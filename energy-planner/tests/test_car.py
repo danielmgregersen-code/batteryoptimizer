@@ -356,3 +356,31 @@ def test_a_worthwhile_or_long_gap_still_pauses():
 def test_short_gap_reason_in_danish():
     from summary import reason_da
     assert reason_da("short gap, saves only 0.12 DKK/kWh: keep charging at 6 A") == "Kort hul, sparer kun 0,12 kr/kWh: fortsætter på 6 A"
+
+
+# ---- estimated SoC (0.19.0) ------------------------------------------------------
+def charge_log(start, minutes, watts, step_s=5):
+    log, last = [], None
+    for i in range(int(minutes * 60 / step_s) + 1):
+        last = carmod.add_energy(log, start + timedelta(seconds=i * step_s), watts, last)
+    return log
+
+
+def test_estimate_soc_adds_what_the_charger_delivered():
+    t0 = datetime(2026, 11, 18, 11, 0, tzinfo=UTC)
+    log = charge_log(t0 - timedelta(minutes=5), 20, 11000.0)
+    est = carmod.estimate_soc(60.0, t0, log, t0 + timedelta(minutes=15), 0.92, 110.0)
+    assert est["estimated"] and est["kwh_since"] == pytest.approx(2.75, abs=0.02)
+    assert est["soc"] == pytest.approx(60 + 2.75 * 0.92 / 110 * 100, abs=0.05)
+    assert not est["uncertain"]
+    later = carmod.estimate_soc(60.0, t0 + timedelta(minutes=30), log, t0 + timedelta(minutes=30), 0.92, 110.0)
+    assert later["soc"] == 60.0 and not later["estimated"]                   # a fresh report wins
+    assert carmod.estimate_soc(99.0, t0, log, t0 + timedelta(minutes=15), 0.92, 110.0)["soc"] == 100.0
+
+
+def test_gaps_in_the_power_log_are_not_energy():
+    t0 = datetime(2026, 11, 18, 11, 0, tzinfo=UTC)
+    log, last = [], None
+    last = carmod.add_energy(log, t0, 11000.0, last)
+    last = carmod.add_energy(log, t0 + timedelta(minutes=10), 11000.0, last)   # 10 min without samples
+    assert log[-1][1] == 0.0

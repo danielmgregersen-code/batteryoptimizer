@@ -1353,7 +1353,12 @@
 
     const tiles = h('div', { class: 'tiles' },
       tile('Bilens batteri', live.car_soc != null ? h('span', {}, fmt(live.car_soc, 0), h('small', {}, ' %')) : '–',
-        `minimum 42 % kl. 06 · maks ${fmt((carInfo && carInfo.max_soc_pct) || 90, 0)} %`,
+        (() => {
+          const se = c && c.soc_estimate;
+          const base = `minimum 42 % kl. 06 · maks ${fmt((carInfo && carInfo.max_soc_pct) || 90, 0)} %`;
+          if (!se || !se.estimated) return base + (se && se.kia_at ? ` · Kia kl. ${new Date(se.kia_at).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' })}` : '');
+          return `beregnet: Kia ${fmt(se.kia_soc, 1)} % kl. ${new Date(se.kia_at).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' })} + ${fmt(se.kwh_since, 1)} kWh` + (se.uncertain ? ' (usikker)' : '') + ' · ' + base;
+        })(),
         meter(live.car_soc, [{ v: 42, title: 'Minimum' }, { v: (carInfo && carInfo.max_soc_pct) || 90, ghost: true, title: 'Maks' }], 'car')),
       tile('Lader', h('span', { style: { fontSize: '20px' } }, CHARGER_STATUS[status] || status || '–'),
         live.charger_w != null ? `${fmt((live.charger_w || 0) / 1000, 1)} kW · ${live.amps != null ? fmt(live.amps, 0) + ' A sat' : ''}` : ''),

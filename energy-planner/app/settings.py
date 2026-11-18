@@ -115,6 +115,7 @@ DEFAULTS = {
     "car_production_switch_entity": "input_boolean.energy_planner_bil_produktion",
     "car_device_id": "",
     "car_charge_switch_entity": "switch.ioniq_9_ev_charging",
+    "car_soc_time_entity": "sensor.ioniq_9_last_updated_at",
     "car_pause_gap_hours": 2,
     "car_pause_min_saving_dkk": 0.20,
     "car_trace_prefixes": "",               # the IONIQ 9's device id for kia_uvo.start_charge / stop_charge

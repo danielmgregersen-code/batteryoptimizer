@@ -122,6 +122,9 @@ class Planner:
         self._hp_power = {}               # its meter's hourly mean power (W)
         self.trace = cartrace.CarTrace(os.path.dirname(log_path) or ".")   # diagnosis after charging stops
         self._trace_status_prev = None
+        from collections import deque
+        self._charge_log = deque()        # [(t, cumulative kWh delivered by the charger)], 24 h
+        self._charge_last = None
         self._car_status_prev = None      # charger status at the previous car cycle
         self._session_ended_at = None     # the charger ended the session on its own (not through HA)
         self._car_prod_prev = False
@@ -304,6 +307,11 @@ class Planner:
         now = (now or datetime.now(UTC)).astimezone(self.tz)
         status = self.ha.text(opts["charger_status_entity"])
         prev, self._trace_status_prev = self._trace_status_prev, status
+        if opts.get("charger_power_entity"):
+            self._charge_last = carmod.add_energy(self._charge_log, now.astimezone(UTC),
+                                                  self.ha.number(opts["charger_power_entity"]), self._charge_last)
+            while self._charge_log and now.astimezone(UTC) - self._charge_log[0][0] > timedelta(hours=24):
+                self._charge_log.popleft()
         if manual or (prev == "charging" and status not in (None, "charging")):
             last = (self.car_latest or {}).get("executed") or []
             kia = next((x for x in last if x.get("service") == "kia_uvo.stop_charge"), None)
@@ -314,6 +322,30 @@ class Planner:
         if self.trace.active():
             states = self.ha.all_states() if hasattr(self.ha, "all_states") else []
             self.trace.sample(states, cartrace.prefixes(opts), now)
+
+    def car_soc_now(self, opts: dict, now: datetime) -> dict:
+        """The car's SoC: the last reported one plus what the charger delivered since (see
+        car.estimate_soc). The report time comes from car_soc_time_entity, else the SoC's last change."""
+        e = opts.get("car_soc_entity")
+        soc = self.ha.number(e) if e else None
+        anchor = None
+        te = opts.get("car_soc_time_entity")
+        raw = self.ha.text(te) if te else None
+        if raw and raw not in ("unknown", "unavailable"):
+            try:
+                anchor = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                anchor = None
+        if anchor is None and e and hasattr(self.ha, "state"):
+            st = self.ha.state(e) or {}
+            try:
+                anchor = datetime.fromisoformat(str(st.get("last_changed")).replace("Z", "+00:00"))
+            except ValueError:
+                anchor = None
+        if anchor is not None and anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=UTC)
+        return carmod.estimate_soc(soc, anchor, list(self._charge_log), now.astimezone(UTC),
+                                   float(opts["car_eta"]), float(opts["car_battery_kwh"]))
 
     def _heat_pump_forecast(self, opts, profile, buy, sell, pv, h_now, now):
         """{utc hour: kWh to add to the base load} for the next 24 hours: what the heat pump uses at the
@@ -692,7 +724,8 @@ class Planner:
         preview_args = None
         if opts.get("car_enabled"):
             status = self.ha.text(opts["charger_status_entity"])
-            car_soc = self.ha.number(opts["car_soc_entity"])
+            soc_est = self.car_soc_now(opts, now)
+            car_soc = soc_est["soc"]
             full = carmod.full_charge_decision(horizon, now, self.tz, opts, car_soc, self._last_full(),
                                                self._price_history)
             departure = carmod.departure_info(self._departure(opts), self._departure_soc(opts), horizon, now)
@@ -701,7 +734,7 @@ class Planner:
             car_params, info = carmod.build_car_params(horizon, now, self.tz, opts, status, car_soc,
                                                        full=full, departure=departure, extra=self._car_extra)
             car_info.update(info)
-            car_info.update(full_charge=full, departure=departure)
+            car_info.update(full_charge=full, departure=departure, soc_estimate=soc_est)
             if status not in carmod.CONNECTED and car_soc is not None:
                 preview_args = (car_soc, full, departure)
             if self._car_extra and "extra" not in car_info:   # ordered, but the car is not connected
@@ -935,7 +968,7 @@ class Planner:
 
         live = {
             "status": st.get("state"),
-            "car_soc": self.ha.number(opts["car_soc_entity"]),
+            "car_soc": None,
             "pv_w": num("pv_power_entity"), "load_w": num("house_load_entity"),
             "charger_w": num("charger_power_entity"), "house_soc": num("battery_soc_entity"),
             "bat_charge_w": num("battery_charge_power_entity"),
@@ -943,13 +976,16 @@ class Planner:
             "secs_since_status": secs, "sell": self.ha.number(opts["price_sell_entity"]),
             "phase_amps": self._phase_amps(opts),
         }
+        soc_est = self.car_soc_now(opts, now)
+        live["car_soc"] = soc_est["soc"]
+        live["car_soc_kia"] = soc_est["kia_soc"]
         with self._lock:
             snap = self.latest
         row = carmod.plan_for_now(snap, now, self.tz)
         # The plan may lift the daily limit (100 % at rock-bottom prices, or a trip).
         snap_car = (snap or {}).get("car") or {}
         opts = {**opts, "car_max_soc_pct": snap_car.get("max_soc_pct") or opts["car_max_soc_pct"]}
-        if live.get("car_soc") is not None and live["car_soc"] >= 99:
+        if live.get("car_soc_kia") is not None and live["car_soc_kia"] >= 99:   # the car's own report only
             self._car_full_seen = now.isoformat(timespec="seconds")
             pvd.save_json(self.car_full_path, {"at": self._car_full_seen})
         ahead = []
@@ -957,6 +993,7 @@ class Planner:
             row_t = datetime.fromisoformat(row["t"])
             ahead = [r for r in (snap or {}).get("plan", []) if "car_grid" in r and datetime.fromisoformat(r["t"]) > row_t]
         d = carmod.decide(live, row, opts, ahead=ahead)
+        d["soc_estimate"] = soc_est
         car_production = writer.switch_on(self.ha, opts.get("car_production_switch_entity"))
         d.update({"updated": now.astimezone(self.tz).isoformat(timespec="seconds"), "production": car_production,
                   "live": live, "plan_row": row, "executed": [], "warning": None})
@@ -1014,6 +1051,8 @@ class Planner:
             "departure": (car_info.get("departure") or {}).get("at"),
             "departure_soc": (car_info.get("departure") or {}).get("soc"),
             "departure_ok": car_info.get("departure_ok"),
+            "soc_estimated": soc_est["soc"] if soc_est["estimated"] else None,
+            "soc_kia": soc_est["kia_soc"], "soc_kia_at": soc_est["kia_at"],
             "preview_kwh": ((snap or {}).get("car_preview") or {}).get("planned_kwh"),
             "preview_window": (lambda w: f"{w[0]['start'][11:16]}–{w[0]['end'][11:16]}" if w else None)(
                 ((snap or {}).get("car_preview") or {}).get("windows")),

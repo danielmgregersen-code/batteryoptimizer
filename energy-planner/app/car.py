@@ -383,3 +383,52 @@ def decide(live: dict, plan_row, opts, ahead=None) -> dict:
     # sun): the emergency stop on the charger is only for charging from the grid.
     out["source"] = "solar" if source == "solar" or live.get("pv_w", 0.0) >= 1000 else source
     return out
+
+
+# ---- SoC between the car's (15-minute) cloud updates ---------------------------------------
+GAP_S = 60   # power samples further apart than this are a gap, not energy
+
+
+def add_energy(log, t, power_w, last):
+    """Append to the charging log [(t, cumulative kWh)]; `last` = (t, W) of the previous sample.
+    -> the new `last`."""
+    cum = log[-1][1] if log else 0.0
+    if last is not None and power_w is not None:
+        dt = (t - last[0]).total_seconds()
+        if 0 < dt < GAP_S:
+            cum += (max(0.0, last[1]) + max(0.0, power_w)) / 2.0 * dt / 3_600_000.0
+    if power_w is not None:
+        log.append((t, cum))
+    return (t, power_w) if power_w is not None else None
+
+
+def _cum_at(log, t):
+    if t <= log[0][0]:
+        return log[0][1]
+    if t >= log[-1][0]:
+        return log[-1][1]
+    lo, hi = 0, len(log) - 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if log[mid][0] <= t:
+            lo = mid
+        else:
+            hi = mid
+    (t0, c0), (t1, c1) = log[lo], log[hi]
+    span = (t1 - t0).total_seconds()
+    return c0 + (c1 - c0) * ((t - t0).total_seconds() / span if span else 0.0)
+
+
+def estimate_soc(soc, anchor_t, log, now, eta: float, cap_kwh: float) -> dict:
+    """The car's SoC now from its last reported SoC (at anchor_t) plus what the charger delivered
+    since. -> {"soc", "kia_soc", "kia_at", "kwh_since", "estimated", "uncertain"}."""
+    out = {"soc": soc, "kia_soc": soc, "kia_at": anchor_t.isoformat() if anchor_t else None,
+           "kwh_since": 0.0, "estimated": False, "uncertain": False}
+    if soc is None or anchor_t is None or not log or anchor_t >= log[-1][0]:
+        return out
+    kwh = max(0.0, _cum_at(log, now) - _cum_at(log, anchor_t))
+    out["uncertain"] = anchor_t < log[0][0]
+    if kwh > 0.01:
+        out.update(soc=round(min(100.0, soc + kwh * eta / cap_kwh * 100.0), 1), kwh_since=round(kwh, 2),
+                   estimated=True)
+    return out
