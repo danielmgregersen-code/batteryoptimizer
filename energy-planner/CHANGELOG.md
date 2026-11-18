@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.19.0
+
+- **Car SoC between the Kia updates:** the last reported SoC plus what the THOR delivered since
+  (charger power sampled every 5 s, × `car_eta`). The controller and the plan use it, so the car
+  stops at its limit or target instead of up to 2–3 % past it. No extra wake-ups of the car.
+  The Bil tab shows "beregnet: Kia 63,5 % kl. 11:24 + 1,8 kWh".
+
 ## 0.18.0
 
 - **Found: why the THOR ended the session 3 minutes after a pause.** The diagnosis traces show that

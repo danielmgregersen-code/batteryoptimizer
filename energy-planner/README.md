@@ -23,6 +23,12 @@ Create two helpers (Settings → Devices & services → Helpers → Toggle):
   `kia_uvo.stop_charge` makes the IONIQ end the charging session: the THOR registers an unplug 3
   minutes later and cannot start again without re-plugging. The switch only pauses (the THOR stays
   in `suspended_ev`). Leave the option empty to use `kia_uvo.stop_charge` again.
+- **SoC between the car's updates:** the Kia integration only reports every 15 minutes. Between
+  reports the car's SoC is the last reported one (time from `car_soc_time_entity`,
+  `sensor.ioniq_9_last_updated_at`) plus the energy the charger delivered since
+  (`charger_power_entity`, sampled every 5 s) × `car_eta`. So the controller stops at the limit or
+  target instead of up to ~3 % past it. A full charge (≥ 99 %) still only counts from the car's own
+  report. Shown in the Bil tab; `soc_estimated`, `soc_kia`, `soc_kia_at` on the car sensor.
 - **Short gaps are not paused** (`car_pause_gap_hours` 2, `car_pause_min_saving_dkk` 0.20): when the
   plan wants a one-hour pause while charging from the grid, the next planned charge is within the gap
   and waiting saves less than 0.20 kr/kWh, the car keeps charging at `car_min_amps` instead (a pause

@@ -1114,3 +1114,25 @@ def test_pause_goes_through_the_car_charging_switch_not_stop_charge(tmp_path):
     assert ex["service"] == "kia_uvo.stop_charge" and ex["via"] == sw and ex["status"] == "ok"
     from writer import allowed_entities
     assert sw in allowed_entities(p.options_fn())
+
+
+def test_car_cycle_uses_the_estimated_soc_between_kia_updates(tmp_path):
+    ha = car_ha()
+    ha.texts[DEFAULTS["charger_status_entity"]] = "charging"
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 88.0
+    ha.texts[DEFAULTS["car_soc_time_entity"]] = "2026-11-14T19:00:00+00:00"
+    ha.numbers[DEFAULTS["charger_power_entity"]] = 11000.0
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    t = datetime(2026, 11, 14, 18, 59, tzinfo=UTC)
+    while t <= datetime(2026, 11, 14, 19, 14, tzinfo=UTC):                 # 15 min at 11 kW after the report
+        p.trace_tick(t)
+        t += timedelta(seconds=5)
+    now = datetime(2026, 11, 14, 19, 14, tzinfo=UTC)
+    snap = p.run_once(now)
+    est = snap["car"]["soc_estimate"]
+    assert est["estimated"] and est["soc"] == pytest.approx(88 + 2.57 * 0.92 / 110 * 100, abs=0.3)
+    d = p.car_cycle(now)
+    assert d["live"]["car_soc"] > 90 and d["live"]["car_soc_kia"] == 88.0
+    assert d["action"] == "pause" and "max SoC" in d["reason"]           # stops at 90 % before Kia reports it
+    attrs = ha.published["sensor.energy_planner_car"][1]
+    assert attrs["soc_kia"] == 88.0 and attrs["soc_estimated"] > 90
