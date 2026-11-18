@@ -1052,7 +1052,7 @@ class Planner:
             return executed, None                      # the car paused while the call was running
         ignored = self._stop_ok_at is not None and now - self._stop_ok_at >= KIA_STOP_IGNORED
         blocked = self._kia_block_until is not None and now < self._kia_block_until
-        no_device = not opts.get("car_device_id")
+        no_device = not opts.get("car_device_id") and not opts.get("car_charge_switch_entity")
         failing = blocked or self._kia_fails > 0 or ignored or no_device
         if not failing:
             return executed, None
@@ -1130,7 +1130,13 @@ class Planner:
                     self.ha.call_service("button", "press", {"entity_id": c["entity_id"]})
                 elif svc.startswith("kia_uvo."):
                     device = opts.get("car_device_id")
-                    if not device:
+                    # The pause goes through the car's charging switch: kia_uvo.stop_charge makes the
+                    # IONIQ end the session (the THOR registers an unplug 3 min later and cannot
+                    # restart), the switch only pauses it.
+                    switch = opts.get("car_charge_switch_entity") if svc == "kia_uvo.stop_charge" else None
+                    if switch:
+                        res["via"] = switch
+                    if not device and not switch:
                         res.update(status="skipped", error="car_device_id is not set")
                         done.append(res)
                         continue
@@ -1149,7 +1155,10 @@ class Planner:
                         continue
                     call = getattr(self.ha, "call_service_ws", None) or self.ha.call_service
                     try:
-                        call("kia_uvo", svc.split(".", 1)[1], {"device_id": device})
+                        if switch:
+                            call("switch", "turn_off", {"entity_id": switch})
+                        else:
+                            call("kia_uvo", svc.split(".", 1)[1], {"device_id": device})
                     except Exception as e:
                         # The car may have followed even though the call failed or timed out: ask the
                         # charger before counting it as a failure.

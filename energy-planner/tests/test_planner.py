@@ -462,7 +462,7 @@ def kia_failing_ha(soc, message=PIN_ERROR, pv_w=0.0):
 
 
 def planner_for(ha, tmp_path, **opt):
-    opts = {**DEFAULTS, "car_device_id": "abc123", **opt}
+    opts = {**DEFAULTS, "car_device_id": "abc123", "car_charge_switch_entity": "", **opt}
     return Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"),
                    options_fn=lambda: opts)
 
@@ -1092,3 +1092,25 @@ def test_trace_starts_when_charging_stops_and_by_hand(tmp_path):
     p2 = Planner(ha, tz=TZ, log_path=str(tmp_path / "e" / "d.jsonl"), car_log_path=str(tmp_path / "f.jsonl"))
     p2.trace_tick(datetime(2026, 11, 18, 12, 0, tzinfo=UTC), manual=True)
     assert p2.trace.active() and p2.trace.list()[0]["trigger"] == "manuel start fra panelet"
+
+
+
+def test_pause_goes_through_the_car_charging_switch_not_stop_charge(tmp_path):
+    """kia_uvo.stop_charge makes the IONIQ end the session (the THOR then registers an unplug after
+    3 min); switch.ioniq_9_ev_charging only pauses it, and kia_uvo.start_charge resumes."""
+    ha = kia_failing_ha(soc=45.0, message=None)
+    sw = DEFAULTS["car_charge_switch_entity"]
+    p = planner_for(ha, tmp_path, car_charge_switch_entity=sw)
+    p.run_once(NIGHT)
+    calls = []
+
+    def ws(domain, service, data=None):
+        calls.append((domain, service, data))
+    ha.call_service_ws = ws
+    d = p.car_cycle(NIGHT)
+    assert d["action"] == "pause"
+    assert calls == [("switch", "turn_off", {"entity_id": sw})]
+    ex = d["executed"][0]
+    assert ex["service"] == "kia_uvo.stop_charge" and ex["via"] == sw and ex["status"] == "ok"
+    from writer import allowed_entities
+    assert sw in allowed_entities(p.options_fn())
