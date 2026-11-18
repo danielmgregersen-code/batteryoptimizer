@@ -59,6 +59,21 @@ def _battery_fast_loop():
         _stop.wait(60)
 
 
+def _trace_loop():
+    """Charger status every 5 s; a diagnosis trace runs for 10 min after charging stops."""
+    _stop.wait(25)
+    while not _stop.is_set():
+        try:
+            planner.trace_tick(manual=_trace_request.is_set())
+            _trace_request.clear()
+        except Exception as e:  # never let the loop die
+            log.exception("car trace failed: %s", e)
+        _stop.wait(5)
+
+
+_trace_request = threading.Event()
+
+
 def _car_loop():
     _stop.wait(20)   # let the first plan land
     while not _stop.is_set():
@@ -77,6 +92,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_loop, daemon=True, name="planner-loop").start()
     threading.Thread(target=_battery_fast_loop, daemon=True, name="battery-fast-loop").start()
     threading.Thread(target=_car_loop, daemon=True, name="car-loop").start()
+    threading.Thread(target=_trace_loop, daemon=True, name="car-trace").start()
     yield
     _stop.set()
 
@@ -201,6 +217,18 @@ async def _replan():
         return {"car": snap.get("car"), "upcoming": snap.get("upcoming")}
     except PlannerError as e:
         return {"error": str(e)}
+
+
+@app.get("/api/car/traces")
+def get_car_traces():
+    """Diagnosis traces: what changed on the charger and the car after charging stopped."""
+    return planner.trace.list()
+
+
+@app.post("/api/car/trace")
+def start_car_trace():
+    _trace_request.set()
+    return {"requested": True}
 
 
 @app.post("/api/car/extra")

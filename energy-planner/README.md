@@ -18,6 +18,14 @@ Create two helpers (Settings → Devices & services → Helpers → Toggle):
 | `input_boolean.energy_planner_produktion` | Every planning cycle (5 min and at each hour) the add-on writes the house-battery registers: battery first (the all-day slot, Enabled/Disabled), charge from grid, max SoC, load-first min SoC and charge rate, and with `export_control` the export limit (0 % when the current hour's sell price is below `export_min_price`, 0.00 kr; otherwise 100 %). While the plan charges the car on sun in the hour (car connected and below its limit), export stays open down to `export_car_min_price` (−0.10 kr), so the car controller sees the real surplus instead of panels throttled to the house load. Remove the export limit from Node-RED when switching over. Only values that differ are written; there is no rate limit. Time slots are never written. |
 | `input_boolean.energy_planner_bil_produktion` | Every car cycle (2 min) the add-on carries out the car controller's calls: charger current, the start button and `kia_uvo.start_charge` / `stop_charge` (needs `car_device_id`). The same Kia call is not repeated within 10 minutes while the charger status is unchanged (Kia's cloud quota). |
 
+- **Short gaps are not paused** (`car_pause_gap_hours` 2, `car_pause_min_saving_dkk` 0.20): when the
+  plan wants a one-hour pause while charging from the grid, the next planned charge is within the gap
+  and waiting saves less than 0.20 kr/kWh, the car keeps charging at `car_min_amps` instead (a pause
+  through Kia has been followed by the charger ending the session 3 minutes later). 0 = off.
+- **Diagnosis** (Bil tab): when the charger leaves "charging" (or by hand: "Start diagnose nu"), every
+  5 s for 10 minutes the add-on records what changes on the charger's and the car's entities (by
+  object-id prefix, plus `car_trace_prefixes`) in `/data/car_traces/` (latest 10), with what
+  triggered the stop. `GET api/car/traces`.
 - **Turn off the THOR's own automatic charging schedule** (ShinePhone; in HA
   `time.…_automatic_charging_start` / `_stop`, option `charger_schedule_entities`). At the schedule's
   start or stop time the charger ends the running session ("Unknown Stop" on its display), and a

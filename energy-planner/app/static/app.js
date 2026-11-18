@@ -1272,6 +1272,33 @@
     await loadPlan();
   }
 
+  // Diagnosis: what changed on the charger and the car after charging stopped.
+  function traceCard() {
+    const traces = state.traces || [];
+    const mmss = (sec) => `+${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+    const short = (e) => e.replace(/^[a-z_]+\./, '').replace(/^garage_growatt_thor_ev_charger_/, 'THOR ').replace(/^ioniq_9_/, 'IONIQ ');
+    const val = (v) => (v == null ? '–' : typeof v === 'object' ? JSON.stringify(v) : String(v));
+    const items = traces.map((t, i) => h('details', { class: 'trace', open: i === 0 && !t.ended ? true : null },
+      h('summary', {}, `${dayName(t.started.slice(0, 10), { weekday: 'short' })} ${t.started.slice(11, 19)} · ${t.status_before || '?'} → ${t.status_after || '?'} · ${t.trigger}`
+        + (t.ended ? ` · ${t.changes.length} ændringer` : ' · optager …')),
+      t.changes.length
+        ? h('div', { class: 'table-wrap' }, h('table', {},
+          h('thead', {}, h('tr', {}, ['Tid', 'Entitet', 'Hvad', 'Fra', 'Til'].map((x) => h('th', {}, x)))),
+          h('tbody', {}, t.changes.map((c) => h('tr', {}, h('td', {}, mmss(c.s)), h('td', { style: { textAlign: 'left' } }, short(c.entity)),
+            h('td', {}, c.what === 'state' ? 'tilstand' : c.what), h('td', {}, val(c.from)), h('td', {}, val(c.to)))))))
+        : h('div', { class: 'hint' }, 'Ingen ændringer endnu.'),
+      h('details', {}, h('summary', { class: 'hint' }, `Startbillede (${Object.keys(t.initial || {}).length} entiteter)`),
+        h('div', { class: 'table-wrap' }, h('table', {}, h('tbody', {}, Object.entries(t.initial || {}).map(([e, v]) => h('tr', {},
+          h('td', { style: { textAlign: 'left' } }, short(e)), h('td', {}, val(v.state))))))))));
+    const btn = h('button', { type: 'button', class: 'btn', onclick: async () => {
+      try { await getJSON('api/car/trace', { method: 'POST' }); toast('Diagnose startet (10 min)'); setTimeout(loadCar, 6000); } catch (e) { toast('Diagnose: ' + e.message); }
+    } }, 'Start diagnose nu');
+    return h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', {}, 'Diagnose: hvad skete der efter pausen'), btn),
+      h('div', { class: 'hint', style: { marginBottom: '10px' } }, 'Starter af sig selv, når laderen går fra "lader" til noget andet, og optager laderens og bilens entiteter hvert 5. sekund i 10 min (kun ændringer).'),
+      items.length ? items : h('div', { class: 'empty' }, 'Ingen optagelser endnu.'));
+  }
+
   function extraCard(ci, carSoc) {
     const x = (ci && ci.extra) || {};
     const connected = !!(ci && ci.connected);
@@ -1388,7 +1415,7 @@
         : h('div', { class: 'empty' }, 'Ingen hændelser endnu.'));
 
     const carWarn = c && c.warning ? h('div', { class: 'banner error' }, icon.error(), h('div', {}, c.warning)) : null;
-    root.replaceChildren(h('div', { class: 'stack' }, carWarn, tiles, extraCard(carInfo, live.car_soc), h('div', { class: 'grid-2' }, chartCard, callsCard), logCard));
+    root.replaceChildren(h('div', { class: 'stack' }, carWarn, tiles, extraCard(carInfo, live.car_soc), h('div', { class: 'grid-2' }, chartCard, callsCard), traceCard(), logCard));
 
     if (showChart) {
       let crow, startSoc, maxSoc;
@@ -1651,6 +1678,7 @@
   }
   async function loadCar() {
     try { state.car = await getJSON('api/car'); } catch (e) { /* keep the last */ }
+    try { state.traces = await getJSON('api/car/traces'); } catch (e) { /* keep the last */ }
     if (state.tab === 'bil') renderCar();
   }
   async function loadEval(dim) {

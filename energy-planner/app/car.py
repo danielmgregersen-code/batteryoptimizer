@@ -253,9 +253,38 @@ def fuse_room_amps(live: dict, opts):
     return room, imax
 
 
-def decide(live: dict, plan_row, opts) -> dict:
+def short_gap(plan_row, ahead, opts):
+    """While the car charges from the grid and the plan wants a pause for this hour only: is the next
+    planned charge close (car_pause_gap_hours) and the saving of waiting small (below
+    car_pause_min_saving_dkk per kWh)? Then a pause is not worth it (and risks the charger ending the
+    session). -> saving in DKK/kWh, or None when the pause is worth it."""
+    gap_h = float(opts.get("car_pause_gap_hours", 0) or 0)
+    if gap_h <= 0 or not plan_row or not ahead:
+        return None
+    from datetime import datetime, timedelta
+    start = datetime.fromisoformat(plan_row["t"])
+    planned = [r for r in ahead if (r.get("car_grid") or 0) + (r.get("car_pv") or 0) > 0.1]
+    if not planned:
+        return None
+    first = datetime.fromisoformat(planned[0]["t"])
+    if first - (start + timedelta(hours=1)) > timedelta(hours=gap_h) - timedelta(minutes=1):
+        return None
+    # the planned hours of the run that follows the gap
+    run = [planned[0]]
+    for r in planned[1:]:
+        if datetime.fromisoformat(r["t"]) - datetime.fromisoformat(run[-1]["t"]) <= timedelta(hours=1):
+            run.append(r)
+        else:
+            break
+    later = sum(r["buy"] for r in run) / len(run)
+    saving = float(plan_row["buy"]) - later
+    return saving if saving < float(opts.get("car_pause_min_saving_dkk", 0.20)) else None
+
+
+def decide(live: dict, plan_row, opts, ahead=None) -> dict:
     """One control step. live: status, car_soc, pv_w, load_w, charger_w, house_soc,
-    bat_charge_w, amps, secs_since_status, sell. Returns the decision and the calls it implies."""
+    bat_charge_w, amps, secs_since_status, sell. ahead: the plan's rows after the current hour.
+    Returns the decision and the calls it implies."""
     status = live.get("status")
     out = {"action": "none", "target_amps": None, "reason": "", "calls": []}
     if status not in CONNECTED:
@@ -311,6 +340,10 @@ def decide(live: dict, plan_row, opts) -> dict:
         want, amps, reason, source = True, amax, "no plan, below minimum SoC", "fallback"
     else:
         reason = "plan: no car charging this hour" if plan_row else "no plan"
+        gap = short_gap(plan_row, ahead, opts) if charging and live.get("pv_w", 0.0) < 1000 else None
+        if gap is not None:
+            want, amps = True, amin
+            reason = f"short gap, saves only {gap:.2f} DKK/kWh: keep charging at {amin} A"
 
     secs = live.get("secs_since_status", 9999)
     room, imax = fuse_room_amps(live, opts) if opts.get("main_fuse_amps") else (None, None)

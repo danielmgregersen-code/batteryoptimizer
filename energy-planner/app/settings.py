@@ -113,7 +113,10 @@ DEFAULTS = {
     # --- production: HA helpers that let the add-on write (off or missing = manual control, nothing written) ---
     "production_switch_entity": "input_boolean.energy_planner_produktion",
     "car_production_switch_entity": "input_boolean.energy_planner_bil_produktion",
-    "car_device_id": "",               # the IONIQ 9's device id for kia_uvo.start_charge / stop_charge
+    "car_device_id": "",
+    "car_pause_gap_hours": 2,
+    "car_pause_min_saving_dkk": 0.20,
+    "car_trace_prefixes": "",               # the IONIQ 9's device id for kia_uvo.start_charge / stop_charge
     # Emergency stop on the charger when the car cannot be paused through Kia, only while charging
     # from the grid (not on sun) and when nothing more is planned before the deadline. The THOR cannot
     # be restarted from here afterwards (the cable has to be re-plugged), but the car is not overcharged.

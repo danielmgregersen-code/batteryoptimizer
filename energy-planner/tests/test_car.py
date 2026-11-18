@@ -318,3 +318,41 @@ def test_fuse_guard_lowers_the_car_amps_and_never_below_6():
 def test_fuse_reason_in_danish():
     from summary import reason_da
     assert "hovedsikringen, højeste fase 27 A" in reason_da("plan: 11.0 kW this hour (fuse limit, highest phase 27 A)")
+
+
+# ---- short gaps (0.17.0) ---------------------------------------------------------
+def prow(t, buy, kwh=0.0):
+    return {"t": t, "buy": buy, "sell": 0.5, "car_grid": kwh, "car_pv": 0.0, "car_bat": 0.0, "dt": 1.0}
+
+
+NOW_ROW = prow("2026-11-18T02:00:00+01:00", 1.30)
+
+
+def ahead(*rows):
+    return list(rows)
+
+
+def test_short_gap_with_a_small_saving_keeps_charging_at_6_a():
+    lv = live(status="charging", car_soc=35, amps=16)
+    nxt = ahead(prow("2026-11-18T03:00:00+01:00", 1.20, 11.0), prow("2026-11-18T04:00:00+01:00", 1.22, 5.0))
+    d = carmod.decide(lv, NOW_ROW, OPTS, ahead=nxt)
+    assert d["action"] == "charge" and d["target_amps"] == 6 and "short gap" in d["reason"]
+    assert "kia_uvo.stop_charge" not in services(d)
+
+
+def test_a_worthwhile_or_long_gap_still_pauses():
+    lv = live(status="charging", car_soc=35, amps=16)
+    dear_now = ahead(prow("2026-11-18T03:00:00+01:00", 1.05, 11.0))            # saves 0.25 kr/kWh
+    assert carmod.decide(lv, NOW_ROW, OPTS, ahead=dear_now)["action"] == "pause"
+    far = ahead(prow("2026-11-18T03:00:00+01:00", 1.25), prow("2026-11-18T04:00:00+01:00", 1.25),
+                prow("2026-11-18T05:00:00+01:00", 1.25, 11.0))                 # 3 h away
+    assert carmod.decide(lv, NOW_ROW, OPTS, ahead=far)["action"] == "pause"
+    near = ahead(prow("2026-11-18T03:00:00+01:00", 1.25, 11.0))
+    assert carmod.decide(lv, NOW_ROW, {**OPTS, "car_pause_gap_hours": 0}, ahead=near)["action"] == "pause"
+    assert carmod.decide(live(status="charging", car_soc=35, amps=16, pv_w=3000), NOW_ROW, OPTS, ahead=near)["action"] != "charge" \
+        or "short gap" not in carmod.decide(live(status="charging", car_soc=35, amps=16, pv_w=3000), NOW_ROW, OPTS, ahead=near)["reason"]
+
+
+def test_short_gap_reason_in_danish():
+    from summary import reason_da
+    assert reason_da("short gap, saves only 0.12 DKK/kWh: keep charging at 6 A") == "Kort hul, sparer kun 0,12 kr/kWh: fortsætter på 6 A"
