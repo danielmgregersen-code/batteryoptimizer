@@ -65,6 +65,16 @@ class HomeAssistant:
             log.warning("state(%s) failed: %s", entity_id, e)
             return None
 
+    def all_states(self) -> list:
+        """Every entity's state object (GET /api/states); [] if the call fails."""
+        try:
+            r = requests.get(f"{self.base_url}/states", headers=self._headers, timeout=20)
+            r.raise_for_status()
+            return r.json()
+        except requests.RequestException as e:
+            log.warning("all_states failed: %s", e)
+            return []
+
     def attributes(self, entity_id: str):
         s = self.state(entity_id)
         return (s or {}).get("attributes")

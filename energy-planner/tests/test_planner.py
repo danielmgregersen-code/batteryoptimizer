@@ -1072,3 +1072,23 @@ def test_heat_pump_level_forecast_replaces_its_profile_in_the_load(tmp_path):
 
 def hour_floor_utc(t):
     return t.replace(minute=0, second=0, microsecond=0)
+
+
+def test_trace_starts_when_charging_stops_and_by_hand(tmp_path):
+    ha = car_ha()
+    status = DEFAULTS["charger_status_entity"]
+    ha.all_states = lambda: [{"entity_id": status, "state": ha.texts[status], "attributes": {}}]
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    ha.texts[status] = "charging"
+    p.trace_tick(datetime(2026, 11, 18, 1, 55, tzinfo=UTC))
+    assert not p.trace.active()
+    ha.texts[status] = "suspended_ev"
+    p.trace_tick(datetime(2026, 11, 18, 1, 55, 41, tzinfo=UTC))
+    assert p.trace.active() and p.trace.list()[0]["trigger"].startswith("ukendt")
+    ha.texts[status] = "finishing"
+    p.trace_tick(datetime(2026, 11, 18, 1, 58, 41, tzinfo=UTC))
+    ch = p.trace.list()[0]["changes"]
+    assert ch[-1]["s"] == 180 and ch[-1]["to"] == "finishing"
+    p2 = Planner(ha, tz=TZ, log_path=str(tmp_path / "e" / "d.jsonl"), car_log_path=str(tmp_path / "f.jsonl"))
+    p2.trace_tick(datetime(2026, 11, 18, 12, 0, tzinfo=UTC), manual=True)
+    assert p2.trace.active() and p2.trace.list()[0]["trigger"] == "manuel start fra panelet"

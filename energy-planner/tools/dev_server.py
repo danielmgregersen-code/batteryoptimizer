@@ -162,6 +162,9 @@ class FakeHA:
             return {"changed_states": [], "service_response": {"data": out}}
         return {}
 
+    def all_states(self):
+        return [{"entity_id": e, "state": v, "attributes": self.attrs.get(e, {})} for e, v in self.states.items()]
+
     def set_state(self, e, state, attributes=None):
         self.published[e] = (state, attributes)
 

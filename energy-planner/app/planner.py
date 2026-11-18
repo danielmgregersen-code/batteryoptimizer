@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import batterycurve
 import car as carmod
+import cartrace
 import heatpump
 from inputs import UTC, build_horizon, hour_floor, parse_prices, parse_solcast, parse_ts, persistence_forecast
 from optimizer import BatteryParams, solve, terminal_value_for
@@ -119,6 +120,8 @@ class Planner:
         self.hp_levels_path = os.path.join(os.path.dirname(log_path) or ".", "heat_pump_levels.json")
         self._hp_levels = pvd.load_json(self.hp_levels_path, {})   # the level the heat pump ran with, per hour
         self._hp_power = {}               # its meter's hourly mean power (W)
+        self.trace = cartrace.CarTrace(os.path.dirname(log_path) or ".")   # diagnosis after charging stops
+        self._trace_status_prev = None
         self._car_status_prev = None      # charger status at the previous car cycle
         self._session_ended_at = None     # the charger ended the session on its own (not through HA)
         self._car_prod_prev = False
@@ -291,6 +294,26 @@ class Planner:
         if self._fuse_rate_cap is not None and self._fuse_rate_cap < rate:
             return {**live, "charge_rate_pct": self._fuse_rate_cap, "fuse_capped": True}
         return live
+
+    def trace_tick(self, now: datetime = None, manual: bool = False):
+        """Every few seconds: start a diagnosis trace when the charger leaves "charging" (or by hand),
+        and sample it while it runs."""
+        opts = self.options_fn()
+        if not opts.get("car_enabled") or not opts.get("charger_status_entity"):
+            return
+        now = (now or datetime.now(UTC)).astimezone(self.tz)
+        status = self.ha.text(opts["charger_status_entity"])
+        prev, self._trace_status_prev = self._trace_status_prev, status
+        if manual or (prev == "charging" and status not in (None, "charging")):
+            last = (self.car_latest or {}).get("executed") or []
+            kia = next((x for x in last if x.get("service") == "kia_uvo.stop_charge"), None)
+            trigger = ("manuel start fra panelet" if manual else
+                       f"add-on'en: kia stop_charge ({kia.get('status')})" if kia else "ukendt (bil, app eller lader?)")
+            if self.trace.start(now, trigger, prev, status):
+                log.info("car trace started: %s (%s -> %s)", trigger, prev, status)
+        if self.trace.active():
+            states = self.ha.all_states() if hasattr(self.ha, "all_states") else []
+            self.trace.sample(states, cartrace.prefixes(opts), now)
 
     def _heat_pump_forecast(self, opts, profile, buy, sell, pv, h_now, now):
         """{utc hour: kWh to add to the base load} for the next 24 hours: what the heat pump uses at the
@@ -929,7 +952,11 @@ class Planner:
         if live.get("car_soc") is not None and live["car_soc"] >= 99:
             self._car_full_seen = now.isoformat(timespec="seconds")
             pvd.save_json(self.car_full_path, {"at": self._car_full_seen})
-        d = carmod.decide(live, row, opts)
+        ahead = []
+        if row:
+            row_t = datetime.fromisoformat(row["t"])
+            ahead = [r for r in (snap or {}).get("plan", []) if "car_grid" in r and datetime.fromisoformat(r["t"]) > row_t]
+        d = carmod.decide(live, row, opts, ahead=ahead)
         car_production = writer.switch_on(self.ha, opts.get("car_production_switch_entity"))
         d.update({"updated": now.astimezone(self.tz).isoformat(timespec="seconds"), "production": car_production,
                   "live": live, "plan_row": row, "executed": [], "warning": None})

@@ -302,3 +302,8 @@ td small { color: var(--muted); margin-left: 4px; }
 .hp-cell span { position: absolute; top: 31px; left: 0; font-size: 10px; color: var(--muted); }
 
 .tt-note { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--ring); font-size: 12px; max-width: 240px; }
+
+/* Car diagnosis */
+details.trace { border-top: 1px solid var(--ring); padding: 8px 0; }
+details.trace > summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+details.trace table { margin-top: 8px; }

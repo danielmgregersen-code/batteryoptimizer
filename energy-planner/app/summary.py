@@ -148,6 +148,8 @@ _REASONS = [
     (r"^critical SoC$", lambda m: "Kritisk lav SoC – lader fuldt"),
     (r"^plan: ([\d.]+) kW this hour$", lambda m: f"Planen: {num(float(m[1]))} kW denne time"),
     (r"^solar surplus (-?\d+) W$", lambda m: f"Soloverskud {num(float(m[1]) / 1000)} kW"),
+    (r"^short gap, saves only (-?[\d.]+) DKK/kWh: keep charging at (\d+) A$",
+     lambda m: f"Kort hul, sparer kun {num(float(m[1]), 2)} kr/kWh: fortsætter på {m[2]} A"),
     (r"^no plan, below minimum SoC$", lambda m: "Ingen plan – under minimum, lader fuldt"),
     (r"^plan: no car charging this hour$", lambda m: "Planen lader ikke bilen denne time"),
     (r"^no plan$", lambda m: "Ingen plan"),

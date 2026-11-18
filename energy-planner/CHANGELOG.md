@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.17.0
+
+- **No pause for a short gap that saves little:** when the plan wants to pause the car between two
+  planned charging hours, the next one is within `car_pause_gap_hours` (2) and waiting saves less
+  than `car_pause_min_saving_dkk` (0.20 kr/kWh), the car keeps charging at 6 A instead. Twice now
+  the THOR ended the session 3 minutes after a pause through Kia.
+- **Diagnosis traces** (Bil tab, "Diagnose: hvad skete der efter pausen"): after the charger leaves
+  "charging", or started by hand, all charger and car entities are sampled every 5 s for 10 min and
+  every change is listed with its time, plus what triggered the stop.
+
 ## 0.16.0
 
 - **Heat pump use forecast by level:** the level the garage heat pump runs with is logged every hour
