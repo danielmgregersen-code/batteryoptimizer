@@ -293,6 +293,25 @@ and the register controls. It is one view: paste it in *Edit view → ⋮ → Ed
 configuration editor, which expects a whole dashboard). `dashboards/solceller-dashboard.yaml` is the
 same as a complete dashboard for the raw configuration editor of a new dashboard. Solcast `detailedHourly` values are average kW over the hour, i.e. kWh per hour.
 
+## Front page
+
+Two ready-made card stacks for the Home Assistant front page: `dashboards/forside-tile.yaml` (HA's
+own tile cards) and `dashboards/forside-mushroom.yaml` (Mushroom from HACS). Paste one via Edit
+dashboard → Add card → Manual. They show:
+
+- **Sæt bilen til?** `sensor.energy_planner_car_advice`: `plug_in` (would charge if plugged in now,
+  with when, how much and the cost), `not_needed`, or while connected `charging` / `waiting` /
+  `full`; attributes `title`, `text`, `icon`, `color`.
+- **Elpris nu** `sensor.energy_planner_price`: the hour's buy price, `level_da`
+  (billig/normal/dyr, the cheapest/dearest third of the next 24 h) and `cheapest_text` (the cheapest
+  3 consecutive hours, e.g. "billigst i nat kl. 02–05 · 1,12 kr") for washing and drying.
+- **Husbatteri** `sensor.energy_planner_mode`: `title` ("Lader fra nettet · 41 %") and
+  `next_action`.
+- **I dag** `sensor.energy_planner_cost_today`: `text` ("23 kr indtil nu · sol 9,2 af 18,4 kWh").
+- **Advarsler** `sensor.energy_planner_warnings` (number of messages, `messages`): shown only when
+  something needs attention (car/Kia problems, manual control, planning errors, missing entities,
+  the THOR's own schedule).
+
 ## Outputs
 
 Non-persistent sensors, rewritten every cycle:

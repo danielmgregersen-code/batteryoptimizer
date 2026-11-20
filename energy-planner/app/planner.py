@@ -17,7 +17,8 @@ import pvdampening as pvd
 from settings import REGISTER_KEYS, counter_ids, load_options, local_tz, split_csv
 from setpoints import adjust_for_soc, derive_setpoints, step_mode
 from evaluation import evaluate
-from summary import CAR_ACTION_LABEL, reason_da, summary_attributes, upcoming
+from summary import num as num_da
+from summary import car_advice, price_attributes, CAR_ACTION_LABEL, reason_da, summary_attributes, upcoming
 import writer
 
 log = logging.getLogger("energy_planner")
@@ -905,6 +906,7 @@ class Planner:
             self.latest = snapshot
             self.last_error = None
         self._publish(snapshot)
+        self._publish_front(snapshot, now)
         self._publish_pv_dampening(snapshot)
         self._log_decision(snapshot)
         self._publish_cost(opts, now)
@@ -914,9 +916,13 @@ class Planner:
     def _publish(self, snap: dict):
         sp = snap["setpoints"]
         common = {"production": snap["production"]["battery"], "updated": snap["updated"]}
+        summ = snap.get("summary", {})
+        title = f"{summ.get('label', snap['mode'])} · {snap['soc_pct']:.0f} %"
+        text = summ.get("detail", "") + (f" · derefter: {summ['next_action'][0].lower()}{summ['next_action'][1:]}"
+                                         if summ.get("next_action") else "")
         self.ha.set_state("sensor.energy_planner_mode", snap["mode"], {
             **common, "friendly_name": "Energy Planner mode", "icon": "mdi:home-battery", **sp,
-            **snap.get("summary", {}),
+            **summ, "soc_pct": snap["soc_pct"], "title": title, "text": text,
             "savings_vs_solar_only_dkk": snap["savings_vs_solar_only_dkk"],
             "horizon_hours": snap["horizon_hours"], "car": snap.get("car"),
         })
@@ -1034,6 +1040,7 @@ class Planner:
         car_items = [it for it in (snap or {}).get("upcoming", []) if it["kind"] == "car"]
         car_info = (snap or {}).get("car") or {}
         nxt = car_items[0] if car_items else None
+        d["next_window"] = f"{nxt['when']} · {nxt['text']}" if nxt else None
         self.ha.set_state("sensor.energy_planner_car", d["action"], {
             "friendly_name": "Energy Planner car", "icon": "mdi:car-electric", "production": d["production"], "updated": d["updated"],
             "label": CAR_ACTION_LABEL.get(d["action"], d["action"]),
@@ -1059,6 +1066,10 @@ class Planner:
             "preview_text": ((snap or {}).get("car_preview") or {}).get("text"),
             "extra": ({k: car_info["extra"].get(k) for k in ("label", "target_pct", "until", "planned_pct")}
                       if (car_info.get("extra") or {}).get("set") else None)})
+        st, attrs = car_advice(car_info, (snap or {}).get("car_preview"), d, now.astimezone(self.tz))
+        self.ha.set_state("sensor.energy_planner_car_advice", st, {"friendly_name": "Energy Planner bil-råd", **attrs,
+                                                                 "updated": d["updated"]})
+        self._publish_warnings()
         key = (d["action"], d["target_amps"], d["reason"].split(" (")[0], live["status"], live["amps"])
         if key != self._car_last_logged or d["executed"]:   # log changes and every executed call
             self._car_last_logged = key
@@ -1483,7 +1494,71 @@ class Planner:
             "avg_buy_paid": t and t["avg_buy_paid"], "avg_buy_market": t and t["avg_buy_market"],
             "agreement_pct": t and t["agreement_pct"], "hours_covered": t and t["hours"],
             "yesterday_dkk": y and y["cost_dkk"], "yesterday_import_kwh": y and y["import_kwh"],
+            **self._solar_today(now, t["cost_dkk"] if t else 0.0),
             "updated": now.astimezone(self.tz).isoformat(timespec="seconds")})
+
+    def _solar_today(self, now: datetime, cost: float) -> dict:
+        """Solar forecast for today (corrected) and produced so far (statistics, cached 15 min)."""
+        today = now.astimezone(self.tz).date()
+        snap = self.latest or {}
+        fc = [r for r in snap.get("solar_forecast") or [] if r["t"][:10] == today.isoformat()]
+        forecast = round(sum(r["c50"] for r in fc), 1) if fc else None
+        cached = getattr(self, "_solar_today_cache", None)
+        if not cached or cached[0] != today or now - cached[1] > timedelta(minutes=15):
+            try:
+                actual = self.solar_report(today, now)["totals"]["actual"]
+            except Exception:  # statistics unavailable: leave the produced part out
+                actual = None
+            self._solar_today_cache = (today, now, actual)
+        actual = self._solar_today_cache[2]
+        text = f"{num_da(cost, 0)} kr indtil nu"
+        if forecast is not None:
+            text += f" · sol {num_da(actual or 0, 1)} af {num_da(forecast, 1)} kWh" if actual is not None \
+                else f" · sol {num_da(forecast, 1)} kWh forventet"
+        return {"solar_forecast_kwh": forecast, "solar_kwh": actual, "text": text}
+
+    def _publish_front(self, snap: dict, now: datetime):
+        """Front-page sensors: the price now and the cheapest hours, and the warnings."""
+        local = now.astimezone(self.tz)
+        rows = snap["plan"]
+        if rows:
+            attrs = price_attributes(rows, heatpump.price_levels(rows, local), local)
+            self.ha.set_state("sensor.energy_planner_price", rows[0]["buy"], {
+                "friendly_name": "Energy Planner elpris", "unit_of_measurement": "DKK/kWh", **attrs,
+                "updated": snap["updated"]})
+        self._publish_warnings()
+
+    def front_warnings(self) -> list:
+        """Danish messages for the front page: only things that need attention."""
+        opts = self.options_fn()
+        out = []
+        with self._lock:
+            snap, car = self.latest, self.car_latest
+        if self.last_error:
+            out.append(f"Planlægningen fejlede: {self.last_error}")
+        if car and car.get("warning"):
+            out.append(car["warning"])
+        off = [name for key, name in (("production_switch_entity", "husbatteriet"),
+                                      ("car_production_switch_entity", "bilen"),
+                                      ("heat_pump_production_switch_entity", "varmepumpen"))
+               if opts.get(key) and not writer.switch_on(self.ha, opts.get(key))
+               and not (key == "heat_pump_production_switch_entity" and not opts.get("heat_pump_entity"))]
+        if off:
+            out.append("Manuel styring af " + " og ".join(off) + ": add-on'en skriver intet.")
+        bad = [e for e, v in (self.entity_check or {}).items() if v != "ok"]
+        if bad:
+            out.append(f"{len(bad)} entitet{'er' if len(bad) > 1 else ''} mangler eller er utilgængelig: " + ", ".join(bad[:4])
+                       + (" …" if len(bad) > 4 else ""))
+        sched = self._charger_schedule_warning(opts)
+        if sched and not any(sched in m for m in out):
+            out.append(sched)
+        return out
+
+    def _publish_warnings(self):
+        msgs = self.front_warnings()
+        self.ha.set_state("sensor.energy_planner_warnings", len(msgs), {
+            "friendly_name": "Energy Planner advarsler", "icon": "mdi:alert" if msgs else "mdi:check-circle",
+            "messages": msgs, "text": msgs[0] if msgs else "Ingen advarsler"})
 
     def _publish_pv_dampening(self, snap: dict):
         d = snap.get("pv_dampening")

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.20.0
+
+- **Front-page cards:** new sensors `sensor.energy_planner_car_advice` ("Sæt bilen til" with when,
+  how much and the cost, or what the car does while connected), `sensor.energy_planner_price` (price
+  level now and the cheapest 3 hours ahead) and `sensor.energy_planner_warnings` (only what needs
+  attention); `sensor.energy_planner_mode` gets `title` / `text` / `soc_pct`,
+  `sensor.energy_planner_cost_today` gets today's solar forecast and production and a `text`.
+- Ready-made card stacks: `dashboards/forside-tile.yaml` (HA tile cards) and
+  `dashboards/forside-mushroom.yaml` (Mushroom).
+
 ## 0.19.0
 
 - **Car SoC between the Kia updates:** the last reported SoC plus what the THOR delivered since

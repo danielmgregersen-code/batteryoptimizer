@@ -1136,3 +1136,26 @@ def test_car_cycle_uses_the_estimated_soc_between_kia_updates(tmp_path):
     assert d["action"] == "pause" and "max SoC" in d["reason"]           # stops at 90 % before Kia reports it
     attrs = ha.published["sensor.energy_planner_car"][1]
     assert attrs["soc_kia"] == 88.0 and attrs["soc_estimated"] > 90
+
+
+def test_front_page_sensors(tmp_path):
+    ha = _unplugged(30.0)
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    now = datetime(2026, 11, 14, 19, 30, tzinfo=UTC)
+    p.run_once(now)
+    price = ha.published["sensor.energy_planner_price"]
+    assert price[1]["level"] in ("cheap", "normal", "dear") and "billigst" in price[1]["cheapest_text"]
+    mode = ha.published["sensor.energy_planner_mode"][1]
+    assert mode["title"].endswith("73 %") and mode["soc_pct"] == 73.0
+    p.car_cycle(now)
+    adv = ha.published["sensor.energy_planner_car_advice"]
+    assert adv[0] == "plug_in" and adv[1]["title"] == "Sæt bilen til" and "kWh" in adv[1]["text"]
+    w = ha.published["sensor.energy_planner_warnings"]
+    assert w[0] >= 1 and any("Manuel styring" in m for m in w[1]["messages"])      # helpers are off in the test
+    ha.texts.update({DEFAULTS["production_switch_entity"]: "on", DEFAULTS["car_production_switch_entity"]: "on",
+                     DEFAULTS["heat_pump_production_switch_entity"]: "on"})
+    p.entity_check = {}
+    p._publish_warnings()
+    assert ha.published["sensor.energy_planner_warnings"][0] == 0
+    cost = ha.published["sensor.energy_planner_cost_today"][1]
+    assert "kr indtil nu" in cost["text"]
