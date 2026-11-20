@@ -65,8 +65,8 @@ Create two helpers (Settings → Devices & services → Helpers → Toggle):
 - The services the code can call are limited by an allowlist in `homeassistant.py`: `select` /
   `number` / `button` only on the registers above and the charger's current and start button,
   `kia_uvo.start_charge` / `stop_charge`, and Solcast's dampening services.
-- Before switching the battery on, check once on the inverter that `hold` (battery first with
-  max SoC = current SoC) neither charges nor discharges the battery.
+- Check once on the inverter that load first with min SoC at (or just above) the SoC does not
+  discharge and does not charge from the grid.
 
 ## How it decides
 
@@ -339,10 +339,14 @@ The sidebar panel shows the same plan hour by hour, plus the register values cur
 | `grid_charge` | on | on | SoC after the last planned grid hour; once reached, grid charging goes off and max SoC rises to the end of the charging run if the sun continues it (checked every minute) | current |
 | `solar_charge` | on | off | SoC at the end of the charging run (rate capped if part of the sun is sold) | current |
 | `discharge` | off (load first) | off | – | `soc_floor_pct` + what later, dearer hours need before the next charge (the configured floor in the dearest hour) |
-| `hold` | on | off | current SoC | current |
+| `hold` | off (load first) | off | – | the SoC when the hold started (kept while sun charges the battery) |
+| `hold` while the plan sells the sun | on | off | current SoC | current |
 
-`hold` relies on battery first not discharging and stopping at max SoC, with surplus sun going to
-export. **Verify that on the SPH10000TL3 before anything is written.** Every value is chosen so a
+`hold` is load first with the floor at the SoC: the battery does not discharge, and surplus sun is
+stored instead of sold (also sun the forecast did not expect). Only when the plan sells the sun in
+that hour is it battery first with max SoC = SoC, so the sun goes out. Within a clock hour, hold and
+discharge only switch for at least 0.15 kWh through the battery in the rest of the hour, and floor
+changes below 2 percentage points are not written (except when the mode changes). Every value is chosen so a
 planner that stops refreshing leaves the inverter at the planned state, not charging on.
 
 ## Not in this version

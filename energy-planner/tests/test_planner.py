@@ -1186,3 +1186,40 @@ def test_savings_today_from_the_counters_and_the_rest_of_the_plan(tmp_path):
     assert attrs["title"] == "Sparet 20 kr i dag" and attrs["text"].startswith("forventet ")
     assert "sol 6,0 af" in attrs["text"] and attrs["expected_dkk"] == pytest.approx(state + attrs["rest_dkk"])
     assert "sol 6,0 af" in ha.published["sensor.energy_planner_cost_today"][1]["text"]
+
+
+class _P:
+    def __init__(self, bat_out):
+        import numpy as np
+        self.bat_load = np.array([bat_out, 0.0])
+        self.bat_car = np.array([0.0, 0.0])
+
+
+def _sp(mode, mn, via=None):
+    return {"mode": mode, "min_soc_pct": mn, "hold_via": via, "battery_first": False, "grid_charge": False,
+            "max_soc_pct": None, "charge_rate_pct": 100}
+
+
+def test_modes_stay_calm_within_the_hour_and_the_hold_floor_stays_put(tmp_path):
+    p = Planner(make_ha(), tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    t = datetime(2026, 11, 20, 8, 19, tzinfo=UTC)
+    first = p._stabilize(_sp("hold", 29, "load_first"), _P(0.0), t, 29.0)
+    assert first["mode"] == "hold" and first["min_soc_deadband"] == 0         # a new mode writes its floor
+    # 5 min later a discharge of 0.05 kWh: not worth switching within the hour
+    s = p._stabilize(_sp("discharge", 10), _P(0.05), t + timedelta(minutes=5), 29.0)
+    assert s["mode"] == "hold" and "kept" in s["kept_mode"]
+    # the sun charges the battery: the hold keeps the floor it started with
+    s = p._stabilize(_sp("hold", 35, "load_first"), _P(0.0), t + timedelta(minutes=10), 35.0)
+    assert s["min_soc_pct"] == 29 and s["min_soc_deadband"] == 2
+    # a real discharge switches
+    s = p._stabilize(_sp("discharge", 10), _P(0.8), t + timedelta(minutes=15), 35.0)
+    assert s["mode"] == "discharge" and s["min_soc_deadband"] == 0
+    # a new hour always follows the plan
+    s = p._stabilize(_sp("hold", 33, "load_first"), _P(0.05), t + timedelta(minutes=45), 33.0)
+    assert s["mode"] == "hold" and s["min_soc_pct"] == 33
+
+
+def test_plan_rows_have_sun_to_house(tmp_path):
+    snap = Planner(make_ha(), tz=TZ, log_path=str(tmp_path / "d.jsonl")).run_once(datetime(2026, 11, 14, 10, 30, tzinfo=UTC))
+    r = snap["plan"][1]
+    assert "pv_load" in r and r["pv_load"] + r["grid_load"] == pytest.approx(r["load"] - r["bat_load"], abs=0.02)

@@ -67,7 +67,11 @@ def mode_detail(sp: dict) -> str:
         return f"til {sp['max_soc_pct']} %" + (f", ladehastighed {sp['charge_rate_pct']} %" if sp["charge_rate_pct"] < 100 else "")
     if m == "discharge":
         return f"{num(sp['discharge_kw'])} kW, gulv {sp['min_soc_pct']} %"
-    return "solen sælges, batteriet gemmes" if sp.get("export_hint") == "export" else "batteriet gemmes til senere"
+    if sp.get("export_hint") == "export":
+        return "solen sælges, batteriet gemmes"
+    if sp.get("hold_via") == "load_first":
+        return f"batteriet gemmes (gulv {sp['min_soc_pct']} %), overskudssol lagres"
+    return "batteriet gemmes til senere"
 
 
 def upcoming(rows: list, car_connected: bool, today, car_label: str = "Lader bilen") -> list:

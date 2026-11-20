@@ -77,11 +77,17 @@ def apply(ha, opts: dict, sp: dict, now: datetime) -> list:
         else:
             current[key] = _number(ha, entity)[0]
 
+    band = float(sp.get("min_soc_deadband") or 0)
+
     def differs(key):
         if key not in current:
             return False
         if key in ("reg_battery_first", "reg_grid_charge"):
             return _is_on(current[key]) != want[key]
+        if key == "reg_min_soc" and band and current[key] is not None:
+            # small moves of the floor are not worth a write (the planner sets the band to 0 when the
+            # mode changes, so a new mode always gets its floor)
+            return abs(current[key] - want[key]) >= band
         return current[key] is None or abs(current[key] - want[key]) >= 0.5
 
     offs = [k for k in ("reg_grid_charge", "reg_battery_first") if k in want and not want[k]]

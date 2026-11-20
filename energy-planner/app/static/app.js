@@ -610,6 +610,7 @@
     flows.forEach(([c, l, v]) => { if (v > 0.005) kids.push(ttRow(c, l, fmt(v, 2), '')); });
     const note = shareNote(p, r);
     if (note) kids.push(h('div', { class: 'tt-note' }, note));
+    if (r.pv_load > 0.005) kids.push(ttRow(C.sun, 'Sol → hus', fmt(r.pv_load, 2), ''));
     kids.push(ttRow(C.ink2, 'Net → hus', fmt(r.grid_load, 2)), ttRow(C.sun, 'Sol (prognose)', fmt(r.pv, 2) + (r.pv_p90 > r.pv_p10 ? `  (${fmt(r.pv_p10, 1)}–${fmt(r.pv_p90, 1)})` : '')),
       r.pv_factor != null && r.pv_factor < 0.995 ? ttRow(C.ink2, 'Skyggekorrektion', '× ' + fmt(r.pv_factor, 2)) : null, ttRow(C.ink2, 'Husforbrug', fmt(r.load, 2)));
     kids.push(ttSec('Batteri ved timens slut'));
@@ -647,7 +648,9 @@
     else if (sp.handed_over) modeDetail = `nettet har ladet sin del, solen lader videre til ${sp.max_soc_pct} %`;
     else if (sp.mode === 'solar_charge') modeDetail = `til ${sp.max_soc_pct} %` + (sp.charge_rate_pct < 100 ? ` · ladehastighed ${sp.charge_rate_pct} %` : '');
     else if (sp.mode === 'discharge') modeDetail = `${fmt(sp.discharge_kw, 1)} kW · gulv ${sp.min_soc_pct} %`;
-    else modeDetail = sp.export_hint === 'export' ? 'solen sælges, batteriet gemmes' : 'batteriet gemmes til senere';
+    else modeDetail = sp.export_hint === 'export' ? 'solen sælges, batteriet gemmes'
+      : sp.hold_via === 'load_first' ? `batteriet gemmes (load first, gulv ${sp.min_soc_pct} %), overskudssol lagres` : 'batteriet gemmes til senere';
+    if (sp.kept_mode) modeDetail += ' · holder tilstanden inden for timen';
     const share0 = r0 && shareNote(p, r0);
     if (share0) modeDetail += ' · ' + share0.charAt(0).toLowerCase() + share0.slice(1);
     if (sp.export_allowed === false) modeDetail += ` · eksport stoppet (salgspris ${fmt(sp.export_sell_price, 2)} kr)`;
@@ -696,7 +699,7 @@
         h('tbody', {}, registerRows(p)))));
 
     const table = h('table', {},
-      h('thead', {}, h('tr', {}, ['Time', 'Tilstand', 'Køb', 'Salg', 'Sol', 'Forbrug', 'Net→bat', 'Sol→bat', 'Bat→hus', 'Eksport', 'SoC', ...(p.car && p.car.connected ? ['Bil kWh', 'Bil %'] : [])].map((t) => h('th', {}, t)))),
+      h('thead', {}, h('tr', {}, ['Time', 'Tilstand', 'Køb', 'Salg', 'Sol', 'Forbrug', 'Sol→hus', 'Net→hus', 'Net→bat', 'Sol→bat', 'Bat→hus', 'Eksport', 'SoC', ...(p.car && p.car.connected ? ['Bil kWh', 'Bil %'] : [])].map((t) => h('th', {}, t)))),
       h('tbody', {}, rows.map((r, i) => {
         const z = (v, d = 2) => h('td', { class: Math.abs(v || 0) < 0.005 ? 'zero' : '' }, fmt(v, d));
         const mm = MODES[r.mode] || MODES.hold;
@@ -704,7 +707,7 @@
           h('td', {}, (hhmm(r.t) === '00:00' || i === 0 ? dayName(dayKey(r.t), { weekday: 'short' }) + ' ' : '') + hhmm(r.t)),
           h('td', {}, h('span', { class: 'mode-dot', style: { background: mm.color } }), mm.label),
           h('td', { class: r.forecast_price ? 'est' : '' }, fmt(r.buy, 2)), h('td', { class: r.forecast_price ? 'est' : '' }, fmt(r.sell, 2)),
-          z(r.pv), z(r.load), z(r.grid_bat), z(r.pv_bat), z(r.bat_load + (r.car_bat || 0)), z(r.pv_exp), h('td', {}, fmt(r.soc_pct, 0) + ' %'),
+          z(r.pv), z(r.load), z(r.pv_load), z(r.grid_load), z(r.grid_bat), z(r.pv_bat), z(r.bat_load + (r.car_bat || 0)), z(r.pv_exp), h('td', {}, fmt(r.soc_pct, 0) + ' %'),
           ...(p.car && p.car.connected ? [z(carIn(r)), h('td', {}, fmt(r.car_soc, 0) + ' %')] : []));
       })));
     const tableCard = h('div', { class: 'card' },
