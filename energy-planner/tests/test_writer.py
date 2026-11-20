@@ -131,3 +131,13 @@ def test_switch_state():
     assert not writer.switch_on(ha, "input_boolean.y")
     assert not writer.switch_on(ha, "input_boolean.missing")
     assert not writer.switch_on(ha, "")
+
+
+def test_min_soc_deadband_skips_small_floor_moves_but_not_a_new_mode():
+    ha = RegHA(regs(mn=30))
+    s = {**sp("discharge", False, False, None, 31), "min_soc_deadband": 2}
+    assert [r for r in writer.apply(ha, OPTS, s, NOW) if r["key"] == "reg_min_soc"] == []
+    s = {**sp("discharge", False, False, None, 33), "min_soc_deadband": 2}
+    assert [r["to"] for r in writer.apply(ha, OPTS, s, NOW) if r["key"] == "reg_min_soc"] == [33]
+    s = {**sp("hold", False, False, None, 34), "min_soc_deadband": 0}           # mode changed
+    assert [r["to"] for r in writer.apply(ha, OPTS, s, NOW) if r["key"] == "reg_min_soc"] == [34]

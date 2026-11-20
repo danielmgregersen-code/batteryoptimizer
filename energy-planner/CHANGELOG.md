@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.21.0
+
+- **"Holder batteriet" is load first with the floor at the SoC** (the user's idea): no discharge,
+  and surplus sun goes into the battery instead of being sold. It sold sun at 1,69 kr when the
+  battery was "held" with battery first and max SoC = SoC. Only when the plan sells the sun in that
+  hour is it still battery first with max SoC = SoC.
+- **Calmer registers:** within a clock hour hold and discharge only switch for at least 0.15 kWh
+  through the battery in the rest of the hour (they flipped every 5 minutes on near-ties); a hold
+  keeps the floor it started with; floor changes under 2 percentage points are not written.
+- The plan table and tooltip show Sol → hus and Net → hus.
+
 ## 0.20.1
 
 - **"I dag" shows savings:** new `sensor.energy_planner_savings_today`: saved so far today (from the

@@ -68,14 +68,14 @@ def test_car_drawing_from_the_battery_counts_in_the_reserve():
     assert sp(plan, 60)["min_soc_pct"] > without
 
 
-def test_hold_blocks_both_charging_and_discharging():
+def test_hold_is_load_first_with_the_floor_at_the_soc_now():
     # a bit cheaper now (but not enough to grid-charge for the peak): buy now, keep the battery
     buy = [2.8, 3.0, 3.0]
     s = sp(plan_for(buy, 40, load=1.5), 40)
-    assert s["mode"] == "hold"
-    # battery first with max SoC = current SoC: no discharge, and surplus sun is not stored either
-    assert s["battery_first"] and not s["grid_charge"]
-    assert s["max_soc_pct"] == 40 and s["min_soc_pct"] == 40
+    assert s["mode"] == "hold" and s["hold_via"] == "load_first"
+    # load first with min SoC = SoC now: no discharge, and unplanned surplus sun goes into the battery
+    assert not s["battery_first"] and not s["grid_charge"]
+    assert s["max_soc_pct"] is None and s["min_soc_pct"] == 40
 
 
 def test_selling_the_sun_is_a_hold_not_load_first():
@@ -84,8 +84,8 @@ def test_selling_the_sun_is_a_hold_not_load_first():
     sell = [1.6] * 4 + [0.5] * 14
     pv = [3.0] * 4 + [0.0] * 14
     s = sp(plan_for(buy, 30, pv=pv, load=0.5, sell=sell), 30)
-    assert s["mode"] == "hold" and s["export_hint"] == "export"
-    assert s["battery_first"] and s["max_soc_pct"] == 30
+    assert s["mode"] == "hold" and s["export_hint"] == "export" and s["hold_via"] == "battery_first"
+    assert s["battery_first"] and s["max_soc_pct"] == 30          # the sun is sold, not stored
 
 
 def test_grid_charge_target_leaves_room_for_the_planned_sun():

@@ -118,6 +118,7 @@ class Planner:
         self._thor_stopped = False     # emergency stop on the charger done: no restart from here
         self._pause_wanted_since = None   # since when the controller has wanted a charging car paused
         self._hp_written_hour = None      # the heat pump's setpoint is changed at most once per hour
+        self._mode_state = None           # (hour, setpoints) of the last cycle: calm modes within the hour
         self._bat_curve = None            # learned charge power at high SoC (batterycurve.learn)
         self.hp_levels_path = os.path.join(os.path.dirname(log_path) or ".", "heat_pump_levels.json")
         self._hp_levels = pvd.load_json(self.hp_levels_path, {})   # the level the heat pump ran with, per hour
@@ -426,6 +427,36 @@ class Planner:
             "current_setpoint": current, "production": production,
             "next_change": nxt["t"] if nxt else None, "next_setpoint": nxt["setpoint"] if nxt else None})
         return d
+
+    MODE_SWITCH_KWH = 0.15     # within an hour, hold <-> discharge only for at least this much energy
+    MIN_SOC_DEADBAND = 2       # percentage points: smaller floor changes are not written
+
+    def _stabilize(self, sp: dict, plan, now: datetime, soc_pct: float) -> dict:
+        """Calmer setpoints between the 5-minute plans:
+        - within the same clock hour, hold <-> discharge only switch when the new plan moves at least
+          MODE_SWITCH_KWH through the battery in the rest of the hour (near-ties flipped every 5 min),
+        - a hold keeps the floor it started with (it does not follow the SoC up while sun charges),
+        - small changes of the floor are not written (deadband), except when the mode changes."""
+        hour = hour_floor(now)
+        prev_hour, prev = self._mode_state or (None, None)
+        out = dict(sp)
+        out["min_soc_deadband"] = self.MIN_SOC_DEADBAND
+        if prev is not None and prev_hour == hour and {prev["mode"], sp["mode"]} == {"hold", "discharge"}:
+            bat_out = float(plan.bat_load[0]) + (float(plan.bat_car[0]) if plan.bat_car is not None else 0.0)
+            if (sp["mode"] == "discharge" and bat_out < self.MODE_SWITCH_KWH) or \
+                    (sp["mode"] == "hold" and bat_out > 0.01):
+                kept = dict(prev)
+                kept["kept_mode"] = f"{prev['mode']} kept: {sp['mode']} would move {bat_out:.2f} kWh"
+                log.info("keeping %s within the hour (%s would move %.2f kWh)", prev["mode"], sp["mode"], bat_out)
+                self._mode_state = (hour, kept)
+                return kept
+        if prev is not None and out["mode"] == "hold" and out.get("hold_via") == "load_first" \
+                and prev["mode"] == "hold" and prev.get("hold_via") == "load_first":
+            out["min_soc_pct"] = prev["min_soc_pct"]           # the floor the hold started with
+        if prev is None or prev["mode"] != out["mode"] or prev.get("hold_via") != out.get("hold_via"):
+            out["min_soc_deadband"] = 0                        # a new mode always gets its floor
+        self._mode_state = (hour, out)
+        return out
 
     def _car_preview(self, horizon, now, opts, params, soc0, tv, fuse_amps, exp_min, car_soc, full, departure,
                      charge_lines=None):
@@ -792,6 +823,7 @@ class Planner:
         sp = derive_setpoints(plan, soc_pct, params, float(opts["inverter_kw"]),
                               float(opts["soc_floor_pct"]), float(opts["soc_ceiling_pct"]),
                               export_min_price=exp_min)
+        sp = self._stabilize(sp, plan, now, soc_pct)
         if exp_min is not None:
             sp["export_reason"] = "price" if sp["export_allowed"] else "stopped"
             if not sp["export_allowed"] and self._car_needs_export(plan, car_info, opts):
@@ -808,7 +840,7 @@ class Planner:
                 "pv": round(float(plan.pv[i]), 2), "load": round(float(plan.load[i]), 2),
                 "pv_bat": round(float(plan.pv_bat[i]), 2), "grid_bat": round(float(plan.grid_bat[i]), 2),
                 "bat_load": round(float(plan.bat_load[i]), 2), "pv_exp": round(float(plan.pv_exp[i]), 2),
-                "pv_curt": round(float(plan.pv_curt[i]), 2),
+                "pv_curt": round(float(plan.pv_curt[i]), 2), "pv_load": round(float(plan.pv_load[i]), 2),
                 "soc_pct": round(float(plan.soc_end[i]) / params.capacity_kwh * 100.0, 1),
                 "forecast_price": bool(horizon.forecast[i]),
                 "dt": round(float(plan.dt[i]), 3),

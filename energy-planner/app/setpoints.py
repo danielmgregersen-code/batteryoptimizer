@@ -117,8 +117,14 @@ def derive_setpoints(plan, soc_now_pct: float, battery, inverter_kw: float,
         max_soc = clamp(max(math.ceil(pct(plan.soc_end[j]) - 1e-9), soc_now_ceil))
         if exp > EXPORT_KW_MIN and chg_pv > CHARGE_KW_MIN:
             solar_rate = _rate_pct(chg_pv, inverter_kw)
-    elif mode == "hold":
-        max_soc = clamp(soc_now_ceil)
+    hold_via = None
+    if mode == "hold":
+        # Hold = no discharge. Load first with the floor at the SoC now does that and still lets surplus
+        # sun into the battery (a forecast that was too low is not sold off). Only when the plan sells
+        # the sun this hour is it battery first with max SoC = SoC now, so the sun goes out instead.
+        hold_via = "battery_first" if exp > EXPORT_KW_MIN else "load_first"
+        if hold_via == "battery_first":
+            max_soc = clamp(soc_now_ceil)
 
     if mode == "discharge":
         # Hold back only what later, *dearer* hours need before the battery is charged again.
@@ -138,7 +144,8 @@ def derive_setpoints(plan, soc_now_pct: float, battery, inverter_kw: float,
 
     return {
         "mode": mode,
-        "battery_first": mode != "discharge",
+        "battery_first": mode not in ("discharge",) and hold_via != "load_first",
+        "hold_via": hold_via,
         "grid_charge": bool(grid_charge),
         "max_soc_pct": max_soc,
         "charge_rate_pct": charge_rate,
