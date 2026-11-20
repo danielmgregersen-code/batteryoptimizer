@@ -600,7 +600,8 @@
     const m = MODES[r.mode] || MODES.hold;
     const kids = [h('div', { class: 'tt-head' }, `${dayName(dayKey(r.t))} · ${hhmm(r.t)}–${addHour(r.t)}`),
       h('div', { class: 'tt-row' }, h('span', { class: 'mode-dot', style: { background: m.color } }), h('span', { class: 'lbl' }, m.label))];
-    kids.push(ttSec('Pris, kr/kWh' + (r.forecast_price ? ' (estimeret)' : '')));
+    kids.push(ttSec('Pris, kr/kWh' + (r.price_source === 'forecast' ? ' (Strømligning-prognose)'
+      : r.forecast_price ? ' (estimeret: samme time sidste kendte dag)' : '')));
     kids.push(ttRow(C.buy, 'Køb', fmt(r.buy, 2)), ttRow(C.sell, 'Salg', fmt(r.sell, 2)));
     const expMin = p.setpoints && p.setpoints.export_limit_pct != null ? (p.export_min_price ?? 0) : null;
     if (expMin != null && r.sell < expMin) kids.push(ttRow(C.export, 'Eksport stoppet', 'salgspris under ' + fmt(expMin, 2)));
@@ -706,14 +707,14 @@
         return h('tr', { class: i === 0 ? 'now' : '' },
           h('td', {}, (hhmm(r.t) === '00:00' || i === 0 ? dayName(dayKey(r.t), { weekday: 'short' }) + ' ' : '') + hhmm(r.t)),
           h('td', {}, h('span', { class: 'mode-dot', style: { background: mm.color } }), mm.label),
-          h('td', { class: r.forecast_price ? 'est' : '' }, fmt(r.buy, 2)), h('td', { class: r.forecast_price ? 'est' : '' }, fmt(r.sell, 2)),
+          h('td', { class: r.forecast_price ? 'est' : '', title: priceSrc(r) }, fmt(r.buy, 2)), h('td', { class: r.forecast_price ? 'est' : '', title: priceSrc(r) }, fmt(r.sell, 2)),
           z(r.pv), z(r.load), z(r.pv_load), z(r.grid_load), z(r.grid_bat), z(r.pv_bat), z(r.bat_load + (r.car_bat || 0)), z(r.pv_exp), h('td', {}, fmt(r.soc_pct, 0) + ' %'),
           ...(p.car && p.car.connected ? [z(carIn(r)), h('td', {}, fmt(r.car_soc, 0) + ' %')] : []));
       })));
     const tableCard = h('div', { class: 'card' },
       h('details', { open: store.get('tableOpen') === '1' ? true : null, ontoggle: (e) => store.set('tableOpen', e.target.open ? '1' : '0') },
         h('summary', {}, 'Plan time for time (tabel)'),
-        h('div', { class: 'hint', style: { marginBottom: '8px' } }, 'Energi i kWh pr. time. Kursiv pris = estimeret ud fra samme time sidste kendte dag.'),
+        h('div', { class: 'hint', style: { marginBottom: '8px' } }, 'Energi i kWh pr. time. Kursiv pris = estimeret: fra Strømligning-prognosen, ellers samme time sidste kendte dag (hold musen over prisen).'),
         h('div', { class: 'table-wrap' }, table)));
 
     const prof = p.profile;
@@ -1179,6 +1180,11 @@
       table,
       h('ul', { class: 'diag' }, status.map((x) => typeof x === 'string' ? h('li', {}, x) : h('li', { class: 'warn' }, x.text))),
       h('div', { class: 'chips', style: { marginTop: '8px' } }, h('span', { class: 'chip wrap', title: 'Dagens faktorer til solcast_solar.set_dampening' }, d.today_factors.map((f) => f.toFixed(2)).join(','))));
+  }
+
+  function priceSrc(r) {
+    return r.price_source === 'forecast' ? 'Strømligning-prognose (salg = prognose minus samme times forskel køb/salg)'
+      : r.forecast_price ? 'Samme time som sidste kendte dag' : 'Kendt pris';
   }
 
   const WARN_DA = [

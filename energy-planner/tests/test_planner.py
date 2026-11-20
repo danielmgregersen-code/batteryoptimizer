@@ -1223,3 +1223,48 @@ def test_plan_rows_have_sun_to_house(tmp_path):
     snap = Planner(make_ha(), tz=TZ, log_path=str(tmp_path / "d.jsonl")).run_once(datetime(2026, 11, 14, 10, 30, tzinfo=UTC))
     r = snap["plan"][1]
     assert "pv_load" in r and r["pv_load"] + r["grid_load"] == pytest.approx(r["load"] - r["bat_load"], abs=0.02)
+
+
+def strom_prices(day, values):
+    t0 = datetime.fromisoformat(f"{day}T00:00:00+01:00")
+    return {"prices": [{"price": p, "start": (t0 + timedelta(hours=i)).isoformat(),
+                        "end": (t0 + timedelta(hours=i + 1)).isoformat()} for i, p in enumerate(values)]}
+
+
+def test_stromligning_today_old_sensor_tomorrow_and_forecast_after(tmp_path):
+    ha = make_ha()
+    ha.attrs[DEFAULTS["price_buy_entity"]] = strom_prices("2026-11-14", BUY_TODAY)
+    ha.attrs[DEFAULTS["price_sell_entity"]] = strom_prices("2026-11-14", SELL_TODAY)
+    ha.attrs[DEFAULTS["price_buy_fallback_entity"]] = {"raw_today": None, "raw_tomorrow": price_attrs(
+        [b - 0.2 for b in BUY_TODAY], day="2026-11-15")["raw_today"]}
+    ha.attrs[DEFAULTS["price_sell_fallback_entity"]] = {"raw_tomorrow": price_attrs(SELL_TODAY, day="2026-11-15")["raw_today"]}
+    ha.attrs[DEFAULTS["price_buy_forecast_entity"]] = strom_prices("2026-11-16", [5.0] * 48)
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    snap = p.run_once(datetime(2026, 11, 15, 20, 30, tzinfo=UTC))   # 21:30 local on the 15th
+    rows = {r["t"][:13]: r for r in snap["plan"]}
+    assert rows["2026-11-15T22"]["price_source"] == "known" and rows["2026-11-15T22"]["buy"] == pytest.approx(BUY_TODAY[22] - 0.2)
+    f = rows["2026-11-16T10"]
+    assert f["price_source"] == "forecast" and f["forecast_price"] and f["buy"] == pytest.approx(5.0)
+    assert f["sell"] == pytest.approx(5.0 - (BUY_TODAY[10] - 0.2 - SELL_TODAY[10]))
+    assert not any("same hour of the last known day" in w for w in snap["warnings"])
+
+
+def test_old_sensors_alone_when_stromligning_is_unavailable(tmp_path):
+    ha = make_ha()
+    ha.attrs[DEFAULTS["price_buy_fallback_entity"]] = ha.attrs.pop(DEFAULTS["price_buy_entity"])
+    ha.attrs[DEFAULTS["price_sell_fallback_entity"]] = ha.attrs.pop(DEFAULTS["price_sell_entity"])
+    snap = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl")).run_once(datetime(2026, 11, 14, 11, 30, tzinfo=UTC))
+    assert snap["horizon_hours"] == 30 and snap["plan"][0]["price_source"] == "known"
+    assert snap["plan"][-1]["price_source"] == "repeat"
+
+
+def test_car_price_history_merges_state_of_the_new_and_mean_of_the_old(tmp_path):
+    now = datetime(2026, 11, 14, 11, 30, tzinfo=UTC)
+    h1, h2 = now - timedelta(hours=3), now - timedelta(hours=2)
+    stats = {DEFAULTS["price_buy_entity"]: [{"start": h2.timestamp() * 1000, "state": 2.5}],
+             DEFAULTS["price_buy_fallback_entity"]: [{"start": h1.timestamp() * 1000, "mean": 1.0},
+                                                     {"start": h2.timestamp() * 1000, "mean": 9.0}]}
+    ha = make_ha(stats=stats)
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), options_fn=lambda: {**DEFAULTS, "car_enabled": True})
+    p._refresh_car_history({**DEFAULTS, "car_enabled": True}, now)
+    assert p._price_history == [1.0, 2.5]

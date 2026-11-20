@@ -82,3 +82,84 @@ def test_persistence_forecast_repeats_the_last_known_day_by_local_hour():
     hz = build_horizon(datetime(2026, 11, 14, 21, tzinfo=UTC), {**fc, **buy}, {**fc, **buy}, {},
                        lambda h: 1.0, forecast_hours=set(fc))
     assert len(hz) == 8 and hz.forecast == [False, False] + [True] * 6
+
+
+# ---- Strømligning ---------------------------------------------------------------------------
+from zoneinfo import ZoneInfo  # noqa: E402
+
+from inputs import derive_sell_forecast, fill_prices, merge_prices, price_series  # noqa: E402
+
+CPH = ZoneInfo("Europe/Copenhagen")
+
+
+def strom(day, values, minutes=60):
+    """Strømligning's `prices` attribute: [{price, start, end}] with local offsets."""
+    out = []
+    t0 = datetime.fromisoformat(f"{day}T00:00:00+01:00")
+    for i, p in enumerate(values):
+        s = t0 + timedelta(minutes=minutes * i)
+        out.append({"price": p, "start": s.isoformat(), "end": (s + timedelta(minutes=minutes)).isoformat()})
+    return {"prices": out}
+
+
+def test_parse_prices_reads_stromlignings_prices_attribute():
+    got = parse_prices(strom("2026-11-20", [1.0 + h / 10 for h in range(24)]))
+    assert len(got) == 24 and got[datetime(2026, 11, 19, 23, tzinfo=UTC)] == pytest.approx(1.0)
+    q = parse_prices(strom("2026-11-20", [1.0, 2.0, 3.0, 4.0], minutes=15))
+    assert q == {datetime(2026, 11, 19, 23, tzinfo=UTC): pytest.approx(2.5)}     # always the hour's mean
+
+
+def test_merge_prefers_the_primary_per_hour():
+    a, b = datetime(2026, 11, 20, tzinfo=UTC), datetime(2026, 11, 21, tzinfo=UTC)
+    assert merge_prices({a: 1.0}, {a: 9.0, b: 2.0}) == {a: 1.0, b: 2.0}
+    assert merge_prices({}, {b: 2.0}) == {b: 2.0}
+
+
+def test_sell_forecast_keeps_the_same_hours_buy_sell_difference():
+    k = datetime(2026, 11, 20, 17, tzinfo=UTC)                 # 18 local
+    f = k + timedelta(days=2)
+    assert derive_sell_forecast({f: 3.0}, {k: 2.5}, {k: 1.0}, CPH) == {f: pytest.approx(1.5)}
+
+
+def _day(day, values):
+    return parse_prices(strom(day, values))
+
+
+def test_fill_now_tomorrow_from_the_old_sensor_and_the_forecast_after():
+    buy = merge_prices(_day("2026-11-20", [2.0] * 24), _day("2026-11-21", [1.5] * 24))
+    sell = merge_prices(_day("2026-11-20", [1.0] * 24), _day("2026-11-21", [0.5] * 24))
+    fc = _day("2026-11-22", [3.0] * 24)
+    until = datetime(2026, 11, 22, 11, tzinfo=UTC)
+    b, s, src = fill_prices(buy, sell, fc, until, CPH)
+    h = datetime(2026, 11, 22, 5, tzinfo=UTC)
+    assert src[h] == "forecast" and b[h] == 3.0 and s[h] == pytest.approx(2.0)    # 3.0 - (1.5 - 0.5)
+    assert all(v == "forecast" for v in src.values()) and max(b) == until - timedelta(hours=1)
+
+
+def test_fill_before_13_repeats_the_hours_the_forecast_lacks():
+    buy, sell = _day("2026-11-20", [2.0 + h / 100 for h in range(24)]), _day("2026-11-20", [1.0] * 24)
+    fc = _day("2026-11-22", [3.0] * 24)
+    until = datetime(2026, 11, 22, 3, tzinfo=UTC)             # into the forecast day
+    b, s, src = fill_prices(buy, sell, fc, until, CPH)
+    t = datetime(2026, 11, 21, 6, tzinfo=UTC)                 # tomorrow 07 local: no forecast
+    assert src[t] == "repeat" and b[t] == pytest.approx(2.07)
+    f = datetime(2026, 11, 22, 1, tzinfo=UTC)
+    assert src[f] == "forecast" and b[f] == 3.0
+    # normal operation: tomorrow is known in the main sensor, so nothing is filled before the forecast
+    buy2 = merge_prices(buy, _day("2026-11-21", [1.8] * 24))
+    sell2 = merge_prices(sell, _day("2026-11-21", [0.9] * 24))
+    _, _, src2 = fill_prices(buy2, sell2, fc, until, CPH)
+    assert set(src2.values()) == {"forecast"}
+
+
+def test_fill_over_dst_and_without_forecast():
+    buy, sell = _day("2026-10-24", [2.0] * 24), _day("2026-10-24", [1.0] * 24)
+    until = datetime(2026, 10, 26, tzinfo=UTC)
+    b, s, src = fill_prices(buy, sell, {}, until, CPH)
+    assert set(src.values()) == {"repeat"} and len(b) == len(set(b)) and max(b) == until - timedelta(hours=1)
+
+
+def test_price_series_uses_mean_else_state():
+    rows = [{"start": 1763600400000, "mean": 2.0}, {"start": 1763604000000, "state": 2.5}, {"start": 1763607600000}]
+    got = price_series(rows)
+    assert list(got.values()) == [2.0, 2.5]
