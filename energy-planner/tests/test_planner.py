@@ -1188,6 +1188,24 @@ def test_savings_today_from_the_counters_and_the_rest_of_the_plan(tmp_path):
     assert "sol 6,0 af" in ha.published["sensor.energy_planner_cost_today"][1]["text"]
 
 
+def test_savings_expected_values_the_days_soc_change_from_midnight_not_from_now(tmp_path):
+    p = Planner(make_ha(stats={}), tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    now = datetime(2026, 11, 20, 13, 5, tzinfo=UTC)                         # 14:05 local
+    with open(tmp_path / "d.jsonl", "w") as f:
+        f.write(json.dumps({"updated": "2026-11-20T00:05:00+01:00", "soc_pct": 10.0}) + "\n")
+        f.write(json.dumps({"updated": "2026-11-20T14:00:00+01:00", "soc_pct": 58.0}) + "\n")
+    plan = [{"t": f"2026-11-20T{h:02d}:00:00+01:00", "buy": 3.45 if 17 <= h < 21 else 2.0, "sell": 1.0,
+             "load": 0.9 if 17 <= h < 21 else 0.5, "grid_load": 0.0 if 17 <= h < 21 else 0.5, "grid_bat": 0.0,
+             "pv_exp": 0.0, "soc_pct": 10.0 if h >= 21 else 58.0 - (h - 16) * 12 if h >= 17 else 58.0}
+            for h in range(14, 24)]
+    p.latest = {"plan": plan, "soc_pct": 58.0}
+    p._today_economy = lambda opts, now: {"value_dkk": 5.0, "net_dkk": 1.0, "solar_kwh": 5.4}
+    p._publish_savings(DEFAULTS, now)
+    _, attrs = p.ha.published["sensor.energy_planner_savings_today"]
+    assert attrs["soc_start_pct"] == 10.0 and attrs["battery_adjust_dkk"] == pytest.approx(0.0)
+    assert attrs["expected_dkk"] == pytest.approx(5.0 + 4 * 0.9 * 3.45)    # the evening's discharge counts once
+
+
 class _P:
     def __init__(self, bat_out):
         import numpy as np

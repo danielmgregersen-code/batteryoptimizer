@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.22.1
+
+- **"Forventet i alt" on the I dag card counted the battery twice:** the energy stored so far today
+  was taken off once in the counters (sun not sold) and again as the SoC drop from now to midnight.
+  The SoC change is now valued from midnight to midnight (SoC at the day's start from the decision
+  log, else the SoC sensor's statistics). New attributes `soc_start_pct` and `battery_adjust_dkk`.
+
 ## 0.22.0
 
 - **Prices from Strømligning:** `price_buy_entity` / `price_sell_entity` now default to

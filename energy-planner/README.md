@@ -329,8 +329,8 @@ dashboard → Add card → Manual. They show:
   `next_action`.
 - **I dag** `sensor.energy_planner_savings_today`: saved so far today (consumption at the buy price
   minus the net cost, from the counters, as "Anlægsværdi" in the Økonomi tab) and `expected_dkk`
-  for the whole day (plus the plan's remaining hours and the value of the battery's SoC change by
-  midnight); `title` "Sparet 12 kr i dag", `text` "forventet 31 kr i alt · sol 9,2 af 18,4 kWh".
+  for the whole day (plus the plan's remaining hours and the value of the battery's SoC change from
+  midnight to midnight); `title` "Sparet 12 kr i dag", `text` "forventet 31 kr i alt · sol 9,2 af 18,4 kWh".
 - **Advarsler** `sensor.energy_planner_warnings` (number of messages, `messages`): shown only when
   something needs attention (car/Kia problems, manual control, planning errors, missing entities,
   the THOR's own schedule).
