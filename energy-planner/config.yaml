@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning and control of a Growatt hybrid inverter, home battery and EV charging."
-version: "0.21.0"
+version: "0.22.0"
 slug: "energy_planner"
 init: false
 arch:
@@ -15,8 +15,11 @@ panel_icon: "mdi:solar-power-variant"
 panel_title: "Energy Planner"
 
 options:
-  price_buy_entity: "sensor.kob_af_el"
-  price_sell_entity: "sensor.salg_af_el"
+  price_buy_entity: "sensor.stromligning_current_price_vat"
+  price_sell_entity: "sensor.stromligning_production_price_vat"
+  price_buy_forecast_entity: "sensor.stromligning_forecasts_vat"
+  price_buy_fallback_entity: "sensor.kob_af_el"
+  price_sell_fallback_entity: "sensor.salg_af_el"
   solcast_entities: "sensor.solcast_pv_forecast_forecast_today,sensor.solcast_pv_forecast_forecast_tomorrow,sensor.solcast_pv_forecast_forecast_day_3"
   battery_soc_entity: "sensor.growatt_battery_soc"
   house_load_entity: "sensor.growatt_total_house_load"
@@ -127,6 +130,9 @@ options:
 schema:
   price_buy_entity: str
   price_sell_entity: str
+  price_buy_forecast_entity: str?
+  price_buy_fallback_entity: str?
+  price_sell_fallback_entity: str?
   solcast_entities: str
   battery_soc_entity: str
   house_load_entity: str

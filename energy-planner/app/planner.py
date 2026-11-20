@@ -11,7 +11,8 @@ import car as carmod
 import cartrace
 import economy
 import heatpump
-from inputs import UTC, build_horizon, hour_floor, parse_prices, parse_solcast, parse_ts, persistence_forecast
+from inputs import (SOURCE_FORECAST, UTC, build_horizon, fill_prices, hour_floor, merge_prices, parse_prices,
+                    parse_solcast, parse_ts, price_series)
 from optimizer import BatteryParams, solve, terminal_value_for
 from loadprofile import _by_start, build_profile, load_for_hour, profile_view
 import pvdampening as pvd
@@ -578,7 +579,7 @@ class Planner:
 
     def _refresh_car_history(self, opts: dict, now: datetime):
         """Car SoC (90 days, for the last full charge) and buy prices (30 days, for "rock bottom")."""
-        ids = [opts[k] for k in ("car_soc_entity", "price_buy_entity") if opts.get(k)]
+        ids = [opts[k] for k in ("car_soc_entity", "price_buy_entity", "price_buy_fallback_entity") if opts.get(k)]
         if not ids or not opts.get("car_enabled"):
             return
         try:
@@ -588,8 +589,9 @@ class Planner:
             return
         self._car_full_stats = carmod.last_full_from_stats(stats.get(opts.get("car_soc_entity")))
         cutoff = now - timedelta(days=30)
-        self._price_history = [float(r["mean"]) for r in stats.get(opts.get("price_buy_entity")) or []
-                               if r.get("mean") is not None and parse_ts(r["start"]) >= cutoff]
+        prices = merge_prices(price_series(stats.get(opts.get("price_buy_entity"))),
+                              price_series(stats.get(opts.get("price_buy_fallback_entity"))))
+        self._price_history = [v for t, v in sorted(prices.items()) if t >= cutoff]
 
     def _last_full(self):
         seen = datetime.fromisoformat(self._car_full_seen) if self._car_full_seen else None
@@ -658,9 +660,28 @@ class Planner:
         v = self.ha.number(e) if e else None
         return float(min(max(v if v is not None else float(opts.get("car_departure_soc", 100)), 0), 100))
 
+    def _prices(self, opts: dict) -> tuple:
+        """Known buy / sell prices (the price sensors, gaps from the fallback sensors) and the buy
+        price forecast. -> (buy, sell, buy_forecast), each {utc hour: DKK/kWh}."""
+        def read(key):
+            e = opts.get(key)
+            return parse_prices(self.ha.attributes(e) or {}) if e else {}
+        buy = merge_prices(read("price_buy_entity"), read("price_buy_fallback_entity"))
+        sell = merge_prices(read("price_sell_entity"), read("price_sell_fallback_entity"))
+        return buy, sell, read("price_buy_forecast_entity")
+
+    def sell_price_now(self, opts: dict):
+        """The current sell price (the fallback sensor when the main one is unavailable)."""
+        for key in ("price_sell_entity", "price_sell_fallback_entity"):
+            v = self.ha.number(opts[key]) if opts.get(key) else None
+            if v is not None:
+                return v
+        return None
+
     def _check_entities(self, opts: dict) -> dict:
         """Which configured entities are missing or unavailable (shown in the UI)."""
-        ids = [opts[k] for k in ("price_buy_entity", "price_sell_entity", "battery_soc_entity",
+        ids = [opts[k] for k in ("price_buy_entity", "price_sell_entity", "price_buy_forecast_entity",
+                                 "price_buy_fallback_entity", "price_sell_fallback_entity", "battery_soc_entity",
                                  "house_load_entity", "car_power_entity", "charger_power_entity") if opts.get(k)]
         ids += split_csv(opts.get("load_submeters") or "")
         ids += split_csv(opts.get("solcast_entities", ""))
@@ -690,12 +711,9 @@ class Planner:
         now = (now or datetime.now(UTC)).astimezone(UTC)
         warnings = []
 
-        buy_attrs = self.ha.attributes(opts["price_buy_entity"])
-        sell_attrs = self.ha.attributes(opts["price_sell_entity"])
-        if not buy_attrs or not sell_attrs:
+        buy, sell, buy_fc = self._prices(opts)
+        if not buy or not sell:
             raise PlannerError("price sensors are unavailable")
-        buy = parse_prices(buy_attrs)
-        sell = parse_prices(sell_attrs)
 
         sol_attrs = [self.ha.attributes(e) for e in split_csv(opts["solcast_entities"])]
         pv, pv50, pv10, pv90 = parse_solcast(sol_attrs, float(opts["pv_p10_weight"]), with_p90=True)
@@ -714,13 +732,12 @@ class Planner:
         if soc_pct is None:
             raise PlannerError("battery SoC is unavailable")
 
-        # Prices for the rest of the horizon (tonight, before ~13:00) are estimated from the last
-        # known day so the plan can weigh today's sun against tonight's grid price.
+        # Prices for the rest of the horizon (tonight, before ~13:00) are estimated - from the price
+        # sensor's forecast where it has one, else from the last known day - so the plan can weigh
+        # today's sun against tonight's grid price.
         until = hour_floor(now) + timedelta(hours=int(opts["min_horizon_hours"]))
-        buy_fc = persistence_forecast(buy, until, self.tz)
-        sell_fc = persistence_forecast(sell, until, self.tz)
-        forecast_hours = set(buy_fc) | set(sell_fc)
-        buy, sell = {**buy_fc, **buy}, {**sell_fc, **sell}
+        buy, sell, price_src = fill_prices(buy, sell, buy_fc, until, self.tz)
+        forecast_hours = set(price_src)
 
         # What the separately measured appliances draw right now (kW): the current hour uses it
         # instead of their profile, the next hour half of it while they run.
@@ -746,8 +763,9 @@ class Planner:
         if profile["hours_of_data"] and opts.get("car_power_entity") and not diag.get("car_rows"):
             warnings.append("the car charger power has no long-term statistics - hours above car_detect_kw are taken as car charging")
         n_fc = sum(horizon.forecast)
-        if n_fc:
-            warnings.append(f"{n_fc} of {len(horizon)} hours use estimated prices (same hour of the last known day)")
+        n_pf = sum(1 for t in horizon.starts if price_src.get(t) == SOURCE_FORECAST)
+        if n_fc - n_pf:
+            warnings.append(f"{n_fc - n_pf} of {len(horizon)} hours use estimated prices (same hour of the last known day)")
 
         params = battery_params(opts)
         soc0 = params.capacity_kwh * soc_pct / 100.0
@@ -843,6 +861,7 @@ class Planner:
                 "pv_curt": round(float(plan.pv_curt[i]), 2), "pv_load": round(float(plan.pv_load[i]), 2),
                 "soc_pct": round(float(plan.soc_end[i]) / params.capacity_kwh * 100.0, 1),
                 "forecast_price": bool(horizon.forecast[i]),
+                "price_source": price_src.get(horizon.starts[i], "known"),
                 "dt": round(float(plan.dt[i]), 3),
                 "grid_load": round(float(plan.grid_load[i]), 2),
                 "pv_p10": round(pv10.get(start, 0.0) * float(plan.dt[i]), 2),
@@ -1013,7 +1032,7 @@ class Planner:
             "charger_w": num("charger_power_entity"), "house_soc": num("battery_soc_entity"),
             "bat_charge_w": num("battery_charge_power_entity"),
             "amps": self.ha.number(opts["charger_current_entity"]),
-            "secs_since_status": secs, "sell": self.ha.number(opts["price_sell_entity"]),
+            "secs_since_status": secs, "sell": self.sell_price_now(opts),
             "phase_amps": self._phase_amps(opts),
         }
         soc_est = self.car_soc_now(opts, now)

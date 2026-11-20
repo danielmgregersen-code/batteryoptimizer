@@ -228,10 +228,30 @@ synthetic log).
 
 | What | Source (default entity) |
 | --- | --- |
-| Buy / sell price per hour | `sensor.kob_af_el`, `sensor.salg_af_el` (`raw_today`, `raw_tomorrow`) |
+| Buy / sell price per hour | Strømligning: `sensor.stromligning_current_price_vat`, `sensor.stromligning_production_price_vat` (`prices`); forecast `sensor.stromligning_forecasts_vat`; fallback `sensor.kob_af_el`, `sensor.salg_af_el` (`raw_today`, `raw_tomorrow`) — see *Prices* below |
 | Solar forecast per hour | Solcast `detailedHourly` of `…forecast_today`, `_tomorrow`, `_day_3` — p50 blended with p10 (`pv_p10_weight`) |
 | Battery SoC | `sensor.growatt_battery_soc` |
 | Base load | Hourly means of `sensor.growatt_total_house_load` **minus** EV charging (`car_power_entity`, default `sensor.ioniq_9_ladeeffekt`; hours without its statistics and above `car_detect_kw` are left out as car charging) (and minus grid charging of the battery if the sensor includes it), per (weekday/weekend, hour) over `profile_days` (56), recent days weighted most (half-life `profile_half_life_days`, 10) plus the same weeks last year (`profile_last_year_weight`, 0.5). Appliances with their own meters (`load_submeters`) get a plain mean each, the rest a trimmed mean; appliances that run when needed have their timing smoothed (weekday and weekend pooled, ±`load_submeters_smooth_hours` = 2 h, the day's energy kept), while `load_submeters_steady` (the heat pump) keep their hourly profile; in the current hour the meters' live power replaces their profile (next hour: half) |
+
+### Prices
+
+Settlement is per hour, so quarter-hour prices are always averaged to the hour. Every hour of the
+plan gets its price from the first of:
+
+1. the price sensors (`price_buy_entity`, `price_sell_entity`, Strømligning),
+2. the fallback sensors (`price_buy_fallback_entity`, `price_sell_fallback_entity`, the old Energi
+   Data Service templates) for hours the price sensors lack,
+3. Strømligning's forecast (`price_buy_forecast_entity`); the sell price of a forecast hour is the
+   forecast minus the buy - sell difference at the same hour of the last known day,
+4. the same hour of the last known day.
+
+3 and 4 are "estimated" (italic in the plan table, the source in the tooltip), and only fill up to
+`min_horizon_hours`. Known prices are never replaced by a forecast.
+
+The economy and the 30-day price history (the 100 % rule) also take each hour from the price sensor
+and else from the fallback. Strømligning's buy sensor has `state_class: total`, so HA keeps its
+hourly `state` rather than a `mean`; both are read. Once Strømligning has a month or so of history
+(the Økonomi tab's longest period you use), clear the two fallback options; nothing else changes.
 
 Until statistics are available (or if the query fails) it plans with `default_load_kw` and says so in
 the UI.

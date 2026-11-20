@@ -1,6 +1,7 @@
 """What the installation has cost and earned, hour by hour, from HA's long-term statistics.
 
-Per hour (kWh from the counters' hourly `change`, prices from the price sensors' hourly `mean`):
+Per hour (kWh from the counters' hourly `change`, prices from the price sensors' hourly `mean`, or
+`state` for a sensor with state_class total; hours the price sensor lacks come from the fallback sensor):
 
     consumption     = import - export + solar + battery out - battery in      (house incl. car)
     net cost        = import x buy - export x sell                            (what was paid)
@@ -21,7 +22,7 @@ or any price are left out and counted.
 """
 from datetime import datetime, timedelta
 
-from inputs import parse_ts
+from inputs import merge_prices, parse_ts, price_series
 
 HOURLY_MAX_DAYS = 7          # up to this period the chart shows hours, above it days
 
@@ -65,11 +66,16 @@ def compute(stats: dict, ids: dict, tz, decisions: list = None, hourly: bool = T
     get = lambda key, typ: _series(stats.get(ids.get(key) or "", []), typ)  # noqa: E731
     imp, exp = get("import", "change"), get("export", "change")
     sol, bi, bo = get("solar", "change"), get("battery_in", "change"), get("battery_out", "change")
-    buy, sell = get("buy", "mean"), get("sell", "mean")
+    # the price sensors per hour, gaps from the fallback sensors (until the new ones have history)
+    prices = lambda key: merge_prices(price_series(stats.get(ids.get(key) or "")),  # noqa: E731
+                                      price_series(stats.get(ids.get(key + "_fallback") or "")))
+    buy, sell = prices("buy"), prices("sell")
     car_w = get("car", "mean")
     fallback = logged_prices(decisions)
-    missing = [ids[k] for k in ("import", "export", "solar", "battery_in", "battery_out", "buy", "sell")
+    missing = [ids[k] for k in ("import", "export", "solar", "battery_in", "battery_out")
                if ids.get(k) and not stats.get(ids[k])]
+    missing += [ids[k] for k in ("buy", "sell")
+                if ids.get(k) and not stats.get(ids[k]) and not stats.get(ids.get(k + "_fallback") or "")]
 
     hours, skipped, fallback_used = [], 0, 0
     for t in sorted(set(imp) | set(exp)):
@@ -146,7 +152,8 @@ def entity_ids(opts: dict) -> dict:
     return {"import": opts["grid_import_counter"], "export": opts["grid_export_counter"],
             "solar": opts["solar_counter"], "battery_in": opts["battery_input_counter"],
             "battery_out": opts["battery_output_counter"], "buy": opts["price_buy_entity"],
-            "sell": opts["price_sell_entity"], "car": opts.get("car_power_entity")}
+            "sell": opts["price_sell_entity"], "car": opts.get("car_power_entity"),
+            "buy_fallback": opts.get("price_buy_fallback_entity"), "sell_fallback": opts.get("price_sell_fallback_entity")}
 
 
 def report(ha, opts: dict, tz, days: int, now: datetime, decisions: list = None) -> dict:

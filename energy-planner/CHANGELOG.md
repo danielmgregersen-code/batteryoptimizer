@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.22.0
+
+- **Prices from Strømligning:** `price_buy_entity` / `price_sell_entity` now default to
+  `sensor.stromligning_current_price_vat` / `sensor.stromligning_production_price_vat`, and the new
+  `price_buy_forecast_entity` (`sensor.stromligning_forecasts_vat`) fills the hours without a known
+  price (sell derived from the same hour's buy - sell difference) before falling back to "same hour
+  as the last known day".
+- **The old sensors as fallback** (`price_buy_fallback_entity` = `sensor.kob_af_el`,
+  `price_sell_fallback_entity` = `sensor.salg_af_el`): they fill hours Strømligning lacks, in the
+  plan, the economy and the price history, until Strømligning has history enough. Clear the two
+  options then.
+- Statistics also read `state` (Strømligning's buy sensor has `state_class: total`, no `mean`).
+- The plan tooltip and table show where an estimated price comes from.
+
 ## 0.21.0
 
 - **"Holder batteriet" is load first with the floor at the SoC** (the user's idea): no discharge,

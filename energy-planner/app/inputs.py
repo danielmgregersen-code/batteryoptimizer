@@ -27,12 +27,14 @@ def hour_floor(dt: datetime) -> datetime:
 
 
 def parse_prices(attrs: dict) -> dict:
-    """Energi Data Service attributes (raw_today / raw_tomorrow) -> {hour_utc: DKK/kWh}.
+    """Price sensor attributes -> {hour_utc: DKK/kWh}.
 
-    Works for hourly entries and for finer ones (15 min): entries are averaged per hour.
+    Energi Data Service: raw_today / raw_tomorrow; Strømligning: prices (also its forecast sensor).
+    Works for hourly entries and for finer ones (15 min): entries are averaged per hour, because the
+    settlement is per hour.
     """
     buckets: dict = {}
-    for key in ("raw_today", "raw_tomorrow"):
+    for key in ("prices", "raw_today", "raw_tomorrow"):
         for entry in attrs.get(key) or []:
             ts = entry.get("hour") or entry.get("start")
             price = entry.get("price")
@@ -136,6 +138,87 @@ def persistence_forecast(prices: dict, until: datetime, tz) -> dict:
         out[t] = price
         t += timedelta(hours=1)
     return out
+
+
+def merge_prices(primary: dict, fallback: dict) -> dict:
+    """Per hour: the primary source's price, else the fallback's."""
+    return {**(fallback or {}), **(primary or {})}
+
+
+def derive_sell_forecast(buy_fc: dict, buy_known: dict, sell_known: dict, tz) -> dict:
+    """Sell prices for forecast hours: the forecast buy price minus the buy - sell difference at the same
+    local hour of the latest known day (taxes and tariffs are what separates them, and they repeat)."""
+    diff = {}
+    for h in sorted(set(buy_known) & set(sell_known)):
+        diff[h.astimezone(tz).hour] = buy_known[h] - sell_known[h]
+    out = {}
+    for h, b in buy_fc.items():
+        d = diff.get(h.astimezone(tz).hour)
+        if d is not None:
+            out[h] = b - d
+    return out
+
+
+def price_value(row: dict):
+    """A price from a long-term statistics row: the hour's mean, else its state (a price sensor with
+    state_class total, like Strømligning's, has only state and sum)."""
+    for key in ("mean", "state"):
+        v = row.get(key)
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def price_series(rows) -> dict:
+    """Statistics rows of a price sensor -> {utc hour: DKK/kWh}."""
+    out = {}
+    for r in rows or []:
+        v = price_value(r)
+        if v is None or r.get("start") is None:
+            continue
+        try:
+            out[hour_floor(parse_ts(r["start"]))] = v
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+SOURCE_FORECAST = "forecast"        # the price sensor's own forecast (Strømligning)
+SOURCE_REPEAT = "repeat"            # same local hour as the last known day
+
+
+def fill_prices(buy: dict, sell: dict, buy_fc: dict, until: datetime, tz) -> tuple:
+    """Fill every hour from the known prices up to `until` (exclusive) that has no known price: first
+    from the forecast (sell derived from it), then with the same local hour of the last known day.
+    Known prices are never replaced. -> (buy, sell, {hour: source} for the filled hours)."""
+    if not buy or not sell:
+        return dict(buy), dict(sell), {}
+    first = min(min(buy), min(sell))
+    fc_buy = {h: v for h, v in (buy_fc or {}).items() if first <= h < until}
+    fc_sell = derive_sell_forecast(fc_buy, buy, sell, tz)
+    rep_buy, rep_sell = persistence_forecast(buy, until, tz), persistence_forecast(sell, until, tz)
+    out_b, out_s, src = dict(buy), dict(sell), {}
+    t = first
+    while t < until:
+        if t not in out_b or t not in out_s:
+            b, s = out_b.get(t), out_s.get(t)
+            if t in fc_buy and (s is not None or t in fc_sell):
+                b = fc_buy[t] if b is None else b
+                s = fc_sell[t] if s is None else s
+                src[t] = SOURCE_FORECAST
+            else:
+                b = rep_buy.get(t) if b is None else b
+                s = rep_sell.get(t) if s is None else s
+                if b is not None and s is not None:
+                    src[t] = SOURCE_REPEAT
+            if b is None or s is None:
+                break
+            out_b[t], out_s[t] = b, s
+        t += timedelta(hours=1)
+    return out_b, out_s, src
 
 
 class Horizon:

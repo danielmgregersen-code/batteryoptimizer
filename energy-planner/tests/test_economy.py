@@ -121,3 +121,15 @@ def test_self_sufficiency_does_not_count_grid_charging_as_consumption():
     assert d["consumption_kwh"] == pytest.approx(2.5)
     assert d["self_sufficiency_pct"] == pytest.approx(76.0, abs=0.1)
     assert 0 <= d["self_sufficiency_pct"] <= 100
+
+
+def test_new_price_sensor_state_with_the_old_sensors_mean_for_its_gaps():
+    t1, t2 = datetime(2026, 11, 20, 10, tzinfo=TZ), datetime(2026, 11, 20, 11, tzinfo=TZ)
+    stats = stats_for({t: dict(imp=1.0, exp=0.0, sol=0.0, bin=0.0, bout=0.0) for t in (t1, t2)})
+    ms = lambda t: t.astimezone(UTC).timestamp() * 1000  # noqa: E731
+    stats.update(new_buy=[{"start": ms(t2), "state": 2.5}], buy=[{"start": ms(t1), "mean": 2.0}, {"start": ms(t2), "mean": 9.0}],
+                 new_sell=[{"start": ms(t2), "mean": 1.1}], sell=[{"start": ms(t1), "mean": 1.0}])
+    ids = {**IDS, "buy": "new_buy", "sell": "new_sell", "buy_fallback": "buy", "sell_fallback": "sell"}
+    res = economy.compute(stats, ids, TZ)
+    assert [(h["buy"], h["sell"]) for h in res["hours"]] == [(2.0, 1.0), (2.5, 1.1)]
+    assert res["missing"] == []

@@ -6,8 +6,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 OPTIONS_FILE = "/data/options.json"
 
 DEFAULTS = {
-    "price_buy_entity": "sensor.kob_af_el",
-    "price_sell_entity": "sensor.salg_af_el",
+    "price_buy_entity": "sensor.stromligning_current_price_vat",
+    "price_sell_entity": "sensor.stromligning_production_price_vat",
+    "price_buy_forecast_entity": "sensor.stromligning_forecasts_vat",
+    "price_buy_fallback_entity": "sensor.kob_af_el",
+    "price_sell_fallback_entity": "sensor.salg_af_el",
     "solcast_entities": (
         "sensor.solcast_pv_forecast_forecast_today,"
         "sensor.solcast_pv_forecast_forecast_tomorrow,"
