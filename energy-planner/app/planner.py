@@ -1600,10 +1600,15 @@ class Planner:
             without = (r["load"] + car) * r["buy"]
             net = (r["grid_load"] + r["grid_bat"] + (r.get("car_grid") or 0)) * r["buy"] - r["pv_exp"] * r["sell"]
             rest += without - net
-        if rows:
+        # The battery's SoC change over the whole day (midnight to midnight), not from now: what was
+        # stored so far today is already in the counters (sun not sold), what goes out tonight is in the
+        # plan's rows. Only energy the day leaves in (or takes from) the battery is valued separately.
+        soc_start, adjust = self._soc_at_day_start(opts, now), 0.0
+        if rows and soc_start is not None:
             cap, eta = float(opts["battery_capacity_kwh"]), float(opts["eta_battery_to_load"])
             ahead = [r["buy"] for r in snap["plan"][:24]]
-            rest += (rows[-1]["soc_pct"] - snap["soc_pct"]) / 100.0 * cap * eta * (sum(ahead) / len(ahead))
+            adjust = (rows[-1]["soc_pct"] - soc_start) / 100.0 * cap * eta * (sum(ahead) / len(ahead))
+            rest += adjust
         saved = round(tot["value_dkk"], 2)
         expected = round(saved + rest, 2)
         solar = round(tot["solar_kwh"], 1)
@@ -1611,10 +1616,46 @@ class Planner:
         self.ha.set_state("sensor.energy_planner_savings_today", saved, {
             "friendly_name": "Energy Planner sparet i dag", "icon": "mdi:piggy-bank", "unit_of_measurement": "DKK",
             "expected_dkk": expected, "rest_dkk": round(rest, 2), "net_dkk": round(tot["net_dkk"], 2),
+            "soc_start_pct": soc_start, "battery_adjust_dkk": round(adjust, 2),
             "solar_kwh": solar, "solar_forecast_kwh": self._solar_forecast_today(now),
             "title": f"Sparet {num_da(saved, 0)} kr i dag",
             "text": f"forventet {num_da(expected, 0)} kr i alt" + (f" · {st}" if st else ""),
             "updated": local.isoformat(timespec="seconds")})
+
+    def _soc_at_day_start(self, opts: dict, now: datetime):
+        """The battery's SoC at local midnight: the first decision logged today, else the SoC sensor's
+        statistics for 00:00 (cached for the day), else None."""
+        midnight = now.astimezone(self.tz).replace(hour=0, minute=0, second=0, microsecond=0)
+        for e in self.recent_decisions(400):
+            try:
+                t = datetime.fromisoformat(e["updated"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if t >= midnight and e.get("soc_pct") is not None:
+                if t - midnight <= timedelta(hours=1):
+                    return float(e["soc_pct"])
+                break
+        cached = getattr(self, "_soc_start_cache", None)
+        if cached and cached[0] == midnight:
+            return cached[1]
+        soc = None
+        try:
+            rows = self.ha.statistics([opts["battery_soc_entity"]], midnight, midnight + timedelta(hours=1), "hour")
+            vals = [r.get("mean") for r in rows.get(opts["battery_soc_entity"]) or [] if r.get("mean") is not None]
+            soc = float(vals[0]) if vals else None
+        except Exception as e:  # statistics unavailable: leave the adjustment out
+            log.info("battery SoC at midnight unavailable: %s", e)
+        if soc is None:
+            for e in self.recent_decisions(400):      # the add-on started later today: its first decision
+                try:
+                    if datetime.fromisoformat(e["updated"]) >= midnight and e.get("soc_pct") is not None:
+                        soc = float(e["soc_pct"])
+                        break
+                except (KeyError, TypeError, ValueError):
+                    continue
+        if soc is not None:
+            self._soc_start_cache = (midnight, soc)
+        return soc
 
     def _publish_front(self, snap: dict, now: datetime):
         """Front-page sensors: the price now and the cheapest hours, and the warnings."""
