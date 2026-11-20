@@ -44,30 +44,28 @@ cards:
         - title
         - text
 
-  - type: grid
-    columns: 2
-    square: false
-    cards:
-      - type: tile
-        entity: sensor.energy_planner_price
-        name: Elpris nu
-        icon: mdi:cash
-        color: green
-        state_content:
-          - state
-          - level_da
-          - cheapest_text
-      - type: tile
-        entity: sensor.energy_planner_mode
-        name: Husbatteri
-        icon: mdi:home-battery
-        color: amber
-        state_content:
-          - title
-          - next_action
-      - type: tile
-        entity: sensor.energy_planner_cost_today
-        name: I dag
-        icon: mdi:solar-power-variant
-        color: amber
-        state_content: text
+  - type: tile
+    entity: sensor.energy_planner_price
+    name: Elpris nu
+    icon: mdi:cash
+    color: green
+    state_content:
+      - state
+      - level_da
+      - cheapest_text
+  - type: tile
+    entity: sensor.energy_planner_mode
+    name: Husbatteri
+    icon: mdi:home-battery
+    color: amber
+    state_content:
+      - title
+      - next_action
+  - type: tile
+    entity: sensor.energy_planner_savings_today
+    name: I dag
+    icon: mdi:piggy-bank
+    color: green
+    state_content:
+      - title
+      - text

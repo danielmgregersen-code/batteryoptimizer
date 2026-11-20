@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import batterycurve
 import car as carmod
 import cartrace
+import economy
 import heatpump
 from inputs import UTC, build_horizon, hour_floor, parse_prices, parse_solcast, parse_ts, persistence_forecast
 from optimizer import BatteryParams, solve, terminal_value_for
@@ -910,6 +911,7 @@ class Planner:
         self._publish_pv_dampening(snapshot)
         self._log_decision(snapshot)
         self._publish_cost(opts, now)
+        self._publish_savings(opts, now)
         return snapshot
 
     # ---- outputs -------------------------------------------------------------
@@ -1497,25 +1499,71 @@ class Planner:
             **self._solar_today(now, t["cost_dkk"] if t else 0.0),
             "updated": now.astimezone(self.tz).isoformat(timespec="seconds")})
 
-    def _solar_today(self, now: datetime, cost: float) -> dict:
-        """Solar forecast for today (corrected) and produced so far (statistics, cached 15 min)."""
+    def _today_economy(self, opts: dict, now: datetime):
+        """Today's economy totals from the counters (economy.report, as the Økonomi tab), cached 10 min."""
         today = now.astimezone(self.tz).date()
-        snap = self.latest or {}
-        fc = [r for r in snap.get("solar_forecast") or [] if r["t"][:10] == today.isoformat()]
-        forecast = round(sum(r["c50"] for r in fc), 1) if fc else None
-        cached = getattr(self, "_solar_today_cache", None)
-        if not cached or cached[0] != today or now - cached[1] > timedelta(minutes=15):
+        cached = getattr(self, "_today_econ_cache", None)
+        if not cached or cached[0] != today or now - cached[1] > timedelta(minutes=10):
             try:
-                actual = self.solar_report(today, now)["totals"]["actual"]
-            except Exception:  # statistics unavailable: leave the produced part out
-                actual = None
-            self._solar_today_cache = (today, now, actual)
-        actual = self._solar_today_cache[2]
-        text = f"{num_da(cost, 0)} kr indtil nu"
-        if forecast is not None:
-            text += f" · sol {num_da(actual or 0, 1)} af {num_da(forecast, 1)} kWh" if actual is not None \
-                else f" · sol {num_da(forecast, 1)} kWh forventet"
-        return {"solar_forecast_kwh": forecast, "solar_kwh": actual, "text": text}
+                tot = economy.report(self.ha, opts, self.tz, 1, now, self.recent_decisions(400))["totals"]
+            except Exception as e:  # statistics unavailable: leave it out
+                log.info("today's economy unavailable: %s", e)
+                tot = None
+            self._today_econ_cache = (today, now, tot)
+        return self._today_econ_cache[2]
+
+    def _solar_forecast_today(self, now: datetime):
+        today = now.astimezone(self.tz).date().isoformat()
+        fc = [r for r in (self.latest or {}).get("solar_forecast") or [] if r["t"][:10] == today]
+        return round(sum(r["c50"] for r in fc), 1) if fc else None
+
+    def _solar_text(self, solar, forecast) -> str:
+        if forecast is None:
+            return f"sol {num_da(solar, 1)} kWh" if solar is not None else ""
+        return (f"sol {num_da(solar, 1)} af {num_da(forecast, 1)} kWh" if solar is not None
+                else f"sol {num_da(forecast, 1)} kWh forventet")
+
+    def _solar_today(self, now: datetime, cost: float) -> dict:
+        """Solar forecast for today (corrected) and produced so far (the solar counter)."""
+        tot = self._today_economy(self.options_fn(), now)
+        solar = round(tot["solar_kwh"], 1) if tot else None
+        forecast = self._solar_forecast_today(now)
+        st = self._solar_text(solar, forecast)
+        return {"solar_forecast_kwh": forecast, "solar_kwh": solar,
+                "text": f"{num_da(cost, 0)} kr indtil nu" + (f" · {st}" if st else "")}
+
+    def _publish_savings(self, opts: dict, now: datetime):
+        """sensor.energy_planner_savings_today: what the installation saved so far today (consumption at
+        the buy price minus the net cost, from the counters) and the expected total for the day (the
+        plan's remaining hours, plus the value of the battery's SoC change by midnight)."""
+        snap = self.latest
+        tot = self._today_economy(opts, now)
+        if not snap or tot is None:
+            return
+        local = now.astimezone(self.tz)
+        today = local.date().isoformat()
+        rows = [r for r in snap["plan"] if r["t"][:10] == today]
+        rest = 0.0
+        for r in rows:
+            car = (r.get("car_pv") or 0) + (r.get("car_grid") or 0) + (r.get("car_bat") or 0)
+            without = (r["load"] + car) * r["buy"]
+            net = (r["grid_load"] + r["grid_bat"] + (r.get("car_grid") or 0)) * r["buy"] - r["pv_exp"] * r["sell"]
+            rest += without - net
+        if rows:
+            cap, eta = float(opts["battery_capacity_kwh"]), float(opts["eta_battery_to_load"])
+            ahead = [r["buy"] for r in snap["plan"][:24]]
+            rest += (rows[-1]["soc_pct"] - snap["soc_pct"]) / 100.0 * cap * eta * (sum(ahead) / len(ahead))
+        saved = round(tot["value_dkk"], 2)
+        expected = round(saved + rest, 2)
+        solar = round(tot["solar_kwh"], 1)
+        st = self._solar_text(solar, self._solar_forecast_today(now))
+        self.ha.set_state("sensor.energy_planner_savings_today", saved, {
+            "friendly_name": "Energy Planner sparet i dag", "icon": "mdi:piggy-bank", "unit_of_measurement": "DKK",
+            "expected_dkk": expected, "rest_dkk": round(rest, 2), "net_dkk": round(tot["net_dkk"], 2),
+            "solar_kwh": solar, "solar_forecast_kwh": self._solar_forecast_today(now),
+            "title": f"Sparet {num_da(saved, 0)} kr i dag",
+            "text": f"forventet {num_da(expected, 0)} kr i alt" + (f" · {st}" if st else ""),
+            "updated": local.isoformat(timespec="seconds")})
 
     def _publish_front(self, snap: dict, now: datetime):
         """Front-page sensors: the price now and the cheapest hours, and the warnings."""
