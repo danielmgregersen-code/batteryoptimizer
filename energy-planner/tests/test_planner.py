@@ -1159,3 +1159,30 @@ def test_front_page_sensors(tmp_path):
     assert ha.published["sensor.energy_planner_warnings"][0] == 0
     cost = ha.published["sensor.energy_planner_cost_today"][1]
     assert "kr indtil nu" in cost["text"]
+
+
+def test_savings_today_from_the_counters_and_the_rest_of_the_plan(tmp_path):
+    from settings import counter_ids
+    ids = counter_ids(DEFAULTS)
+    day = datetime(2026, 11, 14, tzinfo=TZ)
+    rows = {k: [] for k in (ids["import"], ids["export"], ids["solar"], ids["battery_in"], ids["battery_out"],
+                            DEFAULTS["price_buy_entity"], DEFAULTS["price_sell_entity"])}
+    for h in range(11):                                                   # 00:00-11:00 local
+        ms = (day + timedelta(hours=h)).astimezone(UTC).timestamp() * 1000
+        sun = 2.0 if h >= 8 else 0.0
+        rows[ids["import"]].append({"start": ms, "change": 0.2})
+        rows[ids["export"]].append({"start": ms, "change": 0.0})
+        rows[ids["solar"]].append({"start": ms, "change": sun})
+        rows[ids["battery_in"]].append({"start": ms, "change": 0.0})
+        rows[ids["battery_out"]].append({"start": ms, "change": 0.5 if h < 8 else 0.0})
+        rows[DEFAULTS["price_buy_entity"]].append({"start": ms, "mean": 2.0})
+        rows[DEFAULTS["price_sell_entity"]].append({"start": ms, "mean": 0.5})
+    ha = make_ha(stats={DEFAULTS["house_load_entity"]: [], **rows})
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    p.run_once(datetime(2026, 11, 14, 10, 5, tzinfo=UTC))                # 11:05 local
+    state, attrs = ha.published["sensor.energy_planner_savings_today"]
+    # consumption = import + sun + battery out = 11*0.2 + 3*2 + 8*0.5 = 12.2 kWh; saved = (12.2 - 2.2) * 2 kr
+    assert state == pytest.approx(20.0, abs=0.01) and attrs["solar_kwh"] == 6.0
+    assert attrs["title"] == "Sparet 20 kr i dag" and attrs["text"].startswith("forventet ")
+    assert "sol 6,0 af" in attrs["text"] and attrs["expected_dkk"] == pytest.approx(state + attrs["rest_dkk"])
+    assert "sol 6,0 af" in ha.published["sensor.energy_planner_cost_today"][1]["text"]

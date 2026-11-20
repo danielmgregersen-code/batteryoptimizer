@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.20.1
+
+- **"I dag" shows savings:** new `sensor.energy_planner_savings_today`: saved so far today (from the
+  counters, as "Anlægsværdi" in the Økonomi tab) and expected for the whole day (the plan's remaining
+  hours plus the value of the battery's SoC change by midnight).
+- Today's solar production now comes from the solar counter (it showed 0,0 kWh).
+- The front-page card stacks show one card per line.
+
 ## 0.20.0
 
 - **Front-page cards:** new sensors `sensor.energy_planner_car_advice` ("Sæt bilen til" with when,
