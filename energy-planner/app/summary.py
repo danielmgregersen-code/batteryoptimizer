@@ -176,3 +176,92 @@ def reason_da(reason: str) -> str:
         if m:
             return f(m) + suffix
     return reason + suffix
+
+
+# ---- front-page sensors (short Danish texts for dashboard cards) ------------------------------
+LEVEL_DA = {"cheap": "billig", "normal": "normal", "dear": "dyr"}
+LEVEL_COLOR = {"cheap": "green", "normal": "grey", "dear": "red"}
+
+
+def when_text(start: datetime, end: datetime, now: datetime) -> str:
+    """"i nat kl. 02–05", "i aften kl. 20–23", "i dag kl. 13–16", "i morgen kl. 10–13"."""
+    s, e, n = start.astimezone(now.tzinfo), end.astimezone(now.tzinfo), now
+    days = (s.date() - n.date()).days
+    if days == 0:
+        rel = "i nat" if s.hour < 6 else "i aften" if s.hour >= 18 else "i dag"
+    elif days == 1 and s.hour < 8:
+        rel = "i nat"
+    elif days == 1:
+        rel = "i morgen"
+    else:
+        rel = WEEKDAY[s.weekday()]
+    return f"{rel} kl. {s:%H}–{e:%H}"
+
+
+def cheapest_window(rows: list, now: datetime, hours: int = 3):
+    """The cheapest run of `hours` consecutive plan hours within the next 24 h ->
+    {"start", "end", "avg"} (datetimes) or None."""
+    end = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=24)
+    rs = [(datetime.fromisoformat(r["t"]), r["buy"]) for r in rows if datetime.fromisoformat(r["t"]) < end]
+    best = None
+    for i in range(0, len(rs) - hours + 1):
+        win = rs[i:i + hours]
+        if any((win[k + 1][0] - win[k][0]) != timedelta(hours=1) for k in range(hours - 1)):
+            continue
+        avg = sum(b for _, b in win) / hours
+        if best is None or avg < best["avg"] - 1e-9:
+            best = {"start": win[0][0], "end": win[-1][0] + timedelta(hours=1), "avg": avg}
+    return best
+
+
+def price_attributes(rows: list, levels: list, now: datetime) -> dict:
+    """sensor.energy_planner_price: the hour's price, its level, and the cheapest 3 hours ahead."""
+    r0 = rows[0]
+    level = levels[0][1] if levels else "normal"
+    win = cheapest_window(rows, now)
+    cheapest = f"billigst {when_text(win['start'], win['end'], now)} · {num(win['avg'], 2)} kr" if win else None
+    return {
+        "level": level, "level_da": LEVEL_DA[level], "sell": round(r0["sell"], 3),
+        "cheapest_start": win and win["start"].isoformat(), "cheapest_end": win and win["end"].isoformat(),
+        "cheapest_avg": win and round(win["avg"], 3), "cheapest_text": cheapest,
+        "text": f"{LEVEL_DA[level].capitalize()} time · {num(r0['buy'], 2)} kr" + (f" · {cheapest}" if cheapest else ""),
+        "icon": {"cheap": "mdi:cash-check", "normal": "mdi:cash", "dear": "mdi:cash-remove"}[level],
+        "color": LEVEL_COLOR[level],
+    }
+
+
+def car_advice(car_info: dict, preview: dict, decision: dict, now: datetime) -> tuple:
+    """sensor.energy_planner_car_advice -> (state, attributes)."""
+    soc = ((decision or {}).get("soc_estimate") or {}).get("soc")
+    if soc is None:
+        soc = (car_info or {}).get("soc_pct")
+    base = {"soc": soc, "kwh": None, "window": None, "cost_dkk": None}
+    if (car_info or {}).get("connected"):
+        action = (decision or {}).get("action")
+        limit = car_info.get("max_soc_pct") or 90
+        if soc is not None and soc >= float(limit) - 0.5:
+            return "full", {**base, "title": "Bilen er ladet", "text": f"{num(soc, 0)} % (loft {num(limit, 0)} %)",
+                            "icon": "mdi:car-electric", "color": "green"}
+        if action == "charge":
+            return "charging", {**base, "title": "Lader nu", "text": (decision.get("reason_da") or "")
+                                + (f" · {num(soc, 0)} %" if soc is not None else ""),
+                                "icon": "mdi:ev-station", "color": "blue"}
+        nxt = (decision or {}).get("next_window")
+        return "waiting", {**base, "title": "Venter på billig strøm",
+                           "text": (nxt or "planen lader ikke bilen lige nu") + (f" · {num(soc, 0)} %" if soc is not None else ""),
+                           "icon": "mdi:car-clock", "color": "grey"}
+    if not preview:
+        return "unknown", {**base, "title": "Bilen er ikke tilsluttet", "text": "bilens SoC er ukendt",
+                           "icon": "mdi:car-off", "color": "grey"}
+    w = (preview.get("windows") or [None])[0]
+    window = when_text(datetime.fromisoformat(w["start"]), datetime.fromisoformat(w["end"]), now) if w else None
+    if preview.get("planned_kwh", 0) > 0.1:
+        cost = "på sol" if w and w.get("solar") and preview["cost_dkk"] < 0.5 else f"ca. {num(preview['cost_dkk'], 0)} kr"
+        return "plug_in", {**base, "kwh": preview["planned_kwh"], "window": window, "cost_dkk": preview["cost_dkk"],
+                           "title": "Sæt bilen til",
+                           "text": f"lader {num(preview['planned_kwh'])} kWh {window} · {cost} · når {num(preview['soc_at_deadline'], 0)} %",
+                           "icon": "mdi:power-plug", "color": "orange"}
+    return "not_needed", {**base, "title": "Ikke nødvendigt at sætte bilen til",
+                          "text": f"{num(preview['soc_now'], 0)} % · ingen billige timer før kl. "
+                                  f"{datetime.fromisoformat(preview['deadline']).astimezone(now.tzinfo):%H}",
+                          "icon": "mdi:car-electric", "color": "green"}

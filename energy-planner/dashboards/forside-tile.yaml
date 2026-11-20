@@ -1,0 +1,73 @@
+# Energy Planner – forside med HA's indbyggede tile-kort (ingen ekstra integrationer).
+# Indsæt: Rediger dashboard -> Tilføj kort -> Manuel, og indsæt alt herunder.
+type: vertical-stack
+cards:
+  # Advarsler: vises kun, når der er noget, der kræver opmærksomhed
+  - type: conditional
+    conditions:
+      - condition: numeric_state
+        entity: sensor.energy_planner_warnings
+        above: 0
+    card:
+      type: markdown
+      content: >-
+        {% for m in state_attr('sensor.energy_planner_warnings', 'messages') or [] %}
+        ⚠️ {{ m }}
+        {% endfor %}
+
+  # Sæt bilen til? – orange når den bør sættes til
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: sensor.energy_planner_car_advice
+        state: plug_in
+    card:
+      type: tile
+      entity: sensor.energy_planner_car_advice
+      name: Sæt bilen til
+      icon: mdi:power-plug
+      color: orange
+      state_content: text
+      vertical: false
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: sensor.energy_planner_car_advice
+        state_not: plug_in
+    card:
+      type: tile
+      entity: sensor.energy_planner_car_advice
+      name: Bilen
+      icon: mdi:car-electric
+      color: blue
+      state_content:
+        - title
+        - text
+
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - type: tile
+        entity: sensor.energy_planner_price
+        name: Elpris nu
+        icon: mdi:cash
+        color: green
+        state_content:
+          - state
+          - level_da
+          - cheapest_text
+      - type: tile
+        entity: sensor.energy_planner_mode
+        name: Husbatteri
+        icon: mdi:home-battery
+        color: amber
+        state_content:
+          - title
+          - next_action
+      - type: tile
+        entity: sensor.energy_planner_cost_today
+        name: I dag
+        icon: mdi:solar-power-variant
+        color: amber
+        state_content: text

@@ -1,0 +1,68 @@
+# Energy Planner – forside med Mushroom-kort (kræver Mushroom fra HACS).
+# Indsæt: Rediger dashboard -> Tilføj kort -> Manuel, og indsæt alt herunder.
+type: vertical-stack
+cards:
+  # Advarsler: vises kun, når der er noget, der kræver opmærksomhed
+  - type: conditional
+    conditions:
+      - condition: numeric_state
+        entity: sensor.energy_planner_warnings
+        above: 0
+    card:
+      type: custom:mushroom-template-card
+      primary: >-
+        {% set n = states('sensor.energy_planner_warnings') | int(0) %}
+        {{ n }} advarsel{{ 'er' if n > 1 else '' }}
+      secondary: >-
+        {{ (state_attr('sensor.energy_planner_warnings', 'messages') or []) | join(' · ') }}
+      icon: mdi:alert
+      icon_color: red
+      multiline_secondary: true
+
+  # Sæt bilen til?
+  - type: custom:mushroom-template-card
+    entity: sensor.energy_planner_car_advice
+    primary: "{{ state_attr(entity, 'title') }}"
+    secondary: "{{ state_attr(entity, 'text') }}"
+    icon: "{{ state_attr(entity, 'icon') or 'mdi:car-electric' }}"
+    icon_color: >-
+      {{ {'plug_in': 'orange', 'not_needed': 'green', 'full': 'green', 'charging': 'blue'}.get(states(entity), 'grey') }}
+    badge_icon: "{{ 'mdi:exclamation' if is_state(entity, 'plug_in') else '' }}"
+    badge_color: orange
+    multiline_secondary: true
+
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      # Elpris nu og billigste tid
+      - type: custom:mushroom-template-card
+        entity: sensor.energy_planner_price
+        primary: >-
+          {{ (state_attr(entity, 'level_da') or '') | capitalize }} time ·
+          {{ '%.2f' | format(states(entity) | float(0)) | replace('.', ',') }} kr
+        secondary: "{{ state_attr(entity, 'cheapest_text') }}"
+        icon: "{{ state_attr(entity, 'icon') or 'mdi:cash' }}"
+        icon_color: "{{ state_attr(entity, 'color') or 'grey' }}"
+        multiline_secondary: true
+
+      # Husbatteri og næste skift
+      - type: custom:mushroom-template-card
+        entity: sensor.energy_planner_mode
+        primary: "{{ state_attr(entity, 'title') }}"
+        secondary: "{{ state_attr(entity, 'next_action') or state_attr(entity, 'detail') }}"
+        icon: >-
+          {{ {'grid_charge': 'mdi:transmission-tower-import', 'solar_charge': 'mdi:solar-power',
+              'discharge': 'mdi:home-lightning-bolt', 'hold': 'mdi:battery-lock'}.get(states(entity), 'mdi:home-battery') }}
+        icon_color: >-
+          {{ {'grid_charge': 'teal', 'solar_charge': 'amber', 'discharge': 'blue', 'hold': 'grey'}.get(states(entity), 'grey') }}
+        multiline_secondary: true
+
+  # Sol og kroner i dag
+  - type: custom:mushroom-template-card
+    entity: sensor.energy_planner_cost_today
+    primary: "I dag"
+    secondary: "{{ state_attr(entity, 'text') }}"
+    icon: mdi:solar-power-variant
+    icon_color: amber
+    multiline_secondary: true
