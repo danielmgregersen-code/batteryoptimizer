@@ -1,4 +1,5 @@
 """One planning cycle: read HA -> build horizon -> solve -> setpoints -> write (production) -> publish + log."""
+import dataclasses
 import json
 import math
 import logging
@@ -459,6 +460,26 @@ class Planner:
         self._mode_state = (hour, out)
         return out
 
+    @staticmethod
+    def _min_session(solve_fn, cp, opts, keep_first: bool = False, critical: bool = False):
+        """Solve with the car, then take the car out of the hours of sessions that bring it less than
+        car_min_session_kwh and solve again (at most 3 times). -> (plan, car params, dropped: bool)."""
+        pl = solve_fn(cp)
+        min_kwh = float(opts.get("car_min_session_kwh", 0) or 0)
+        if cp is None or critical or min_kwh <= 0:
+            return pl, cp, False
+        dropped = False
+        for _ in range(3):
+            kwh = [float(x) for x in (pl.pv_car + pl.grid_car + pl.bat_car)]
+            drop = [i for i in carmod.small_sessions(kwh, min_kwh, opts.get("car_pause_gap_hours", 0), keep_first)
+                    if cp.available[i]]
+            if not drop:
+                break
+            off = set(drop)
+            cp = dataclasses.replace(cp, available=[a and i not in off for i, a in enumerate(cp.available)])
+            pl, dropped = solve_fn(cp), True
+        return pl, cp, dropped
+
     def _car_preview(self, horizon, now, opts, params, soc0, tv, fuse_amps, exp_min, car_soc, full, departure,
                      charge_lines=None):
         """What the plan would do with the car if it were plugged in now (nothing is written)."""
@@ -466,8 +487,10 @@ class Planner:
                                            full=full, departure=departure, extra=self._car_extra)
         if cp is None:
             return None
-        pl = solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
-                   car=cp, fuse_amps=fuse_amps, export_min_price=exp_min, charge_lines=charge_lines)
+        pl, cp, dropped = self._min_session(
+            lambda c: solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
+                            car=c, fuse_amps=fuse_amps, export_min_price=exp_min, charge_lines=charge_lines),
+            cp, opts, critical=car_soc is not None and car_soc < float(opts["car_critical_start_pct"]))
         cap = float(opts["car_battery_kwh"])
         rows, windows, cur = [], [], None
         for i, start in enumerate(horizon.starts):
@@ -508,6 +531,7 @@ class Planner:
         else:
             reason = "cheap"
         out = {"soc_now": car_soc, "planned_kwh": round(planned, 2), "cost_dkk": round(cost, 2),
+               "small_dropped": dropped, "min_session_kwh": float(opts.get("car_min_session_kwh", 0) or 0),
                "soc_at_deadline": round(at_deadline, 1), "deadline": info["deadline"],
                "max_soc_pct": info.get("max_soc_pct"), "windows": windows, "reason": reason, "rows": rows,
                "min_soc_pct": float(opts["car_min_stop_pct"]), "value_dkk": float(opts["car_value_dkk_per_kwh"])}
@@ -800,8 +824,11 @@ class Planner:
                      if opts.get("main_fuse_amps") else None)
         exp_min = float(opts["export_min_price"]) if opts.get("export_control") and opts.get("export_min_price") is not None else None
         charge_lines, curve_info = self._charge_lines(opts, horizon)
-        plan = solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
-                     car=car_params, fuse_amps=fuse_amps, export_min_price=exp_min, charge_lines=charge_lines)
+        crit = bool(car_params) and carmod.needs(car_soc, status == "charging", opts)["critical"]
+        plan, car_params, _ = self._min_session(
+            lambda c: solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
+                            car=c, fuse_amps=fuse_amps, export_min_price=exp_min, charge_lines=charge_lines),
+            car_params, opts, keep_first=bool(car_params) and status == "charging", critical=crit)
         solar_only = solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
                            allow_grid_charge=False, car=car_params, fuse_amps=fuse_amps, export_min_price=exp_min,
                            charge_lines=charge_lines)
@@ -1584,9 +1611,11 @@ class Planner:
                 "text": f"{num_da(cost, 0)} kr indtil nu" + (f" · {st}" if st else "")}
 
     def _publish_savings(self, opts: dict, now: datetime):
-        """sensor.energy_planner_savings_today: what the installation saved so far today (consumption at
-        the buy price minus the net cost, from the counters) and the expected total for the day (the
-        plan's remaining hours, plus the value of the battery's SoC change by midnight)."""
+        """sensor.energy_planner_savings_today: what the battery and its control have earned (or cost)
+        today compared with using / selling the sun directly, so far (the counters, as "Batteri" in the
+        Økonomi tab: out x buy - grid in x buy - sun in x sell) and expected for the whole day (plus the
+        plan's remaining hours and the value of the battery's SoC change from midnight to midnight).
+        Sun stored in the battery counts as a lost sale until it is used."""
         snap = self.latest
         tot = self._today_economy(opts, now)
         if not snap or tot is None:
@@ -1596,30 +1625,33 @@ class Planner:
         rows = [r for r in snap["plan"] if r["t"][:10] == today]
         rest = 0.0
         for r in rows:
-            car = (r.get("car_pv") or 0) + (r.get("car_grid") or 0) + (r.get("car_bat") or 0)
-            without = (r["load"] + car) * r["buy"]
-            net = (r["grid_load"] + r["grid_bat"] + (r.get("car_grid") or 0)) * r["buy"] - r["pv_exp"] * r["sell"]
-            rest += without - net
+            out = (r.get("bat_load") or 0) + (r.get("car_bat") or 0)
+            rest += (out - (r.get("grid_bat") or 0)) * r["buy"] - (r.get("pv_bat") or 0) * r["sell"]
         # The battery's SoC change over the whole day (midnight to midnight), not from now: what was
-        # stored so far today is already in the counters (sun not sold), what goes out tonight is in the
-        # plan's rows. Only energy the day leaves in (or takes from) the battery is valued separately.
+        # stored so far today is already in the counters, what goes out tonight is in the plan's rows.
+        # Only energy the day leaves in (or takes from) the battery is valued separately.
         soc_start, adjust = self._soc_at_day_start(opts, now), 0.0
         if rows and soc_start is not None:
             cap, eta = float(opts["battery_capacity_kwh"]), float(opts["eta_battery_to_load"])
             ahead = [r["buy"] for r in snap["plan"][:24]]
             adjust = (rows[-1]["soc_pct"] - soc_start) / 100.0 * cap * eta * (sum(ahead) / len(ahead))
             rest += adjust
-        saved = round(tot["value_dkk"], 2)
-        expected = round(saved + rest, 2)
+        value = round(tot["battery_value_dkk"], 2)
+        expected = round(value + rest, 2)
         solar = round(tot["solar_kwh"], 1)
         st = self._solar_text(solar, self._solar_forecast_today(now))
-        self.ha.set_state("sensor.energy_planner_savings_today", saved, {
-            "friendly_name": "Energy Planner sparet i dag", "icon": "mdi:piggy-bank", "unit_of_measurement": "DKK",
+        title = (f"Tjent {num_da(value, 0)} kr i dag" if value >= 0.5
+                 else f"Kostet {num_da(-value, 0)} kr indtil nu" if value <= -0.5 else "0 kr indtil nu")
+        sign = "+" if expected >= 0.5 else "−" if expected <= -0.5 else ""
+        self.ha.set_state("sensor.energy_planner_savings_today", value, {
+            "friendly_name": "Energy Planner batteriets værdi i dag", "icon": "mdi:piggy-bank",
+            "unit_of_measurement": "DKK",
             "expected_dkk": expected, "rest_dkk": round(rest, 2), "net_dkk": round(tot["net_dkk"], 2),
             "soc_start_pct": soc_start, "battery_adjust_dkk": round(adjust, 2),
+            "solar_value_dkk": round(tot["solar_value_dkk"], 2), "system_value_dkk": round(tot["value_dkk"], 2),
             "solar_kwh": solar, "solar_forecast_kwh": self._solar_forecast_today(now),
-            "title": f"Sparet {num_da(saved, 0)} kr i dag",
-            "text": f"forventet {num_da(expected, 0)} kr i alt" + (f" · {st}" if st else ""),
+            "title": title,
+            "text": f"forventet {sign}{num_da(abs(expected), 0)} kr i alt" + (f" · {st}" if st else ""),
             "updated": local.isoformat(timespec="seconds")})
 
     def _soc_at_day_start(self, opts: dict, now: datetime):

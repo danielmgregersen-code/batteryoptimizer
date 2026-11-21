@@ -1182,8 +1182,10 @@ def test_savings_today_from_the_counters_and_the_rest_of_the_plan(tmp_path):
     p.run_once(datetime(2026, 11, 14, 10, 5, tzinfo=UTC))                # 11:05 local
     state, attrs = ha.published["sensor.energy_planner_savings_today"]
     # consumption = import + sun + battery out = 11*0.2 + 3*2 + 8*0.5 = 12.2 kWh; saved = (12.2 - 2.2) * 2 kr
-    assert state == pytest.approx(20.0, abs=0.01) and attrs["solar_kwh"] == 6.0
-    assert attrs["title"] == "Sparet 20 kr i dag" and attrs["text"].startswith("forventet ")
+    # battery: 8 h x 0.5 kWh out at 2 kr, nothing charged today = 8 kr; the whole system saved 20 kr
+    assert state == pytest.approx(8.0, abs=0.01) and attrs["solar_kwh"] == 6.0
+    assert attrs["system_value_dkk"] == pytest.approx(20.0, abs=0.01) and attrs["solar_value_dkk"] == pytest.approx(12.0, abs=0.01)
+    assert attrs["title"] == "Tjent 8 kr i dag" and attrs["text"].startswith("forventet ")
     assert "sol 6,0 af" in attrs["text"] and attrs["expected_dkk"] == pytest.approx(state + attrs["rest_dkk"])
     assert "sol 6,0 af" in ha.published["sensor.energy_planner_cost_today"][1]["text"]
 
@@ -1196,14 +1198,19 @@ def test_savings_expected_values_the_days_soc_change_from_midnight_not_from_now(
         f.write(json.dumps({"updated": "2026-11-20T14:00:00+01:00", "soc_pct": 58.0}) + "\n")
     plan = [{"t": f"2026-11-20T{h:02d}:00:00+01:00", "buy": 3.45 if 17 <= h < 21 else 2.0, "sell": 1.0,
              "load": 0.9 if 17 <= h < 21 else 0.5, "grid_load": 0.0 if 17 <= h < 21 else 0.5, "grid_bat": 0.0,
+             "bat_load": 0.9 if 17 <= h < 21 else 0.0, "pv_bat": 0.0,
              "pv_exp": 0.0, "soc_pct": 10.0 if h >= 21 else 58.0 - (h - 16) * 12 if h >= 17 else 58.0}
             for h in range(14, 24)]
     p.latest = {"plan": plan, "soc_pct": 58.0}
-    p._today_economy = lambda opts, now: {"value_dkk": 5.0, "net_dkk": 1.0, "solar_kwh": 5.4}
+    # so far today only sun into the battery: a lost sale of 5 kr
+    p._today_economy = lambda opts, now: {"value_dkk": 0.0, "battery_value_dkk": -5.0, "solar_value_dkk": 5.0,
+                                          "net_dkk": 1.0, "solar_kwh": 5.4}
     p._publish_savings(DEFAULTS, now)
-    _, attrs = p.ha.published["sensor.energy_planner_savings_today"]
+    state, attrs = p.ha.published["sensor.energy_planner_savings_today"]
+    assert state == -5.0 and attrs["title"] == "Kostet 5 kr indtil nu"
     assert attrs["soc_start_pct"] == 10.0 and attrs["battery_adjust_dkk"] == pytest.approx(0.0)
-    assert attrs["expected_dkk"] == pytest.approx(5.0 + 4 * 0.9 * 3.45)    # the evening's discharge counts once
+    assert attrs["expected_dkk"] == pytest.approx(-5.0 + 4 * 0.9 * 3.45)    # the evening's discharge counts once
+    assert attrs["text"].startswith("forventet +7 kr i alt")
 
 
 class _P:
@@ -1286,3 +1293,26 @@ def test_car_price_history_merges_state_of_the_new_and_mean_of_the_old(tmp_path)
     p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), options_fn=lambda: {**DEFAULTS, "car_enabled": True})
     p._refresh_car_history({**DEFAULTS, "car_enabled": True}, now)
     assert p._price_history == [1.0, 2.5]
+
+
+def test_small_car_sessions_are_taken_out_of_the_plan_and_solved_again():
+    import numpy as np
+    from optimizer import CarParams
+
+    class Pl:
+        def __init__(self, kwh):
+            self.pv_car, self.grid_car, self.bat_car = np.array(kwh), np.zeros(len(kwh)), np.zeros(len(kwh))
+    calls = []
+
+    def solve_fn(cp):          # the "LP": 0.1 + 0.5 kWh at 13-14 while those hours are available, 4 kWh at night
+        calls.append(list(cp.available))
+        return Pl([0.1 if cp.available[0] else 0.0, 0.5 if cp.available[1] else 0.0, 0, 0, 0, 0, 4.0])
+    cp = CarParams(available=[True] * 7, max_kw=11, eta=0.92, soc0_kwh=50, max_kwh=99, value_dkk_per_kwh=1.0)
+    pl, cp2, dropped = Planner._min_session(solve_fn, cp, DEFAULTS)
+    assert dropped and cp2.available == [True, False, True, True, True, True, True] and len(calls) == 2
+    assert float(pl.pv_car.sum()) == pytest.approx(4.1)       # 0.1 kWh at 13 is below the 0.1 kWh threshold, left
+    running = lambda c: Pl([0.5, 0, 0, 0, 0, 0, 4.0])       # noqa: E731  charging now, 0.5 kWh left this session
+    _, cp3, dropped = Planner._min_session(running, cp, DEFAULTS, keep_first=True)
+    assert not dropped and cp3.available == cp.available
+    _, _, dropped = Planner._min_session(solve_fn, cp, DEFAULTS, critical=True)
+    assert not dropped

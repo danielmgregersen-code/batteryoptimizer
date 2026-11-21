@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning and control of a Growatt hybrid inverter, home battery and EV charging."
-version: "0.22.1"
+version: "0.23.0"
 slug: "energy_planner"
 init: false
 arch:
@@ -103,6 +103,7 @@ options:
   car_charge_switch_entity: "switch.ioniq_9_ev_charging"
   car_soc_time_entity: "sensor.ioniq_9_last_updated_at"
   car_pause_gap_hours: 2
+  car_min_session_kwh: 2.0
   car_pause_min_saving_dkk: 0.20
   car_trace_prefixes: ""
   car_thor_stop_fallback: true
@@ -216,6 +217,7 @@ schema:
   car_charge_switch_entity: str?
   car_soc_time_entity: str?
   car_pause_gap_hours: float(0,6)
+  car_min_session_kwh: float(0,20)
   car_pause_min_saving_dkk: float(0,2)
   car_trace_prefixes: str?
   car_thor_stop_fallback: bool

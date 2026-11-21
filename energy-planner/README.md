@@ -29,6 +29,10 @@ Create two helpers (Settings → Devices & services → Helpers → Toggle):
   (`charger_power_entity`, sampled every 5 s) × `car_eta`. So the controller stops at the limit or
   target instead of up to ~3 % past it. A full charge (≥ 99 %) still only counts from the car's own
   report. Shown in the Bil tab; `soc_estimated`, `soc_kia`, `soc_kia_at` on the car sensor.
+- **At least 2 kWh per charge** (`car_min_session_kwh` 2, 0 = off): a planned session (hours with
+  car charging, pauses up to `car_pause_gap_hours` included) that brings the car less is taken out of
+  the plan, the preview ("Sæt bilen til") and the controller never starts the charger for it (unless
+  the car is at its critical SoC). A charge already running may finish.
 - **Short gaps are not paused** (`car_pause_gap_hours` 2, `car_pause_min_saving_dkk` 0.20): when the
   plan wants a one-hour pause while charging from the grid, the next planned charge is within the gap
   and waiting saves less than 0.20 kr/kWh, the car keeps charging at `car_min_amps` instead (a pause
@@ -327,10 +331,13 @@ dashboard → Add card → Manual. They show:
   3 consecutive hours, e.g. "billigst i nat kl. 02–05 · 1,12 kr") for washing and drying.
 - **Husbatteri** `sensor.energy_planner_mode`: `title` ("Lader fra nettet · 41 %") and
   `next_action`.
-- **I dag** `sensor.energy_planner_savings_today`: saved so far today (consumption at the buy price
-  minus the net cost, from the counters, as "Anlægsværdi" in the Økonomi tab) and `expected_dkk`
-  for the whole day (plus the plan's remaining hours and the value of the battery's SoC change from
-  midnight to midnight); `title` "Sparet 12 kr i dag", `text` "forventet 31 kr i alt · sol 9,2 af 18,4 kWh".
+- **I dag** `sensor.energy_planner_savings_today`: what the battery and its control have earned or
+  cost today compared with using / selling the sun directly (as "Batteri" in the Økonomi tab:
+  out x buy - grid in x buy - sun in x sell, so sun stored counts as a lost sale until it is used),
+  so far and `expected_dkk` for the whole day (plus the plan's remaining hours and the value of the
+  battery's SoC change from midnight to midnight); `title` "Tjent 7 kr i dag" / "Kostet 5 kr indtil
+  nu", `text` "forventet +12 kr i alt · sol 9,2 af 18,4 kWh". `system_value_dkk` (sun and battery
+  against no installation) and `solar_value_dkk` are attributes.
 - **Advarsler** `sensor.energy_planner_warnings` (number of messages, `messages`): shown only when
   something needs attention (car/Kia problems, manual control, planning errors, missing entities,
   the THOR's own schedule).
