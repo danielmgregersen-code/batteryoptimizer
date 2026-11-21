@@ -338,9 +338,37 @@ dashboard → Add card → Manual. They show:
   battery's SoC change from midnight to midnight); `title` "Tjent 7 kr i dag" / "Kostet 5 kr indtil
   nu", `text` "forventet +12 kr i alt · sol 9,2 af 18,4 kWh". `system_value_dkk` (sun and battery
   against no installation) and `solar_value_dkk` are attributes.
+- **Maskiner** `sensor.energy_planner_appliances`: the best start of each appliance in the next 24
+  hours (`title` "Opvask i nat kl. 03 · Vask nu · Tørretumbler kl. 13", `text` one line each with the
+  cost and the saving against starting now, `appliances` the details). See *Appliances* below.
 - **Advarsler** `sensor.energy_planner_warnings` (number of messages, `messages`): shown only when
   something needs attention (car/Kia problems, manual control, planning errors, missing entities,
   the THOR's own schedule).
+
+## Appliances
+
+`appliances` lists the meters: `Opvask=sensor.shelly_opvaskemaskine_power,Vask+Tørretumbler=sensor.bryggers_shelly_vask_og_torre_effekt`.
+A meter with two names serves two appliances: a run whose mean power while running is at least
+`appliance_dryer_min_w` (700 W) is the second (the dryer), otherwise the first.
+
+Runs are found in the meters' 5-minute statistics once an hour (power above 15 W, pauses up to 15 min
+inside a run, at least 0.1 kWh) and kept in `/data/appliance_runs.json` (the latest 20 each). From 3
+runs the program is learned: median length and energy, and the share of the energy per hour from the
+start. Before that: dishwasher 2.5 h / 1.0 kWh, washer 2 h / 0.8 kWh, dryer 2 h / 2.0 kWh.
+
+The cost of a start uses the plan: per hour, sun the plan would curtail is free, sun it would sell
+costs the sell price, the rest the buy price. The best start is the cheapest whole hour (or now) from
+which the program ends within the next 24 hours; "nu" when waiting saves less than 0.25 kr.
+
+## Heat pump off in the dearest hours
+
+A dear hour without sun to sell is "off" when it is one of the `heat_pump_off_hours` (4) dearest of
+the next 24 hours, or its price is at least the `heat_pump_off_percentile` (90) of the last 30 days'
+prices - so a dear day can switch it off for longer. Then the add-on calls `climate.set_hvac_mode`
+`off` and remembers the mode it had; when the hour is no longer "off" it switches it on again with
+that mode (a heat pump switched off by someone else is left alone). Below `heat_pump_off_min_temp`
+(10 °C in the garage) it runs whatever the price, until the garage is a degree warmer; too humid or no
+temperature reading: no switching off.
 
 ## Outputs
 

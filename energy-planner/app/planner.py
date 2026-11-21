@@ -7,6 +7,7 @@ import os
 import threading
 from datetime import datetime, timedelta, timezone
 
+import appliances as appl
 import batterycurve
 import car as carmod
 import cartrace
@@ -21,7 +22,7 @@ from settings import REGISTER_KEYS, counter_ids, load_options, local_tz, split_c
 from setpoints import adjust_for_soc, derive_setpoints, step_mode
 from evaluation import evaluate
 from summary import num as num_da
-from summary import car_advice, price_attributes, CAR_ACTION_LABEL, reason_da, summary_attributes, upcoming
+from summary import appliance_advice, car_advice, price_attributes, CAR_ACTION_LABEL, reason_da, summary_attributes, upcoming
 import writer
 
 log = logging.getLogger("energy_planner")
@@ -38,6 +39,7 @@ MAX_LOG_LINES = 12000      # with a cycle every 5 min, 9000 lines are about 31 d
 KEEP_LOG_LINES = 9000
 LOG_READ = 9000
 PROFILE_MAX_AGE = timedelta(hours=6)
+GAP_DONE_MIN = 25                  # an appliance run counts as finished this long after its last power
 BACKFILL_DAYS = 14                 # Solcast keeps 14 days of undampened forecast history
 BACKFILL_RETRY = timedelta(hours=6)
 
@@ -125,6 +127,12 @@ class Planner:
         self.hp_levels_path = os.path.join(os.path.dirname(log_path) or ".", "heat_pump_levels.json")
         self._hp_levels = pvd.load_json(self.hp_levels_path, {})   # the level the heat pump ran with, per hour
         self._hp_power = {}               # its meter's hourly mean power (W)
+        self.appliance_runs_path = os.path.join(os.path.dirname(log_path) or ".", "appliance_runs.json")
+        self._appl_runs = pvd.load_json(self.appliance_runs_path, {})   # {appliance name: [runs]}
+        self._appl_learned_at = None
+        self.hp_state_path = os.path.join(os.path.dirname(log_path) or ".", "heat_pump_state.json")
+        # {"off_by_us": hvac mode to restore or None, "forced_on": bool}
+        self._hp_state = pvd.load_json(self.hp_state_path, {})
         self.trace = cartrace.CarTrace(os.path.dirname(log_path) or ".")   # diagnosis after charging stops
         self._trace_status_prev = None
         from collections import deque
@@ -362,7 +370,8 @@ class Planner:
             return {}, learned
         st = self.ha.state(entity) if hasattr(self.ha, "state") else None
         if (not writer.switch_on(self.ha, opts.get("heat_pump_production_switch_entity"))
-                or not st or st.get("state") in ("off", "unavailable", "unknown")):
+                or not st or st.get("state") in ("unavailable", "unknown")
+                or (st.get("state") == "off" and not self._hp_state.get("off_by_us"))):
             return {}, learned
         rows = []
         for i in range(24):
@@ -374,7 +383,7 @@ class Planner:
                          "pv_exp": 0.0, "pv_curt": 1.0 if free else 0.0})
         parts = profile.get("parts") or {}
         adj = {}
-        for r, level in heatpump.price_levels(rows, now.astimezone(self.tz)):
+        for r, level in heatpump.price_levels(rows, now.astimezone(self.tz), opts, self._price_history):
             h = datetime.fromisoformat(r["t"]).astimezone(UTC)
             local = h.astimezone(self.tz)
             part = parts.get((local.weekday() >= 5, local.hour))
@@ -383,7 +392,9 @@ class Planner:
         return adj, learned
 
     def _heat_pump_step(self, opts: dict, rows: list, now: datetime):
-        """Decide the garage heat pump's setpoint for this hour and set it (production helper on)."""
+        """Decide the garage heat pump's setpoint (and on / off) for this hour and apply it (production
+        helper on). It is only switched on again if the add-on switched it off; one the user switched
+        off is left alone."""
         entity = opts.get("heat_pump_entity")
         if not entity:
             return None
@@ -392,43 +403,114 @@ class Planner:
             return {"available": False, "entity": entity}
         num = lambda key: self.ha.number(opts[key]) if opts.get(key) else None
         d = heatpump.decide(rows, now.astimezone(self.tz), num("heat_pump_temp_entity"),
-                            num("heat_pump_humidity_entity"), opts)
+                            num("heat_pump_humidity_entity"), opts, history=self._price_history,
+                            forced_on=bool(self._hp_state.get("forced_on")))
         attrs = st.get("attributes") or {}
         current = attrs.get("temperature")
         hvac = st.get("state")
+        off_by_us = self._hp_state.get("off_by_us")
+        if hvac != "off" and off_by_us:
+            off_by_us = None                   # switched on by someone else meanwhile: ours again from here
         production = writer.switch_on(self.ha, opts.get("heat_pump_production_switch_entity"))
+        controlled = production and hvac not in ("unavailable", "unknown", None) and (hvac != "off" or off_by_us)
         d.update(entity=entity, available=True, current_setpoint=current, hvac_mode=hvac,
-                 production=production, written=None)
-        heatpump.record_level(self._hp_levels, hour_floor(now), d["level"], d["setpoint"],
-                              production and hvac not in ("off", "unavailable", "unknown", None), now)
+                 production=production, written=None, off_by_us=bool(off_by_us))
+        heatpump.record_level(self._hp_levels, hour_floor(now), d["level"], d["setpoint"], bool(controlled), now)
         pvd.save_json(self.hp_levels_path, self._hp_levels)
         d["expected"] = heatpump.learn_levels(self._hp_levels, self._hp_power, now,
                                               float(opts.get("profile_half_life_days") or 10))
-        hour = now.astimezone(self.tz).replace(minute=0, second=0, microsecond=0)
-        if production and hvac not in ("off", "unavailable", "unknown", None):
+
+        def call(service, data, what):
             try:
-                differs = current is None or abs(float(current) - d["setpoint"]) >= 0.5
-            except (TypeError, ValueError):
-                differs = True
-            if differs and self._hp_written_hour != hour:
+                if hasattr(self.ha, "set_allowed_entities"):
+                    self.ha.set_allowed_entities(writer.allowed_entities(opts))
+                self.ha.call_service("climate", service, {"entity_id": entity, **data})
+                log.info("heat pump: %s (%s)", what, d["reason"])
+                return {"what": what, "status": "ok"}
+            except Exception as e:
+                log.warning("heat pump: could not %s: %s", what, e)
+                return {"what": what, "status": "error", "error": str(e)}
+
+        hour = now.astimezone(self.tz).replace(minute=0, second=0, microsecond=0)
+        if controlled:
+            if d["hvac"] == "off" and hvac != "off":
+                d["written"] = call("set_hvac_mode", {"hvac_mode": "off"}, f"off (was {hvac})")
+                if d["written"]["status"] == "ok":
+                    off_by_us = hvac
+            elif d["hvac"] == "on" and hvac == "off" and off_by_us:
+                d["written"] = call("set_hvac_mode", {"hvac_mode": off_by_us}, f"on ({off_by_us})")
+                if d["written"]["status"] == "ok":
+                    off_by_us, hvac, current = None, off_by_us, None
+            if d["hvac"] == "on" and hvac != "off":
                 try:
-                    if hasattr(self.ha, "set_allowed_entities"):
-                        self.ha.set_allowed_entities(writer.allowed_entities(opts))
-                    self.ha.call_service("climate", "set_temperature",
-                                         {"entity_id": entity, "temperature": d["setpoint"]})
-                    self._hp_written_hour = hour
-                    d["written"] = {"from": current, "to": d["setpoint"], "status": "ok"}
-                    log.info("heat pump: %s -> %s °C (%s)", current, d["setpoint"], d["reason"])
-                except Exception as e:
-                    d["written"] = {"from": current, "to": d["setpoint"], "status": "error", "error": str(e)}
-                    log.warning("heat pump: could not set %s °C: %s", d["setpoint"], e)
-        nxt = next((x for x in d["plan"][1:] if x["setpoint"] != d["plan"][0]["setpoint"]), None) if d["plan"] else None
-        self.ha.set_state("sensor.energy_planner_heat_pump", d["setpoint"], {
-            "friendly_name": "Energy Planner varmepumpe", "icon": "mdi:heat-pump", "unit_of_measurement": "°C",
-            "level": d["level"], "reason": d["reason"], "room_temp": d["room_temp"], "humidity": d["humidity"],
-            "current_setpoint": current, "production": production,
-            "next_change": nxt["t"] if nxt else None, "next_setpoint": nxt["setpoint"] if nxt else None})
+                    differs = current is None or abs(float(current) - d["setpoint"]) >= 0.5
+                except (TypeError, ValueError):
+                    differs = True
+                if differs and (self._hp_written_hour != hour or d.get("written")):
+                    w = call("set_temperature", {"temperature": d["setpoint"]}, f"{current} -> {d['setpoint']} °C")
+                    if w["status"] == "ok":
+                        self._hp_written_hour = hour
+                    d["written"] = {**w, "from": current, "to": d["setpoint"],
+                                    **({"hvac": d["written"]} if d.get("written") else {})}
+        new_state = {"off_by_us": off_by_us, "forced_on": bool(d.get("forced_on"))}
+        if new_state != self._hp_state:
+            self._hp_state = new_state
+            pvd.save_json(self.hp_state_path, self._hp_state)
+        d["off_by_us"] = bool(off_by_us)
+        nxt = next((x for x in d["plan"][1:] if (x["level"] == "off") != (d["plan"][0]["level"] == "off")
+                    or x["setpoint"] != d["plan"][0]["setpoint"]), None) if d["plan"] else None
+        state = "off" if d["hvac"] == "off" else d["setpoint"]
+        self.ha.set_state("sensor.energy_planner_heat_pump", state, {
+            "friendly_name": "Energy Planner varmepumpe", "icon": "mdi:heat-pump",
+            **({"unit_of_measurement": "°C"} if state != "off" else {}),
+            "hvac": d["hvac"], "level": d["level"], "reason": d["reason"], "room_temp": d["room_temp"],
+            "humidity": d["humidity"], "current_setpoint": current, "production": production,
+            "next_change": nxt["t"] if nxt else None, "next_setpoint": nxt["setpoint"] if nxt else None,
+            "next_level": nxt["level"] if nxt else None})
         return d
+
+    def _learn_appliances(self, opts: dict, now: datetime, cfg: list):
+        """Runs of the appliance meters from the 5-minute statistics (about 10 days), once an hour."""
+        if self._appl_learned_at and now - self._appl_learned_at < timedelta(hours=1):
+            return
+        self._appl_learned_at = now
+        try:
+            stats = self.ha.statistics([c["entity"] for c in cfg], now - timedelta(days=10), now, "5minute")
+        except Exception as e:  # best effort: the runs kept in /data and the defaults stay
+            log.info("appliance runs: 5-minute statistics unavailable: %s", e)
+            return
+        dryer_w = float(opts.get("appliance_dryer_min_w", 700))
+        for c in cfg:
+            runs = appl.split_runs(stats.get(c["entity"]))
+            groups = [[], []]
+            for r in runs:
+                if datetime.fromisoformat(r["start"]) + timedelta(minutes=r["minutes"] + GAP_DONE_MIN) > now:
+                    continue                  # still running (or just paused): not complete yet
+                groups[appl.classify(r, dryer_w) if len(c["names"]) > 1 else 0].append(r)
+            for name, rs in zip(c["names"], groups):
+                appl.remember(self._appl_runs, name, rs)
+        pvd.save_json(self.appliance_runs_path, self._appl_runs)
+
+    def _appliances_step(self, opts: dict, rows: list, now: datetime) -> list:
+        """sensor.energy_planner_appliances: the best start of each appliance in the next 24 hours."""
+        cfg = appl.parse_config(opts.get("appliances") or "")
+        if not cfg:
+            return []
+        self._learn_appliances(opts, now, cfg)
+        local = now.astimezone(self.tz)
+        out = []
+        for c in cfg:
+            for name in c["names"]:
+                prog = appl.program(name, self._appl_runs.get(name, []))
+                best = appl.best_start(prog, rows, local)
+                if best:
+                    out.append({"name": name, **best, "minutes": prog["minutes"], "kwh": prog["kwh"],
+                                "learned": prog["learned"], "learned_runs": prog["runs"]})
+        state, attrs = appliance_advice(out, local)
+        self.ha.set_state("sensor.energy_planner_appliances", state, {
+            "friendly_name": "Energy Planner maskiner", "icon": "mdi:dishwasher", **attrs,
+            "appliances": out, "updated": local.isoformat(timespec="seconds")})
+        return out
 
     MODE_SWITCH_KWH = 0.15     # within an hour, hold <-> discharge only for at least this much energy
     MIN_SOC_DEADBAND = 2       # percentage points: smaller floor changes are not written
@@ -602,9 +684,11 @@ class Planner:
         return lines, info
 
     def _refresh_car_history(self, opts: dict, now: datetime):
-        """Car SoC (90 days, for the last full charge) and buy prices (30 days, for "rock bottom")."""
-        ids = [opts[k] for k in ("car_soc_entity", "price_buy_entity", "price_buy_fallback_entity") if opts.get(k)]
-        if not ids or not opts.get("car_enabled"):
+        """Car SoC (90 days, for the last full charge) and buy prices (30 days, for "rock bottom" and the
+        heat pump's "off" hours)."""
+        keys = ("car_soc_entity",) if opts.get("car_enabled") else ()
+        ids = [opts[k] for k in (*keys, "price_buy_entity", "price_buy_fallback_entity") if opts.get(k)]
+        if not ids or not (opts.get("car_enabled") or opts.get("heat_pump_entity")):
             return
         try:
             stats = self.ha.statistics(ids, now - timedelta(days=90), now, "hour")
@@ -979,6 +1063,11 @@ class Planner:
         elif car_info.get("full_charge", {}).get("active"):
             car_label = "Lader bilen til 100 % (bundpris)"
         snapshot["heat_pump"] = self._heat_pump_step(opts, rows, now)
+        try:
+            snapshot["appliances"] = self._appliances_step(opts, rows, now)
+        except Exception as e:  # the advice must never stop planning
+            log.warning("appliance advice skipped: %s", e)
+            snapshot["appliances"] = []
         snapshot["upcoming"] = upcoming(rows, bool(car_params), now.astimezone(self.tz).date(), car_label)
         snapshot["summary"] = summary_attributes(sp, snapshot["upcoming"])
         with self._lock:

@@ -69,3 +69,10 @@ cards:
     state_content:
       - title
       - text
+  - type: tile
+    entity: sensor.energy_planner_appliances
+    name: Maskiner
+    icon: mdi:dishwasher
+    color: purple
+    state_content:
+      - title
