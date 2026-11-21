@@ -64,6 +64,9 @@ def test_car_advice_states():
     assert st == "plug_in" and a["title"] == "Sæt bilen til" and a["text"] == "lader 14,3 kWh i nat kl. 04–06 · ca. 28 kr · når 42 %"
     st, a = car_advice({"connected": False}, {**pv, "planned_kwh": 0.0, "soc_now": 65.0}, {}, _NOW)
     assert st == "not_needed" and a["text"] == "65 % · ingen billige timer før kl. 06"
+    st, a = car_advice({"connected": False}, {**pv, "planned_kwh": 0.0, "soc_now": 55.0, "small_dropped": True,
+                                              "min_session_kwh": 2.0}, {}, _NOW)
+    assert st == "not_needed" and a["text"] == "55 % · under 2 kWh at hente før kl. 06"
     st, _ = car_advice({"connected": True, "max_soc_pct": 90}, None, {"action": "charge", "reason_da": "Planen: 11 kW",
                                                                     "soc_estimate": {"soc": 55.0}}, _NOW)
     assert st == "charging"

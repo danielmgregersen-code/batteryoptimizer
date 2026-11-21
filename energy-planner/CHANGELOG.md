@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.23.0
+
+- **The I dag card shows what the battery has earned or cost:** compared with using / selling the sun
+  directly. Sun stored in the battery is a lost sale (negative) until it is used in a dear hour.
+  "Tjent 7 kr i dag" / "Kostet 5 kr indtil nu", "forventet +12 kr i alt". The old number (sun and
+  battery against no installation) is kept as the attribute `system_value_dkk`.
+- **No charging for less than 2 kWh** (`car_min_session_kwh`): smaller planned sessions are taken
+  out of the plan and the "Sæt bilen til" preview, and the controller does not start the charger for
+  them (sun included). The critical SoC is exempt, and a charge already running may finish.
+
 ## 0.22.1
 
 - **"Forventet i alt" on the I dag card counted the battery twice:** the energy stored so far today

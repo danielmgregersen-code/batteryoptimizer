@@ -150,6 +150,8 @@ _REASONS = [
     (r"^car SoC unknown$", lambda m: "Bilens SoC er ukendt"),
     (r"^car at max SoC \((\d+) %\)$", lambda m: f"Bilen er på maks ({m[1]} %)"),
     (r"^critical SoC$", lambda m: "Kritisk lav SoC – lader fuldt"),
+    (r"^only ([\d.]+) kWh planned \(under ([\d.]+) kWh\): not starting$",
+     lambda m: f"Kun {num(float(m[1]))} kWh planlagt (under {num(float(m[2]), 0)} kWh): starter ikke"),
     (r"^plan: ([\d.]+) kW this hour$", lambda m: f"Planen: {num(float(m[1]))} kW denne time"),
     (r"^solar surplus (-?\d+) W$", lambda m: f"Soloverskud {num(float(m[1]) / 1000)} kW"),
     (r"^short gap, saves only (-?[\d.]+) DKK/kWh: keep charging at (\d+) A$",
@@ -266,6 +268,8 @@ def car_advice(car_info: dict, preview: dict, decision: dict, now: datetime) -> 
                            "text": f"lader {num(preview['planned_kwh'])} kWh {window} · {cost} · når {num(preview['soc_at_deadline'], 0)} %",
                            "icon": "mdi:power-plug", "color": "orange"}
     return "not_needed", {**base, "title": "Ikke nødvendigt at sætte bilen til",
-                          "text": f"{num(preview['soc_now'], 0)} % · ingen billige timer før kl. "
+                          "text": f"{num(preview['soc_now'], 0)} % · "
+                                  + (f"under {num(preview.get('min_session_kwh'), 0)} kWh at hente" if preview.get("small_dropped")
+                                     else "ingen billige timer") + " før kl. "
                                   f"{datetime.fromisoformat(preview['deadline']).astimezone(now.tzinfo):%H}",
                           "icon": "mdi:car-electric", "color": "green"}

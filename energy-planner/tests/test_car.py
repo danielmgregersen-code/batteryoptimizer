@@ -102,8 +102,8 @@ def live(**kw):
     return base
 
 
-def row(grid=0.0, pv=0.0, bat=0.0, dt=1.0):
-    return {"car_grid": grid, "car_pv": pv, "car_bat": bat, "dt": dt}
+def row(grid=0.0, pv=0.0, bat=0.0, dt=1.0, exp=0.0):
+    return {"car_grid": grid, "car_pv": pv, "car_bat": bat, "dt": dt, "pv_exp": exp}
 
 
 def services(d):
@@ -145,10 +145,32 @@ def test_cooldown_after_a_car_side_pause():
 
 def test_solar_follow_with_start_threshold():
     sunny = live(status="suspended_evse", pv_w=6000, load_w=600, sell=0.4, amps=6)
-    d = carmod.decide(sunny, row(), OPTS)                      # sun sells below the car value
+    d = carmod.decide(sunny, row(exp=3.0), OPTS)               # sun sells below the car value
     assert d["action"] == "charge" and d["target_amps"] == 7  # 5400 W / 690 W per A
     weak = live(status="suspended_evse", pv_w=4000, load_w=600, sell=0.4)
-    assert carmod.decide(weak, row(), OPTS)["action"] == "idle"   # below the 4200 W start
+    assert carmod.decide(weak, row(exp=3.0), OPTS)["action"] == "idle"   # below the 4200 W start
+    d = carmod.decide(sunny, row(exp=0.5), OPTS)               # too little sun left to be worth a start
+    assert d["action"] == "idle" and "under 2 kWh" in d["reason"]
+
+
+def test_small_sessions_are_found_merged_over_short_pauses_and_the_running_one_kept():
+    assert carmod.small_sessions([0.1, 0.5, 0, 0, 0, 3.0, 2.0], 2.0, gap_hours=2) == [1]
+    assert carmod.small_sessions([0.8, 0, 0.8, 0.8], 2.0, gap_hours=2) == []       # one session of 2.4 kWh
+    assert carmod.small_sessions([0.8, 0, 0, 0, 0.8], 2.0, gap_hours=2) == [0, 4]
+    assert carmod.small_sessions([0.8, 0, 0, 0, 0.8], 2.0, gap_hours=2, keep_first=True) == [4]
+    assert carmod.small_sessions([0.5], 0) == []
+
+
+def test_no_start_for_less_than_the_minimum_session_but_a_running_charge_continues():
+    waiting = live(status="suspended_evse")
+    d = carmod.decide(waiting, {**row(grid=0.5), "t": "2026-11-21T02:00:00+01:00"}, OPTS,
+                      ahead=[{**row(grid=0.4), "t": "2026-11-21T03:00:00+01:00"}])
+    assert d["action"] == "idle" and services(d) == []
+    d = carmod.decide(waiting, row(grid=1.5), OPTS, ahead=[row(grid=1.5)])
+    assert d["action"] == "charge"
+    d = carmod.decide(live(), row(grid=0.5), OPTS)             # charging already: it may finish
+    assert d["action"] == "charge"
+    assert carmod.decide(live(status="suspended_evse", car_soc=5.0), row(grid=0.5), OPTS)["action"] == "charge"
 
 
 def test_no_solar_charging_when_the_sun_sells_well_and_the_plan_says_no():

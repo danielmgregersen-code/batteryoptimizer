@@ -281,6 +281,52 @@ def short_gap(plan_row, ahead, opts):
     return saving if saving < float(opts.get("car_pause_min_saving_dkk", 0.20)) else None
 
 
+def small_sessions(car_kwh, min_kwh: float, gap_hours: float = 0, keep_first: bool = False) -> list:
+    """Steps of the planned charging sessions that bring less than `min_kwh` to the car (not worth
+    plugging in or starting the charger for). A session is the hours with > 0.1 kWh to the car, with
+    pauses of at most `gap_hours` inside it. keep_first: the session that includes step 0 is kept (the
+    charger is charging now and may finish)."""
+    if not min_kwh or min_kwh <= 0:
+        return []
+    gap = int(max(0.0, float(gap_hours or 0)))
+    sessions, last = [], None
+    for i, k in enumerate(car_kwh):
+        if k > 0.1:
+            if sessions and i - last - 1 <= gap:
+                sessions[-1].append(i)
+            else:
+                sessions.append([i])
+            last = i
+    out = []
+    for steps in sessions:
+        if keep_first and steps[0] == 0:
+            continue
+        if sum(float(car_kwh[j]) for j in steps) < min_kwh:
+            out += steps
+    return out
+
+
+def session_kwh(plan_row, ahead, sun_is_cheap: bool = False, gap_hours: float = 0) -> float:
+    """Energy for the car in the session that starts this hour: the planned car energy of this hour and
+    the following ones (pauses of at most `gap_hours` included). When the sun is cheap, an hour's
+    planned export counts too (the solar controller may take it)."""
+    gap = int(max(0.0, float(gap_hours or 0)))
+    total, idle = 0.0, 0
+    for r in [plan_row, *(ahead or [])]:
+        if not r:
+            break
+        car = float(r.get("car_grid") or 0) + float(r.get("car_pv") or 0) + float(r.get("car_bat") or 0)
+        k = car if car > 0.1 else (float(r.get("pv_exp") or 0) if sun_is_cheap else 0.0)
+        if k > 0.1:
+            total += k
+            idle = 0
+        else:
+            idle += 1
+            if idle > gap:
+                break
+    return total
+
+
 def decide(live: dict, plan_row, opts, ahead=None) -> dict:
     """One control step. live: status, car_soc, pv_w, load_w, charger_w, house_soc,
     bat_charge_w, amps, secs_since_status, sell. ahead: the plan's rows after the current hour.
@@ -344,6 +390,15 @@ def decide(live: dict, plan_row, opts, ahead=None) -> dict:
         if gap is not None:
             want, amps = True, amin
             reason = f"short gap, saves only {gap:.2f} DKK/kWh: keep charging at {amin} A"
+
+    # Not worth starting the charger for a few hundred Wh: only when the session brings at least
+    # car_min_session_kwh (the critical SoC and the no-plan fallback excepted).
+    min_kwh = float(opts.get("car_min_session_kwh", 0) or 0)
+    if want and not charging and min_kwh > 0 and source in ("plan", "solar") and plan_row:
+        got = session_kwh(plan_row, ahead, sun_is_cheap, opts.get("car_pause_gap_hours", 0))
+        if got < min_kwh:
+            want, amps = False, None
+            reason, source = f"only {got:.1f} kWh planned (under {min_kwh:g} kWh): not starting", "min_session"
 
     secs = live.get("secs_since_status", 9999)
     room, imax = fuse_room_amps(live, opts) if opts.get("main_fuse_amps") else (None, None)
