@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.24.0
+
+- **When to start the appliances:** new `sensor.energy_planner_appliances` and a "Maskiner" card
+  (panel and the front-page stacks): the best start of the dishwasher, the washing machine and the
+  dryer in the next 24 hours, with the cost and the saving against starting now. Programs are learned
+  from the Shelly meters (washer and dryer share one meter and are told apart by power,
+  `appliance_dryer_min_w`).
+- **Heat pump off in the dearest hours:** the `heat_pump_off_hours` (4) dearest hours of the day, and
+  every hour above the `heat_pump_off_percentile` (90) of the last 30 days' prices, switch the garage
+  heat pump off; it is switched on again (in its previous mode) when the price falls. Below
+  `heat_pump_off_min_temp` (10 °C) it runs whatever the price.
+
 ## 0.23.0
 
 - **The I dag card shows what the battery has earned or cost:** compared with using / selling the sun

@@ -1011,7 +1011,10 @@ def _hp_ha(production, temp=14.0):
     def call_service(domain, service, data=None, return_response=False):
         if domain == "climate":
             calls.append(data)
-            ha.climate["attributes"]["temperature"] = data["temperature"]
+            if service == "set_hvac_mode":
+                ha.climate["state"] = data["hvac_mode"]
+            else:
+                ha.climate["attributes"]["temperature"] = data["temperature"]
     ha.call_service = call_service
     return ha, calls
 
@@ -1025,9 +1028,27 @@ def test_heat_pump_setpoint_follows_the_price_and_is_set_once(tmp_path):
     assert calls == [{"entity_id": DEFAULTS["heat_pump_entity"], "temperature": 14}]
     p.run_once(datetime(2026, 11, 14, 2, 10, tzinfo=UTC))
     assert len(calls) == 1                                                # unchanged: nothing written
-    snap = p.run_once(datetime(2026, 11, 14, 16, 0, 20, tzinfo=UTC))      # 17:00, the peak
+    snap = p.run_once(datetime(2026, 11, 14, 15, 0, 20, tzinfo=UTC))      # 16:00, dear but not the dearest
     assert snap["heat_pump"]["setpoint"] == 10 and calls[-1]["temperature"] == 10
     assert ha.published["sensor.energy_planner_heat_pump"][0] == 10
+
+
+def test_heat_pump_is_switched_off_in_the_dearest_hours_and_on_again_by_the_add_on_only(tmp_path):
+    ha, calls = _hp_ha(production=True)
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    snap = p.run_once(datetime(2026, 11, 14, 16, 0, 20, tzinfo=UTC))      # 17:00, the peak
+    assert snap["heat_pump"]["hvac"] == "off" and calls == [{"entity_id": DEFAULTS["heat_pump_entity"], "hvac_mode": "off"}]
+    assert ha.climate["state"] == "off" and ha.published["sensor.energy_planner_heat_pump"][0] == "off"
+    p.run_once(datetime(2026, 11, 14, 16, 30, tzinfo=UTC))
+    assert len(calls) == 1
+    snap = p.run_once(datetime(2026, 11, 14, 21, 0, 20, tzinfo=UTC))      # 22:00, cheaper: on again, then the setpoint
+    assert calls[1] == {"entity_id": DEFAULTS["heat_pump_entity"], "hvac_mode": "heat"} and ha.climate["state"] == "heat"
+    assert "temperature" in calls[2]
+    # switched off by the user: left alone
+    ha2, calls2 = _hp_ha(production=True)
+    ha2.climate["state"] = "off"
+    Planner(ha2, tz=TZ, log_path=str(tmp_path / "e.jsonl")).run_once(datetime(2026, 11, 14, 21, 0, 20, tzinfo=UTC))
+    assert calls2 == []
 
 
 def test_heat_pump_manual_control_writes_nothing(tmp_path):
@@ -1316,3 +1337,25 @@ def test_small_car_sessions_are_taken_out_of_the_plan_and_solved_again():
     assert not dropped and cp3.available == cp.available
     _, _, dropped = Planner._min_session(solve_fn, cp, DEFAULTS, critical=True)
     assert not dropped
+
+
+def test_appliance_card_is_published_with_defaults_and_learns_runs(tmp_path):
+    p = Planner(make_ha(), tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    snap = p.run_once(datetime(2026, 11, 14, 11, 30, tzinfo=UTC))
+    assert [a["name"] for a in snap["appliances"]] == ["Opvask", "Vask", "Tørretumbler"]
+    state, attrs = p.ha.published["sensor.energy_planner_appliances"]
+    assert state == 3 and attrs["title"].startswith("Opvask ") and not attrs["appliances"][0]["learned"]
+    # three dishwasher runs in the 5-minute statistics -> learned
+    meter = "sensor.shelly_opvaskemaskine_power"
+    rows = []
+    for d in range(3):
+        t = datetime(2026, 11, 10 + d, 19, 0, tzinfo=UTC)
+        for i in range(24):                                     # 2 h: 30 min at 2 kW, then 150 W
+            rows.append({"start": (t + timedelta(minutes=5 * i)).timestamp() * 1000, "mean": 2000.0 if i < 6 else 150.0})
+    ha = make_ha(stats={meter: rows})
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "e.jsonl"))
+    snap = p.run_once(datetime(2026, 11, 14, 11, 30, tzinfo=UTC))
+    dish = snap["appliances"][0]
+    assert dish["learned"] and dish["learned_runs"] == 3 and dish["minutes"] == 120
+    assert dish["kwh"] == pytest.approx(1.0 + 0.225, abs=0.01)
+    assert (tmp_path / "appliance_runs.json").exists()

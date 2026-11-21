@@ -273,3 +273,31 @@ def car_advice(car_info: dict, preview: dict, decision: dict, now: datetime) -> 
                                      else "ingen billige timer") + " før kl. "
                                   f"{datetime.fromisoformat(preview['deadline']).astimezone(now.tzinfo):%H}",
                           "icon": "mdi:car-electric", "color": "green"}
+
+
+def _start_text(a: dict, now: datetime) -> str:
+    if a.get("now"):
+        return "nu"
+    s = datetime.fromisoformat(a["start"]).astimezone(now.tzinfo)
+    days = (s.date() - now.date()).days
+    rel = "" if days == 0 and s.hour >= 6 else "i nat " if (days == 0 or (days == 1 and s.hour < 8)) \
+        else "i morgen " if days == 1 else WEEKDAY[s.weekday()] + " "
+    return f"{rel}kl. {s:%H}"
+
+
+def appliance_advice(items: list, now: datetime) -> tuple:
+    """sensor.energy_planner_appliances -> (state, attributes): when each appliance is best started."""
+    if not items:
+        return 0, {"title": "Ingen maskiner", "text": ""}
+    title = " · ".join(f"{a['name']} {_start_text(a, now)}" for a in items)
+    lines = []
+    for a in items:
+        if a.get("now"):
+            what = "på sol" if a.get("solar") else "ingen billigere tid de næste 24 timer"
+            line = f"{a['name']}: start nu ({what}, ca. {num(a['cost_dkk'], 1)} kr)"
+        else:
+            line = (f"{a['name']}: {_start_text(a, now)} · {num(a['cost_dkk'], 1)} kr"
+                    + (" på sol" if a.get("solar") else "")
+                    + (f", sparer {num(a['saving_dkk'], 1)} kr mod nu" if a.get("saving_dkk") is not None else ""))
+        lines.append(line)
+    return len(items), {"title": title, "text": "\n".join(lines), "lines": lines}

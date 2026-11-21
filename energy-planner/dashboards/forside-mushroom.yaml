@@ -62,3 +62,12 @@ cards:
     icon: mdi:piggy-bank
     icon_color: green
     multiline_secondary: true
+
+  # Hvornår maskinerne bedst startes (de næste 24 timer)
+  - type: custom:mushroom-template-card
+    entity: sensor.energy_planner_appliances
+    primary: "{{ state_attr(entity, 'title') }}"
+    secondary: "{{ state_attr(entity, 'text') }}"
+    icon: mdi:dishwasher
+    icon_color: purple
+    multiline_secondary: true
