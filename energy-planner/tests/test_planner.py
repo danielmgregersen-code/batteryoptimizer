@@ -1211,7 +1211,7 @@ def test_savings_today_from_the_counters_and_the_rest_of_the_plan(tmp_path):
     assert "sol 6,0 af" in ha.published["sensor.energy_planner_cost_today"][1]["text"]
 
 
-def test_savings_expected_values_the_days_soc_change_from_midnight_not_from_now(tmp_path):
+def test_savings_expected_is_the_counters_plus_the_rest_of_the_plan(tmp_path):
     p = Planner(make_ha(stats={}), tz=TZ, log_path=str(tmp_path / "d.jsonl"))
     now = datetime(2026, 11, 20, 13, 5, tzinfo=UTC)                         # 14:05 local
     with open(tmp_path / "d.jsonl", "w") as f:
@@ -1229,7 +1229,6 @@ def test_savings_expected_values_the_days_soc_change_from_midnight_not_from_now(
     p._publish_savings(DEFAULTS, now)
     state, attrs = p.ha.published["sensor.energy_planner_savings_today"]
     assert state == -5.0 and attrs["title"] == "Kostet 5 kr indtil nu"
-    assert attrs["soc_start_pct"] == 10.0 and attrs["battery_adjust_dkk"] == pytest.approx(0.0)
     assert attrs["expected_dkk"] == pytest.approx(-5.0 + 4 * 0.9 * 3.45)    # the evening's discharge counts once
     assert attrs["text"].startswith("forventet +7 kr i alt")
     # sun into the battery while the house buys (battery first) costs the buy price, and the current

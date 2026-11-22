@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.24.3
+
+- **The I dag card no longer subtracts the battery's SoC drop.** "Forventet" valued the change of
+  the SoC from midnight to midnight, so energy charged yesterday and used today was taken off again
+  when it was used. It is now a plain cash view: a charge costs in the hour it happens, using the
+  battery earns the buy price in the hour it is used.
+
 ## 0.24.2
 
 - **Battery value: sun stored in battery first while the house buys costs the buy price.** In battery

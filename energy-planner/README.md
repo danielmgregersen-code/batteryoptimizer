@@ -337,8 +337,9 @@ dashboard → Add card → Manual. They show:
   cost today compared with using / selling the sun directly (as "Batteri" in the Økonomi tab:
   out x buy - grid in x buy - sun in x sell, so sun stored counts as a lost sale until it is used; sun
   stored in battery first while the house buys from the grid costs the buy price instead),
-  so far and `expected_dkk` for the whole day (plus the plan's remaining hours and the value of the
-  battery's SoC change from midnight to midnight); `title` "Tjent 7 kr i dag" / "Kostet 5 kr indtil
+  so far and `expected_dkk` for the whole day (plus the plan's hours to midnight). A cash view: a
+  charge costs in its hour, using the battery earns in its hour (also energy charged yesterday);
+  nothing is booked for the SoC itself. `title` "Tjent 7 kr i dag" / "Kostet 5 kr indtil
   nu", `text` "forventet +12 kr i alt · sol 9,2 af 18,4 kWh". `system_value_dkk` (sun and battery
   against no installation) and `solar_value_dkk` are attributes.
 - **Maskiner** `sensor.energy_planner_appliances`: the best start of each appliance in the next 24
