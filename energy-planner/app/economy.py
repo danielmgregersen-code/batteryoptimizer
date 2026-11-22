@@ -10,8 +10,9 @@ Per hour (kWh from the counters' hourly `change`, prices from the price sensors'
 
     sun -> battery  = min(battery in, solar);  grid -> battery = battery in - sun -> battery
     battery value   = battery out x buy - grid -> battery x buy - sun -> battery x sell
-                      (energy used at the hour's price, minus what charging it cost, including the
-                       sale the sun could have made instead)
+                      (energy used at the hour's price, minus what charging it cost: the sale the sun
+                       could have made instead - or, for the part stored in battery first while the
+                       house bought from the grid, the buy price, see battery_value)
     solar value     = system value - battery value                             (so the parts add up)
 
     car             = car kWh x buy                                            ("at the buy price")
@@ -58,6 +59,35 @@ def logged_prices(decisions: list) -> dict:
     return {h: (a[0] / a[2], a[1] / a[2]) for h, a in acc.items()}
 
 
+def battery_value(bout: float, grid_bat: float, sun_bat: float, house_import: float, bf_share: float,
+                  buy: float, sell: float) -> float:
+    """What the battery (and its control) changed in an hour, against the same hour without a battery:
+
+        out x buy - grid -> battery x buy - sun -> battery x (sell, or buy for the part the house bought meanwhile)
+
+    Sun stored is a lost sale when it would have been sold. In battery first the Growatt fills the
+    battery from the sun while the house buys from the grid: that part of the sun would have covered the
+    house, so it costs the buy price. `bf_share` is the share of the hour in battery first (from the
+    decision log); the overlap is that share of min(sun -> battery, house import)."""
+    overlap = max(0.0, min(1.0, bf_share)) * min(sun_bat, max(0.0, house_import))
+    return bout * buy - grid_bat * buy - (sun_bat - overlap) * sell - overlap * buy
+
+
+def battery_first_share(decisions: list) -> dict:
+    """{utc hour: share of the decisions in that hour with battery first set}."""
+    acc: dict = {}
+    for e in decisions or []:
+        try:
+            t = parse_ts(datetime.fromisoformat(e["updated"])).replace(minute=0, second=0, microsecond=0)
+        except (KeyError, TypeError, ValueError):
+            continue
+        bf = bool((e.get("setpoints") or {}).get("battery_first"))
+        a = acc.setdefault(t, [0, 0])
+        a[0] += bf
+        a[1] += 1
+    return {t: a[0] / a[1] for t, a in acc.items() if a[1]}
+
+
 def compute(stats: dict, ids: dict, tz, decisions: list = None, hourly: bool = True) -> dict:
     """ids: {"import", "export", "solar", "battery_in", "battery_out", "buy", "sell", "car"} -> entity ids.
 
@@ -72,6 +102,7 @@ def compute(stats: dict, ids: dict, tz, decisions: list = None, hourly: bool = T
     buy, sell = prices("buy"), prices("sell")
     car_w = get("car", "mean")
     fallback = logged_prices(decisions)
+    bf = battery_first_share(decisions)
     missing = [ids[k] for k in ("import", "export", "solar", "battery_in", "battery_out")
                if ids.get(k) and not stats.get(ids[k])]
     missing += [ids[k] for k in ("buy", "sell")
@@ -99,7 +130,7 @@ def compute(stats: dict, ids: dict, tz, decisions: list = None, hourly: bool = T
         value = without - net
         sun_bat = min(bin_, so)
         grid_bat = bin_ - sun_bat
-        bat_value = bout * b - grid_bat * b - sun_bat * s
+        bat_value = battery_value(bout, grid_bat, sun_bat, i - grid_bat, bf.get(t, 0.0), b, s)
         car_kwh = max(0.0, car_w.get(t, 0.0)) / 1000.0
         hours.append({
             "t": t.astimezone(tz).isoformat(timespec="minutes"),

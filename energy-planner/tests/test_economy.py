@@ -133,3 +133,20 @@ def test_new_price_sensor_state_with_the_old_sensors_mean_for_its_gaps():
     res = economy.compute(stats, ids, TZ)
     assert [(h["buy"], h["sell"]) for h in res["hours"]] == [(2.0, 1.0), (2.5, 1.1)]
     assert res["missing"] == []
+
+
+def test_sun_stored_in_battery_first_while_the_house_buys_costs_the_buy_price():
+    t = datetime(2026, 11, 20, 11, tzinfo=TZ)
+    # 1.2 kWh sun all into the battery (battery first), the house buys its 0.8 kWh meanwhile
+    stats = stats_for({t: dict(imp=0.8, exp=0.0, sol=1.2, bin=1.2, bout=0.0, buy=2.0, sell=1.0)})
+    plain = economy.compute(stats, IDS, TZ)["hours"][0]
+    assert plain["battery_value_dkk"] == pytest.approx(-1.2 * 1.0)          # no log: as a lost sale
+    log = [{"updated": (t + timedelta(minutes=m)).isoformat(), "setpoints": {"battery_first": True},
+            "price_now": {"buy": 2.0, "sell": 1.0}} for m in range(0, 60, 5)]
+    h = economy.compute(stats, IDS, TZ, decisions=log)["hours"][0]
+    # 0.8 kWh of it would have covered the house (buy price), 0.4 kWh would have been sold
+    assert h["battery_value_dkk"] == pytest.approx(-(0.8 * 2.0 + 0.4 * 1.0))
+    assert h["solar_value_dkk"] + h["battery_value_dkk"] == pytest.approx(h["value_dkk"])
+    half = [dict(e, setpoints={"battery_first": i % 2 == 0}) for i, e in enumerate(log)]
+    h = economy.compute(stats, IDS, TZ, decisions=half)["hours"][0]
+    assert h["battery_value_dkk"] == pytest.approx(-(0.4 * 2.0 + 0.8 * 1.0))

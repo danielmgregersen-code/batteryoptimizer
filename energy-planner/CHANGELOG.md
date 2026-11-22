@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.24.2
+
+- **Battery value: sun stored in battery first while the house buys costs the buy price.** In battery
+  first the Growatt fills the battery from the sun while the house takes from the grid; that sun would
+  otherwise have covered the house, so it was valued too cheaply (at the sell price). The share of each
+  hour in battery first comes from the decision log (the Økonomi tab and the I dag card), the plan's
+  own flows for the rest of the day.
+- The I dag card's "forventet" counts the current hour in full (the counters stop at the last whole
+  hour, so the part of it that has passed was missing).
+
 ## 0.24.1
 
 - **Tomorrow's prices from Strømligning's forecast, also before 13:00:** the forecast sensor starts

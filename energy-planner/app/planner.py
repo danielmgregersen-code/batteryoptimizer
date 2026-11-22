@@ -1735,10 +1735,10 @@ class Planner:
 
     def _publish_savings(self, opts: dict, now: datetime):
         """sensor.energy_planner_savings_today: what the battery and its control have earned (or cost)
-        today compared with using / selling the sun directly, so far (the counters, as "Batteri" in the
-        Økonomi tab: out x buy - grid in x buy - sun in x sell) and expected for the whole day (plus the
-        plan's remaining hours and the value of the battery's SoC change from midnight to midnight).
-        Sun stored in the battery counts as a lost sale until it is used."""
+        today against the same day with the panels but no battery (economy.battery_value, as "Batteri" in
+        the Økonomi tab), so far (the counters, whole hours) and expected for the whole day (plus the
+        plan's hours from the current one and the value of the battery's SoC change from midnight to
+        midnight). Sun stored that would have been sold counts as a lost sale until it is used."""
         snap = self.latest
         tot = self._today_economy(opts, now)
         if not snap or tot is None:
@@ -1747,9 +1747,14 @@ class Planner:
         today = local.date().isoformat()
         rows = [r for r in snap["plan"] if r["t"][:10] == today]
         rest = 0.0
-        for r in rows:
+        for i, r in enumerate(rows):
             out = (r.get("bat_load") or 0) + (r.get("car_bat") or 0)
-            rest += (out - (r.get("grid_bat") or 0)) * r["buy"] - (r.get("pv_bat") or 0) * r["sell"]
+            pv_bat, grid_load = r.get("pv_bat") or 0.0, (r.get("grid_load") or 0.0) + (r.get("car_grid") or 0.0)
+            # the plan's own flows: sun into the battery in an hour the house buys is battery first
+            v = economy.battery_value(out, r.get("grid_bat") or 0.0, pv_bat, grid_load, 1.0, r["buy"], r["sell"])
+            if i == 0 and r["t"][:13] == snap["plan"][0]["t"][:13] and 0 < (r.get("dt") or 1) < 1:
+                v /= r["dt"]     # the counters stop at the last whole hour: the current hour counts in full
+            rest += v
         # The battery's SoC change over the whole day (midnight to midnight), not from now: what was
         # stored so far today is already in the counters, what goes out tonight is in the plan's rows.
         # Only energy the day leaves in (or takes from) the battery is valued separately.

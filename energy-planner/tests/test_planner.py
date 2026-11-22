@@ -1232,6 +1232,12 @@ def test_savings_expected_values_the_days_soc_change_from_midnight_not_from_now(
     assert attrs["soc_start_pct"] == 10.0 and attrs["battery_adjust_dkk"] == pytest.approx(0.0)
     assert attrs["expected_dkk"] == pytest.approx(-5.0 + 4 * 0.9 * 3.45)    # the evening's discharge counts once
     assert attrs["text"].startswith("forventet +7 kr i alt")
+    # sun into the battery while the house buys (battery first) costs the buy price, and the current
+    # hour (the counters stop at the last whole hour) counts in full
+    plan[0].update(t="2026-11-20T14:00:00+01:00", dt=0.5, pv_bat=0.5, grid_load=0.25, buy=2.0, sell=1.0)
+    p._publish_savings(DEFAULTS, now)
+    _, attrs = p.ha.published["sensor.energy_planner_savings_today"]
+    assert attrs["expected_dkk"] == pytest.approx(-5.0 + 4 * 0.9 * 3.45 - (0.25 * 2.0 + 0.25 * 1.0) / 0.5)
 
 
 class _P:
