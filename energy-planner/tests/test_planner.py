@@ -1359,3 +1359,21 @@ def test_appliance_card_is_published_with_defaults_and_learns_runs(tmp_path):
     assert dish["learned"] and dish["learned_runs"] == 3 and dish["minutes"] == 120
     assert dish["kwh"] == pytest.approx(1.0 + 0.225, abs=0.01)
     assert (tmp_path / "appliance_runs.json").exists()
+
+
+def test_tomorrows_forecast_is_remembered_from_yesterdays_sensor_and_history(tmp_path):
+    now = datetime(2026, 11, 15, 8, 30, tzinfo=UTC)                     # 09:30 on the 15th, before 13:00
+    ha = make_ha()
+    ha.attrs[DEFAULTS["price_buy_entity"]] = strom_prices("2026-11-15", BUY_TODAY)
+    ha.attrs[DEFAULTS["price_sell_entity"]] = strom_prices("2026-11-15", SELL_TODAY)
+    ha.attrs[DEFAULTS["price_buy_forecast_entity"]] = strom_prices("2026-11-17", [5.0] * 24)   # from overmorgen
+    yesterday = {"attributes": strom_prices("2026-11-16", [4.0] * 24)}                       # seen yesterday
+    ha.history = lambda e, start, end=None: [yesterday] if e == DEFAULTS["price_buy_forecast_entity"] else []
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    snap = p.run_once(now)
+    tomorrow = [r for r in snap["plan"] if r["t"].startswith("2026-11-16")]
+    assert tomorrow and all(r["price_source"] == "forecast" and r["buy"] == pytest.approx(4.0) for r in tomorrow)
+    # remembered in /data: a restart without history still has it
+    ha.history = lambda e, start, end=None: []
+    snap = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl")).run_once(now)
+    assert all(r["price_source"] == "forecast" for r in snap["plan"] if r["t"].startswith("2026-11-16"))

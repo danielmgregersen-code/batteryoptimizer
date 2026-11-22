@@ -75,6 +75,22 @@ class HomeAssistant:
             log.warning("all_states failed: %s", e)
             return []
 
+    def history(self, entity_id: str, start: datetime, end: datetime = None) -> list:
+        """The entity's state objects (with attributes) from `start` (GET /api/history/period), oldest
+        first; [] if the call fails."""
+        params = {"filter_entity_id": entity_id}
+        if end is not None:
+            params["end_time"] = end.isoformat()
+        try:
+            r = requests.get(f"{self.base_url}/history/period/{start.isoformat()}", headers=self._headers,
+                             params=params, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            return data[0] if data else []
+        except (requests.RequestException, ValueError) as e:
+            log.warning("history(%s) failed: %s", entity_id, e)
+            return []
+
     def attributes(self, entity_id: str):
         s = self.state(entity_id)
         return (s or {}).get("attributes")

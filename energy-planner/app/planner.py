@@ -130,6 +130,10 @@ class Planner:
         self.appliance_runs_path = os.path.join(os.path.dirname(log_path) or ".", "appliance_runs.json")
         self._appl_runs = pvd.load_json(self.appliance_runs_path, {})   # {appliance name: [runs]}
         self._appl_learned_at = None
+        self.price_fc_path = os.path.join(os.path.dirname(log_path) or ".", "price_forecast.json")
+        self._price_fc = pvd.load_json(self.price_fc_path, {})          # {utc hour iso: forecast buy price}
+        self._price_fc_saved = dict(self._price_fc)
+        self._price_fc_backfilled = False
         self.hp_state_path = os.path.join(os.path.dirname(log_path) or ".", "heat_pump_state.json")
         # {"off_by_us": hvac mode to restore or None, "forced_on": bool}
         self._hp_state = pvd.load_json(self.hp_state_path, {})
@@ -768,7 +772,7 @@ class Planner:
         v = self.ha.number(e) if e else None
         return float(min(max(v if v is not None else float(opts.get("car_departure_soc", 100)), 0), 100))
 
-    def _prices(self, opts: dict) -> tuple:
+    def _prices(self, opts: dict, now: datetime = None) -> tuple:
         """Known buy / sell prices (the price sensors, gaps from the fallback sensors) and the buy
         price forecast. -> (buy, sell, buy_forecast), each {utc hour: DKK/kWh}."""
         def read(key):
@@ -776,7 +780,37 @@ class Planner:
             return parse_prices(self.ha.attributes(e) or {}) if e else {}
         buy = merge_prices(read("price_buy_entity"), read("price_buy_fallback_entity"))
         sell = merge_prices(read("price_sell_entity"), read("price_sell_fallback_entity"))
-        return buy, sell, read("price_buy_forecast_entity")
+        return buy, sell, self._price_forecast(opts, read("price_buy_forecast_entity"), now)
+
+    FORECAST_BACKFILL_DAYS = 3
+
+    def _price_forecast(self, opts: dict, current: dict, now: datetime = None) -> dict:
+        """The buy price forecast, remembered: Strømligning's forecast sensor starts two days ahead, so
+        tomorrow's forecast (needed before tomorrow's real prices come at ~13:00) was only in the sensor
+        yesterday. Each forecast seen is kept per hour (the newest wins) in /data; at start the last few
+        days are fetched from HA's history so nothing is lost across restarts."""
+        e = opts.get("price_buy_forecast_entity")
+        if not e:
+            return current
+        now = (now or datetime.now(UTC)).astimezone(UTC)
+        cache = self._price_fc
+        if not self._price_fc_backfilled and hasattr(self.ha, "history"):
+            self._price_fc_backfilled = True
+            try:
+                for st in self.ha.history(e, now - timedelta(days=self.FORECAST_BACKFILL_DAYS), now) or []:
+                    for h, v in parse_prices(st.get("attributes") or {}).items():
+                        cache[h.isoformat()] = v
+            except Exception as ex:  # best effort: the current sensor and the saved forecasts remain
+                log.info("price forecast history unavailable: %s", ex)
+        for h, v in (current or {}).items():
+            cache[h.isoformat()] = v
+        cutoff = (hour_floor(now) - timedelta(hours=2)).isoformat()
+        for k in [k for k in cache if k < cutoff]:
+            del cache[k]
+        if cache != self._price_fc_saved:
+            pvd.save_json(self.price_fc_path, cache)
+            self._price_fc_saved = dict(cache)
+        return {datetime.fromisoformat(k): v for k, v in cache.items()}
 
     def sell_price_now(self, opts: dict):
         """The current sell price (the fallback sensor when the main one is unavailable)."""
@@ -819,7 +853,7 @@ class Planner:
         now = (now or datetime.now(UTC)).astimezone(UTC)
         warnings = []
 
-        buy, sell, buy_fc = self._prices(opts)
+        buy, sell, buy_fc = self._prices(opts, now)
         if not buy or not sell:
             raise PlannerError("price sensors are unavailable")
 

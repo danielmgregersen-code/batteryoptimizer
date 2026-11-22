@@ -245,7 +245,9 @@ plan gets its price from the first of:
 1. the price sensors (`price_buy_entity`, `price_sell_entity`, Strømligning),
 2. the fallback sensors (`price_buy_fallback_entity`, `price_sell_fallback_entity`, the old Energi
    Data Service templates) for hours the price sensors lack,
-3. Strømligning's forecast (`price_buy_forecast_entity`); the sell price of a forecast hour is the
+3. Strømligning's forecast (`price_buy_forecast_entity`), remembered per hour (the sensor starts two
+   days ahead, so tomorrow's forecast is the one it showed yesterday; kept in `/data`, and read back
+   from HA's history at start); the sell price of a forecast hour is the
    forecast minus the buy - sell difference at the same hour of the last known day,
 4. the same hour of the last known day.
 

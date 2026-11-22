@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.24.1
+
+- **Tomorrow's prices from Strømligning's forecast, also before 13:00:** the forecast sensor starts
+  two days ahead, so tomorrow's forecast was only in it yesterday and the plan fell back to "same hour
+  as today". Every forecast seen is now kept per hour (`/data/price_forecast.json`, the newest wins),
+  and at start the last 3 days of the sensor are read from HA's history.
+
 ## 0.24.0
 
 - **When to start the appliances:** new `sensor.energy_planner_appliances` and a "Maskiner" card
