@@ -281,7 +281,7 @@ views:
               | Battery first | {{ 'Til' if a.battery_first else 'Fra' }} | {{ bf }} | {{ '✅' if (bf | lower == 'enabled') == a.battery_first else '⚠️ afviger' }} |
               | Lad fra nettet | {{ 'Til' if a.grid_charge else 'Fra' }} | {{ gc }} | {{ '✅' if (gc | lower == 'enabled') == a.grid_charge else '⚠️ afviger' }} |
               | Max SoC (mål) | {{ a.max_soc_pct ~ ' %' if a.max_soc_pct is not none else '–' }} | {{ mx }} % | {{ '' if a.max_soc_pct is none else ('✅' if (mx | float(0) - a.max_soc_pct) | abs <= 1 else '⚠️ afviger') }} |
-              | Min SoC (gulv) | {{ a.min_soc_pct }} % | {{ mn }} % | {{ '✅' if (mn | float(0) - a.min_soc_pct) | abs <= 1 else '⚠️ afviger' }} |
+              | Min SoC (grænse) | {{ a.min_soc_pct }} % | {{ mn }} % | {{ '✅' if (mn | float(0) - a.min_soc_pct) | abs <= 1 else '⚠️ afviger' }} |
               | Ladehastighed | {{ a.charge_rate_pct }} % | {{ cr }} % | {{ '' if not a.battery_first else ('✅' if (cr | float(0) - a.charge_rate_pct) | abs <= 5 else '⚠️ afviger') }} |
               | Eksportgrænse | {{ (a.export_limit_pct ~ ' %') if a.export_limit_pct is not none else ('Sælg' if a.export_hint == 'export' else 'Ingen') }} | {{ states('number.growatt_grid_export_limit') }} % | {{ '' if a.export_limit_pct is none else ('✅' if (states('number.growatt_grid_export_limit') | float(0) - a.export_limit_pct) | abs <= 1 else '⚠️ afviger') }} |
 
@@ -332,6 +332,6 @@ views:
             grid_options: { columns: 6 }
           - type: tile
             entity: sensor.energy_planner_soc_floor
-            name: Planner gulv
+            name: Planner grænse
             icon: mdi:battery-arrow-down
             grid_options: { columns: 6 }

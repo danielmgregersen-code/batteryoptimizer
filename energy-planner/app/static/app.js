@@ -63,7 +63,6 @@
     const hh = (parseInt(t.slice(11, 13), 10) + 1) % 24;
     return String(hh).padStart(2, '0') + ':00';
   };
-  const isOn = (v) => ['enabled', 'enable', 'on', 'true', '1'].includes(String(v ?? '').trim().toLowerCase());
 
   async function getJSON(url, opts) {
     const r = await fetch(url, opts);
@@ -100,7 +99,7 @@
     charge: 'Lader', pause: 'Pause', idle: 'Venter', none: 'Ikke tilsluttet',
   };
   const CHARGER_STATUS = {
-    available: 'Ledig', preparing: 'Klar (venter på start)', charging: 'Lader', suspended_ev: 'Pause (bil)',
+    available: 'Ledig (intet stik)', idle: 'Afsluttet: stikket skal ud og i igen', preparing: 'Klar (venter på start)', charging: 'Lader', suspended_ev: 'Pause (bil)',
     suspended_evse: 'Pause (lader)', finishing: 'Afslutter', faulted: 'Fejl', unavailable: 'Utilgængelig',
   };
 
@@ -522,21 +521,7 @@
 
   // ---------------------------------------------------------------- Plan tab
   // Main fuse: the highest phase right now against the fuse, and what the plan keeps within.
-  function fuseTile(p, carLatest) {
-    const f = (p && p.fuse) || {};
-    if (!f.fuse_amps) return null;
-    const livePh = carLatest && carLatest.live && carLatest.live.phase_amps;
-    const ph = livePh || f.phase_amps;
-    const imax = ph ? Math.max(...ph.map((a) => Math.abs(a))) : null;
-    const limited = carLatest && carLatest.fuse && carLatest.fuse.limited;
-    const capped = p.setpoints_live && p.setpoints_live.fuse_capped;
-    let detail = `planen holder sig under ${fmt(f.plan_limit_amps, 0)} A pr. fase`;
-    if (limited) detail = `bilen er skruet ned til ${carLatest.target_amps} A for sikringens skyld`;
-    if (capped) detail = `batteriets ladehastighed er sat ned til ${p.setpoints_live.charge_rate_pct} % for sikringens skyld`;
-    if (!ph) detail = 'ingen fasestrøm-målinger (grid_current_entities) · ' + detail;
-    return tile('Hovedsikring', imax != null ? h('span', {}, fmt(imax, 0), h('small', {}, ` / ${f.fuse_amps} A`)) : h('span', { style: { fontSize: '20px' } }, `${f.fuse_amps} A`),
-      detail, imax != null ? meter(imax / f.fuse_amps * 100, [{ v: (f.fuse_amps - 1) / f.fuse_amps * 100, title: 'Vagtens grænse' }], imax > f.fuse_amps - 1 ? 'warn' : '') : null);
-  }
+
 
   function tile(label, value, detail, extra) {
     return h('div', { class: 'tile' }, h('div', { class: 'label' }, label), h('div', { class: 'value' }, value), extra || null, detail ? h('div', { class: 'detail' }, detail) : null);
@@ -554,33 +539,6 @@
       when: it.when, what: it.label, why: it.text,
       color: it.kind === 'car' ? C.car : (MODES[it.mode] || MODES.hold).color,
     }));
-  }
-
-  function registerRows(p) {
-    const sp = p.setpoints_live || p.setpoints, a = p.actual_registers || {};
-    const writes = {};
-    for (const w of ((p.production || {}).writes || [])) writes[w.key] = w;
-    const rows = [
-      ['Battery first', sp.battery_first ? 'Til' : 'Fra', a.reg_battery_first, (x) => isOn(x) === sp.battery_first, 'reg_battery_first'],
-      ['Lad fra nettet', sp.grid_charge ? 'Til' : 'Fra', a.reg_grid_charge, (x) => isOn(x) === sp.grid_charge, 'reg_grid_charge'],
-      ['Max SoC (mål)', sp.max_soc_pct == null ? '–' : sp.max_soc_pct + ' %', a.reg_max_soc, (x) => sp.max_soc_pct == null || Math.abs(+x - sp.max_soc_pct) <= 1, 'reg_max_soc'],
-      ['Min SoC (gulv)', sp.min_soc_pct + ' %', a.reg_min_soc, (x) => Math.abs(+x - sp.min_soc_pct) <= 1, 'reg_min_soc'],
-      ['Ladehastighed', sp.charge_rate_pct + ' %', a.reg_charge_rate, (x) => !sp.battery_first || Math.abs(+x - sp.charge_rate_pct) <= 5, 'reg_charge_rate'],
-      sp.export_limit_pct != null
-        ? ['Eksportgrænse', sp.export_limit_pct + ' %' + (sp.export_reason === 'car' ? ' (bil)' : sp.export_allowed ? '' : ' (stop)'), a.reg_export_limit, (x) => Math.abs(+x - sp.export_limit_pct) <= 1, 'reg_export_limit']
-        : ['Eksport', sp.export_hint === 'export' ? 'Sælg' : 'Ingen', a.reg_export_limit, null, null],
-    ];
-    return rows.map(([name, planned, actual, same, key]) => {
-      const known = actual != null && actual !== 'unknown' && actual !== 'unavailable';
-      const ok = same && known ? same(actual) : null;
-      const w = key && writes[key];
-      const status = w
-        ? h('span', { class: 'flag ' + (w.status === 'error' ? 'warn' : 'ok'), title: w.error || '' },
-          w.status === 'error' ? 'Fejl' : (w.status === 'confirmed' ? 'Skrevet ' : 'Sendt ') + w.at.slice(11, 16))
-        : (ok == null ? '' : h('span', { class: 'flag ' + (ok ? 'ok' : 'warn') }, ok ? 'Ens' : 'Afviger'));
-      return h('tr', { class: ok === false && !w ? 'diff' : '' },
-        h('td', {}, name), h('td', {}, planned), h('td', {}, known ? String(actual) : '–'), h('td', {}, status));
-    });
   }
 
   // Why the cheap hour's grid power is split as it is between car and house battery.
@@ -631,8 +589,6 @@
     const m = MODES[sp.mode] || MODES.hold;
     const rows = p.plan;
     const r0 = rows[0];
-    const buys = rows.map((r) => r.buy);
-    const rank = buys.filter((b) => b < r0.buy).length / Math.max(1, buys.length - 1);
 
     const banners = [];
     if (p.last_error) banners.push(h('div', { class: 'banner error' }, icon.error(), h('div', {}, 'Seneste planlægning fejlede: ', p.last_error)));
@@ -648,9 +604,9 @@
       + (sp.run_target_pct > sp.max_soc_pct ? `, derefter sol til ${sp.run_target_pct} %` : '');
     else if (sp.handed_over) modeDetail = `nettet har ladet sin del, solen lader videre til ${sp.max_soc_pct} %`;
     else if (sp.mode === 'solar_charge') modeDetail = `til ${sp.max_soc_pct} %` + (sp.charge_rate_pct < 100 ? ` · ladehastighed ${sp.charge_rate_pct} %` : '');
-    else if (sp.mode === 'discharge') modeDetail = `${fmt(sp.discharge_kw, 1)} kW · gulv ${sp.min_soc_pct} %`;
+    else if (sp.mode === 'discharge') modeDetail = `${fmt(sp.discharge_kw, 1)} kW · grænse ${sp.min_soc_pct} %`;
     else modeDetail = sp.export_hint === 'export' ? 'solen sælges, batteriet gemmes'
-      : sp.hold_via === 'load_first' ? `batteriet gemmes (load first, gulv ${sp.min_soc_pct} %), overskudssol lagres` : 'batteriet gemmes til senere';
+      : sp.hold_via === 'load_first' ? `batteriet gemmes (load first, grænse ${sp.min_soc_pct} %), overskudssol lagres` : 'batteriet gemmes til senere';
     if (sp.kept_mode) modeDetail += ' · holder tilstanden inden for timen';
     const share0 = r0 && shareNote(p, r0);
     if (share0) modeDetail += ' · ' + share0.charAt(0).toLowerCase() + share0.slice(1);
@@ -660,16 +616,13 @@
     const tiles = h('div', { class: 'tiles' },
       tile('Nu', h('span', { class: 'mode-badge', style: { fontSize: '20px' } }, h('span', { class: 'mode-dot', style: { background: m.color } }), m.label), modeDetail),
       tile('Husbatteri', h('span', {}, fmt(p.soc_pct, 0), h('small', {}, ' %')),
-        `mål ${sp.max_soc_pct == null ? '–' : sp.max_soc_pct + ' %'} · gulv ${sp.min_soc_pct} %`,
-        meter(p.soc_pct, [{ v: sp.max_soc_pct, title: 'Mål' }, { v: sp.min_soc_pct, ghost: true, title: 'Gulv' }])),
-      tile('Pris nu', h('span', {}, fmt(r0.buy, 2), h('small', {}, ' kr/kWh')),
-        `salg ${fmt(r0.sell, 2)} kr · ${rank <= 0.25 ? 'blandt de billigste' : rank >= 0.75 ? 'blandt de dyreste' : 'middel'} timer i planen`),
+        `mål ${sp.max_soc_pct == null ? '–' : sp.max_soc_pct + ' %'} · grænse ${sp.min_soc_pct} %`,
+        meter(p.soc_pct, [{ v: sp.max_soc_pct, title: 'Mål' }, { v: sp.min_soc_pct, ghost: true, title: 'Grænse' }])),
       tile('Plan mod kun sol', h('span', {}, fmtSigned(p.savings_vs_solar_only_dkk, 2), h('small', {}, ' kr')),
         `sparet over ${p.horizon_hours} timer ved at lade fra nettet når det betaler sig`),
       p.car && p.car.enabled ? tile('Bil', p.car.connected ? h('span', {}, fmt(p.car.soc_pct, 0), h('small', {}, ' %')) : h('span', { class: 'ink2', style: { fontSize: '18px' } }, 'Ikke tilsluttet'),
         p.car.connected ? `planlagt ${fmt(p.car.planned_kwh, 1)} kWh frem til kl. ${p.car.deadline.slice(11, 16)}` : 'planen tager bilen med, når den sættes til',
-        p.car.connected ? meter(p.car.soc_pct, [{ v: 42, title: 'Minimum' }, { v: 90, ghost: true, title: 'Maks' }], 'car') : null) : null,
-      fuseTile(p, state.car && state.car.latest));
+        p.car.connected ? meter(p.car.soc_pct, [{ v: 42, title: 'Minimum' }, { v: 90, ghost: true, title: 'Maks' }], 'car') : null) : null);
 
     const hasCar = rows.some((r) => carIn(r) > 0.005);
     const chartBox = h('div', { class: 'chart' });
@@ -690,14 +643,6 @@
         h('span', { class: 'mode-dot', style: { background: it.color } }),
         h('div', {}, h('div', { class: 'line1' }, h('span', { class: 'what' }, it.what), h('span', { class: 'when' }, it.when)),
           h('div', { class: 'why' }, it.why))))) : h('div', { class: 'empty' }, 'Intet planlagt.'));
-
-    const prodOn = p.production && p.production.battery;
-    const regCard = h('div', { class: 'card' },
-      h('div', { class: 'card-head' }, h('h2', {}, 'Planner mod inverteren nu'),
-        h('span', { class: 'hint' }, prodOn ? 'Add-on’en skriver registrene (manuelle ændringer overskrives ved næste cyklus)' : 'Manuel styring: add-on’en skriver intet')),
-      h('div', { class: 'table-wrap' }, h('table', { class: 'cmp' },
-        h('thead', {}, h('tr', {}, h('th', {}, 'Register'), h('th', {}, 'Planner'), h('th', {}, 'Nu'), h('th', {}, ''))),
-        h('tbody', {}, registerRows(p)))));
 
     const table = h('table', {},
       h('thead', {}, h('tr', {}, ['Time', 'Tilstand', 'Køb', 'Salg', 'Sol', 'Forbrug', 'Sol→hus', 'Net→hus', 'Net→bat', 'Sol→bat', 'Bat→hus', 'Eksport', 'SoC', ...(p.car && p.car.connected ? ['Bil kWh', 'Bil %'] : [])].map((t) => h('th', {}, t)))),
@@ -739,7 +684,7 @@
         : legend([{ color: C.batt, label: 'Hverdag' }, { color: C.export, label: 'Weekend' }])),
       h('ul', { class: 'diag' }, profileDiagnostics(prof).map((d) => h('li', { class: d.warn ? 'warn' : '' }, d.text)))) : null;
 
-    root.replaceChildren(h('div', { class: 'stack' }, banners, tiles, chartCard, h('div', { class: 'grid-2' }, upCard, regCard), heatPumpCard(p.heat_pump), appliancesCard(p.appliances), profCard, curveCard, tableCard));
+    root.replaceChildren(h('div', { class: 'stack' }, banners, tiles, chartCard, upCard, heatPumpCard(p.heat_pump), appliancesCard(p.appliances), profCard, curveCard, tableCard));
     if (bc) {
       const at = (curve, soc) => {
         if (soc <= curve[0][0]) return curve[0][1];
@@ -1540,7 +1485,7 @@
     const decCard = h('div', { class: 'card' }, h('details', {},
       h('summary', {}, `Seneste beslutninger (${dec.length})`),
       h('div', { class: 'table-wrap' }, h('table', {},
-        h('thead', {}, h('tr', {}, ['Tid', 'SoC', 'Planner', 'Mål', 'Gulv', 'Rate', 'Battery first', 'Net-lad', 'Max', 'Min', 'Køb'].map((t) => h('th', {}, t)))),
+        h('thead', {}, h('tr', {}, ['Tid', 'SoC', 'Planner', 'Mål', 'Grænse', 'Rate', 'Battery first', 'Net-lad', 'Max', 'Min', 'Køb'].map((t) => h('th', {}, t)))),
         h('tbody', {}, dec.map((e) => {
           const mm = MODES[e.mode] || MODES.hold, sp = e.setpoints || {}, a = e.actual_registers || {};
           return h('tr', {},
@@ -1692,13 +1637,14 @@
     const p = state.plan;
     const pill = $('#mode-pill');
     const prod = (p && p.production) || {};
-    const parts = [prod.battery ? 'batteri' : null, prod.car ? 'bil' : null].filter(Boolean);
-    pill.textContent = parts.length === 2 ? 'Produktion' : parts.length ? 'Produktion: ' + parts[0] : 'Manuel styring';
-    pill.classList.toggle('live', parts.length > 0);
-    pill.classList.toggle('manual', p != null && parts.length === 0);
-    pill.title = parts.length
-      ? 'Add-on’en styrer ' + parts.join(' og ') + '. Slå hjælperen fra for at styre manuelt.'
-      : 'Add-on’en skriver intet. Tænd hjælperen igen for at give styringen tilbage.';
+    // Shown only when the add-on is not in control of everything (a helper switched off).
+    const off = p ? [prod.battery ? null : 'husbatteriet', p.car && p.car.enabled && !prod.car ? 'bilen' : null,
+      p.heat_pump && p.heat_pump.available !== false && p.heat_pump.production === false ? 'varmepumpen' : null].filter(Boolean) : [];
+    pill.hidden = off.length === 0;
+    pill.textContent = off.length ? 'Manuel styring: ' + off.join(', ') : '';
+    pill.classList.remove('live');
+    pill.classList.toggle('manual', off.length > 0);
+    pill.title = off.length ? 'Add-on’en skriver intet til ' + off.join(' og ') + '. Tænd hjælperen igen for at give styringen tilbage.' : '';
     $('#updated').textContent = p ? `Opdateret ${p.updated.slice(11, 16)} · ${p.horizon_hours} timers horisont` : (state.planError || '');
   }
   async function loadPlan() {

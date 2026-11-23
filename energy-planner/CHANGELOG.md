@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.24.5
+
+- Panel clean-up: the "Planner mod inverteren nu" card and the "Pris nu" and "Hovedsikring" tiles are
+  gone from the Plan tab; the badge at the top is only shown when something is under manual control
+  ("Manuel styring: bilen").
+- The charger's `idle` status (the THOR has ended the session, the cable has to be re-plugged) reads
+  "Afsluttet: stikket skal ud og i igen"; `available` reads "Ledig (intet stik)".
+- The battery's lower SoC limit is called "grænse" (was "gulv") everywhere.
+
 ## 0.24.4
 
 - **The I dag card shows "Anlægsværdi"** (the same number as the Økonomi tab), with the sun's and the
