@@ -256,6 +256,17 @@ def car_advice(car_info: dict, preview: dict, decision: dict, now: datetime) -> 
         return "waiting", {**base, "title": "Venter på billig strøm",
                            "text": (nxt or "planen lader ikke bilen lige nu") + (f" · {num(soc, 0)} %" if soc is not None else ""),
                            "icon": "mdi:car-clock", "color": "grey"}
+    if ((decision or {}).get("live") or {}).get("status") == "idle":
+        # The THOR has ended the session (it does so 3 min after the car stops drawing): the cable has to
+        # be unplugged and plugged in again before it can charge.
+        want = preview and preview.get("planned_kwh", 0) > 0.1
+        w = (preview.get("windows") or [None])[0] if want else None
+        when = when_text(datetime.fromisoformat(w["start"]), datetime.fromisoformat(w["end"]), now) if w else None
+        return "replug", {**base, "kwh": preview["planned_kwh"] if want else None, "window": when,
+                          "title": "Opladningen er afsluttet",
+                          "text": ("tag stikket ud og sæt det i igen" + (f" · lader {num(preview['planned_kwh'])} kWh {when}" if when else "")
+                                   if want else "laderen har afsluttet sessionen" + (f" · {num(soc, 0)} %" if soc is not None else "")),
+                          "icon": "mdi:power-plug-off", "color": "orange" if want else "green"}
     if not preview:
         return "unknown", {**base, "title": "Bilen er ikke tilsluttet", "text": "bilens SoC er ukendt",
                            "icon": "mdi:car-off", "color": "grey"}

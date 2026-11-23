@@ -72,3 +72,15 @@ def test_car_advice_states():
     assert st == "charging"
     assert car_advice({"connected": True, "max_soc_pct": 90}, None, {"action": "idle", "soc_estimate": {"soc": 90.0}}, _NOW)[0] == "full"
     assert car_advice({"connected": False}, None, {}, _NOW)[0] == "unknown"
+
+
+def test_car_advice_after_the_charger_ended_the_session():
+    pv = {"planned_kwh": 6.0, "cost_dkk": 10.0, "soc_at_deadline": 60.0, "soc_now": 42.0,
+          "deadline": "2026-11-21T06:00:00+01:00",
+          "windows": [{"start": "2026-11-21T02:00:00+01:00", "end": "2026-11-21T04:00:00+01:00", "solar": False}]}
+    idle = {"live": {"status": "idle"}, "soc_estimate": {"soc": 42.0}}
+    st, a = car_advice({"connected": False}, pv, idle, _NOW)
+    assert st == "replug" and a["title"] == "Opladningen er afsluttet"
+    assert a["text"] == "tag stikket ud og sæt det i igen · lader 6,0 kWh i nat kl. 02–04"
+    st, a = car_advice({"connected": False}, {**pv, "planned_kwh": 0.0}, idle, _NOW)
+    assert st == "replug" and a["text"] == "laderen har afsluttet sessionen · 42 %" and a["color"] == "green"

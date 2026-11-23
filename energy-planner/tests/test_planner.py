@@ -1113,6 +1113,14 @@ def test_trace_starts_when_charging_stops_and_by_hand(tmp_path):
     p2 = Planner(ha, tz=TZ, log_path=str(tmp_path / "e" / "d.jsonl"), car_log_path=str(tmp_path / "f.jsonl"))
     p2.trace_tick(datetime(2026, 11, 18, 12, 0, tzinfo=UTC), manual=True)
     assert p2.trace.active() and p2.trace.list()[0]["trigger"] == "manuel start fra panelet"
+    # a pause sent by the add-on whose call has not returned yet (the car stops before it does)
+    p3 = Planner(ha, tz=TZ, log_path=str(tmp_path / "g" / "d.jsonl"), car_log_path=str(tmp_path / "h.jsonl"))
+    ha.texts[status] = "charging"
+    p3.trace_tick(datetime(2026, 11, 23, 4, 0, 20, tzinfo=UTC))
+    p3._car_stop_sent = (datetime(2026, 11, 23, 4, 0, 21, tzinfo=UTC), "switch.ioniq_9_ev_charging")
+    ha.texts[status] = "suspended_ev"
+    p3.trace_tick(datetime(2026, 11, 23, 4, 0, 25, tzinfo=UTC))
+    assert p3.trace.list()[0]["trigger"] == "add-on'en: pause via switch.ioniq_9_ev_charging"
 
 
 

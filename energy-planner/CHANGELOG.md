@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.24.6
+
+- **The car card after the THOR ended the session** (status `idle`): "Opladningen er afsluttet" -
+  "tag stikket ud og sæt det i igen · lader 6 kWh i nat kl. 02–04" when the plan wants to charge,
+  otherwise "laderen har afsluttet sessionen". The Mushroom card takes its colour from the sensor.
+- Diagnosis traces name the add-on's pause even when the car stops before the call returns (it showed
+  "ukendt").
+
 ## 0.24.5
 
 - Panel clean-up: the "Planner mod inverteren nu" card and the "Pris nu" and "Hovedsikring" tiles are

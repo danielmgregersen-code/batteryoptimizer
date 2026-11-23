@@ -114,6 +114,7 @@ class Planner:
         self.car_latest = None
         self._car_last_logged = None
         self._last_kia = None          # (service, charger status, time) of the last Kia call
+        self._car_stop_sent = None     # (time, via) of the last pause sent, before its call returns
         self._kia_block_until = None   # PIN / access error: no Kia calls before this
         self._kia_fails = 0            # consecutive failed Kia calls (backoff)
         self._kia_next_try = None
@@ -332,7 +333,10 @@ class Planner:
         if manual or (prev == "charging" and status not in (None, "charging")):
             last = (self.car_latest or {}).get("executed") or []
             kia = next((x for x in last if x.get("service") == "kia_uvo.stop_charge"), None)
+            sent = self._car_stop_sent    # set before the call: it can take longer than the car takes to stop
+            recent = sent and (now.astimezone(UTC) - sent[0]).total_seconds() < 180
             trigger = ("manuel start fra panelet" if manual else
+                       f"add-on'en: pause via {sent[1]}" if recent else
                        f"add-on'en: kia stop_charge ({kia.get('status')})" if kia else "ukendt (bil, app eller lader?)")
             if self.trace.start(now, trigger, prev, status):
                 log.info("car trace started: %s (%s -> %s)", trigger, prev, status)
@@ -1407,6 +1411,8 @@ class Planner:
                         done.append(res)
                         continue
                     call = getattr(self.ha, "call_service_ws", None) or self.ha.call_service
+                    if svc == "kia_uvo.stop_charge":
+                        self._car_stop_sent = (now.astimezone(UTC), switch or "kia_uvo.stop_charge")
                     try:
                         if switch:
                             call("switch", "turn_off", {"entity_id": switch})

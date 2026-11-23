@@ -25,9 +25,8 @@ cards:
     primary: "{{ state_attr(entity, 'title') }}"
     secondary: "{{ state_attr(entity, 'text') }}"
     icon: "{{ state_attr(entity, 'icon') or 'mdi:car-electric' }}"
-    icon_color: >-
-      {{ {'plug_in': 'orange', 'not_needed': 'green', 'full': 'green', 'charging': 'blue'}.get(states(entity), 'grey') }}
-    badge_icon: "{{ 'mdi:exclamation' if is_state(entity, 'plug_in') else '' }}"
+    icon_color: "{{ state_attr(entity, 'color') or 'grey' }}"
+    badge_icon: "{{ 'mdi:exclamation' if state_attr(entity, 'color') == 'orange' else '' }}"
     badge_color: orange
     multiline_secondary: true
 
