@@ -25,9 +25,40 @@ def _d(v) -> date:
     return v if isinstance(v, date) and not isinstance(v, datetime) else date.fromisoformat(str(v)[:10])
 
 
+def _median(vals):
+    v = sorted(vals)
+    n = len(v)
+    return (v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.0) if n else 0.0
+
+
+OUTLIER_MADS = 8.0          # a day further than this many (scaled) MADs from the median is an error
+OUTLIER_MIN_DKK = 30.0      # ... and at least this far
+
+
+def drop_outliers(values: dict, label: str) -> tuple:
+    """Days whose value is clearly an error (a counter reset or a glitch in the source, e.g. -2 293 kr
+    in one day): further than OUTLIER_MADS robust deviations from the median. -> (clean, rejected)."""
+    if len(values) < 20:
+        return dict(values), []
+    vals = list(values.values())
+    med = _median(vals)
+    mad = _median([abs(v - med) for v in vals]) * 1.4826
+    limit = OUTLIER_MADS * mad + OUTLIER_MIN_DKK
+    clean, rejected = {}, []
+    for d, v in values.items():
+        if abs(v - med) > limit:
+            rejected.append({"day": d.isoformat(), "value": round(v, 2), "source": label})
+        else:
+            clean[d] = v
+    return clean, sorted(rejected, key=lambda x: x["day"])
+
+
 def daily_values(start: date, end: date, measured: dict, old: dict, solar: dict, price_change: date) -> dict:
-    """-> {"days": [{day, value, source, solar_kwh}], "rates": {month: kr/kWh}, "per_day": {month: kr}}.
-    measured / old / solar: {date: value} (measured only for well-covered days)."""
+    """-> {"days": [{day, value, source, solar_kwh}], "rates": {month: kr/kWh}, "per_day": {month: kr},
+    "rejected": [...]}. measured / old / solar: {date: value} (measured only for well-covered days).
+    Days that are clearly errors in a source are left out of it (the next source is used)."""
+    measured, rej_m = drop_outliers(measured, "measured")
+    old, rej_o = drop_outliers(old, "old")
     ref_val, ref_sol, ref_days = {}, {}, {}
     d = start
     while d <= end:
@@ -61,7 +92,7 @@ def daily_values(start: date, end: date, measured: dict, old: dict, solar: dict,
         days.append({"day": d.isoformat(), "value": float(v), "source": src, "solar_kwh": solar.get(d)})
         d += timedelta(days=1)
     return {"days": days, "rates": {m: round(r, 3) for m, r in sorted(rates.items())},
-            "per_day": {m: round(v, 2) for m, v in sorted(per_day.items())}}
+            "per_day": {m: round(v, 2) for m, v in sorted(per_day.items())}, "rejected": rej_m + rej_o}
 
 
 def expected_per_year(days: list, price_change: date, solar_weight: dict = None) -> dict:
@@ -102,6 +133,24 @@ def solar_weights(days: list, price_change: date) -> dict:
     return {m: a[0] / a[1] * _month_days(m) for m, a in acc.items() if a[1]}
 
 
+def value_weights(days: list) -> dict:
+    """How a year's value is spread over the calendar months, from the history: the mean value per day
+    of each month over all its measured / old-sensor days (several years averaged, so the spring with
+    sun *and* high prices weighs what it really earned) x the days in the month. Months without history
+    get the mean of the others."""
+    acc = {}
+    for x in days:
+        if x["source"] in ("measured", "old"):
+            a = acc.setdefault(_d(x["day"]).month, [0.0, 0])
+            a[0] += x["value"]
+            a[1] += 1
+    per_day = {m: max(0.0, a[0] / a[1]) for m, a in acc.items() if a[1] >= 10}
+    if not per_day:
+        return {}
+    mean = sum(per_day.values()) / len(per_day)
+    return {m: per_day.get(m, mean) * _month_days(m) for m in range(1, 13)}
+
+
 def summary(days: list, today_dkk: float, cost: float, life_years: float, install: date, today: date,
             price_change: date, goal_years: float = 10.0) -> dict:
     """goal_years: the payback the installation was bought for; the goal per year is cost / goal_years,
@@ -134,7 +183,8 @@ def summary(days: list, today_dkk: float, cost: float, life_years: float, instal
     end_of_life = date(install.year + int(life_years), install.month, install.day) if life_years else None
     years_left = max(0.0, (end_of_life - today).days / 365.25) if end_of_life else 0.0
     goal_year = (cost / goal_years) if cost and goal_years else per_year
-    gl = goals(days, today_dkk, today, goal_per_day(goal_year, solar_weights(days, price_change)), end_of_life)
+    gl = goals(days, today_dkk, today,
+               goal_per_day(goal_year, value_weights(days) or solar_weights(days, price_change)), end_of_life)
     gl.update(goal_per_year_dkk=round(goal_year, 0), goal_payback_years=goal_years)
     return {
         "goals": gl,

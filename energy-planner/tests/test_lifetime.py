@@ -79,12 +79,26 @@ def test_goals_per_day_week_month_and_year():
     assert g["forecast"][-1]["month"] == "2048-07"
 
 
-def test_the_goal_is_payback_in_10_years_spread_by_the_sun():
-    days = [{"day": d.isoformat(), "value": 10.0, "source": "old", "solar_kwh": (30.0 if 4 <= d.month <= 9 else 4.0)}
+def test_the_goal_is_payback_in_10_years_spread_by_the_historical_value():
+    # spring earns most (sun and high prices), summer less, winter little - the goal follows the value
+    val = {1: 3, 2: 8, 3: 30, 4: 55, 5: 60, 6: 40, 7: 35, 8: 30, 9: 25, 10: 12, 11: 5, 12: 2}
+    days = [{"day": d.isoformat(), "value": float(val[d.month]), "source": "old", "solar_kwh": (30.0 if 6 <= d.month <= 8 else 4.0)}
             for d in span(date(2024, 1, 1), date(2025, 12, 31))]
     s = lm.summary(days, 0.0, 120000, 25, INSTALL, date(2026, 1, 15), CHANGE, goal_years=10)
     g = s["goals"]
     assert g["goal_per_year_dkk"] == 12000 and g["goal_payback_years"] == 10
     gpd = {int(k): v for k, v in g["goal_by_month"].items()}
     assert sum(gpd[m] * lm._month_days(m) for m in range(1, 13)) == pytest.approx(12000, abs=2)
-    assert gpd[7] > 5 * gpd[1]
+    assert gpd[5] > gpd[7] > gpd[1]                                      # May above July, not by the sun
+    assert gpd[5] / gpd[1] == pytest.approx(60 / 3, rel=0.01)
+
+
+def test_a_glitch_in_the_old_sensor_is_left_out_and_estimated_instead():
+    old = {d: 20.0 + (d.day % 7) for d in span(date(2024, 1, 1), date(2024, 12, 31))}
+    old[date(2024, 6, 14)] = -2293.0
+    solar = {d: 10.0 for d in old}
+    res = lm.daily_values(date(2024, 1, 1), date(2024, 12, 31), {}, old, solar, CHANGE)
+    by = {x["day"]: x for x in res["days"]}
+    assert by["2024-06-14"]["source"] == "estimated" and 15 < by["2024-06-14"]["value"] < 30
+    assert res["rejected"] == [{"day": "2024-06-14", "value": -2293.0, "source": "old"}]
+    assert by["2024-06-13"]["source"] == "old"

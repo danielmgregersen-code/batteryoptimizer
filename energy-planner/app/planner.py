@@ -1873,7 +1873,7 @@ class Planner:
         res = lifemod.summary(days["days"], (tot or {}).get("value_dkk", 0.0),
                               float(opts.get("installation_cost_dkk") or 0), float(opts.get("installation_life_years") or 0),
                               install, today, change, float(opts.get("goal_payback_years") or 10))
-        res.update(rates=days["rates"], per_day=days["per_day"], price_change=change.isoformat(),
+        res.update(rates=days["rates"], per_day=days["per_day"], rejected=days["rejected"], price_change=change.isoformat(),
                    updated=now.astimezone(tz).isoformat(timespec="minutes"))
         self._lifetime_cache = (now, res)
         return res

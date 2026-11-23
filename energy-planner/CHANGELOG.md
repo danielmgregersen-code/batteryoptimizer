@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.27.2
+
+- **Goals follow the historical value:** the 12 000 kr a year are spread over the months by what each
+  month has earned on average (sun and prices), not by the solar production alone - spring weighs most.
+- **Errors in the sources are left out:** a day far outside the normal range (e.g. -2 293 kr from a
+  glitch in the old sensor) is not counted; the next source (an estimate) is used and the day is listed
+  on the card.
+
 ## 0.27.1
 
 - **Realistic goals:** the goal is the payback the installation was bought for - `installation_cost_dkk`

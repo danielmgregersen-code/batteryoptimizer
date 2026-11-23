@@ -1688,7 +1688,8 @@
       h('div', { class: 'hint', style: { margin: '12px 0 6px' } }, 'Værdi pr. måned (kr)'), barBox,
       h('div', { style: { marginTop: '8px' } }, legend([{ color: C.batt, label: 'Målt (add-on’en)' }, { color: C.sun, label: 'Gammel sensor' }, { color: C.muted, label: 'Estimeret' }])),
       h('div', { class: 'hint', style: { marginTop: '8px' } },
-        `Hver dag bruger den bedste kilde: add-on’ens målte anlægsværdi, ellers den gamle sensor, ellers et estimat (solproduktion × kr pr. kWh for samme måned, lært af dagene før ${L.price_change}, så elafgiften fra før nedsættelsen bruges). Kr pr. produceret kWh: ${rates || '–'}.`));
+        `Hver dag bruger den bedste kilde: add-on’ens målte anlægsværdi, ellers den gamle sensor, ellers et estimat (solproduktion × kr pr. kWh for samme måned, lært af dagene før ${L.price_change}, så elafgiften fra før nedsættelsen bruges). Kr pr. produceret kWh: ${rates || '–'}.`
+        + ((L.rejected || []).length ? ` Sorteret fra som fejl (erstattet af næste kilde): ${L.rejected.map((r) => `${dayName(r.day, { day: 'numeric', month: 'short', year: 'numeric' })} ${fmt(r.value, 0)} kr (${r.source === 'old' ? 'gammel sensor' : 'målt'})`).join(', ')}.` : '')));
     const draw = () => {
       if (goals) goals.draw();
       const ms = L.months || [];
@@ -1718,8 +1719,8 @@
       `mål ${fmt(x.goal_sofar, 0)} kr${x.pct != null ? ` · ${fmt(x.pct, 0)} %` : ''}${more ? ' · ' + more : ''}`,
       meter(Math.max(0, Math.min(100, x.pct || 0)), []));
     const goalNote = h('div', { class: 'hint', style: { marginBottom: '8px' } },
-      `Mål: ${fmt(G.goal_per_year_dkk, 0)} kr om året (${fmt(L.cost_dkk, 0)} kr tilbagebetalt på ${G.goal_payback_years} år), fordelt efter solen: `
-      + [1, 4, 7, 10].map((m) => `${MONTH_DA[m - 1]} ${fmt(G.goal_by_month[m], 1)} kr/dag`).join(' · '));
+      `Mål: ${fmt(G.goal_per_year_dkk, 0)} kr om året (${fmt(L.cost_dkk, 0)} kr tilbagebetalt på ${G.goal_payback_years} år), fordelt på månederne efter, hvad de historisk har tjent: `
+      + [1, 3, 5, 7, 9, 11].map((m) => `${MONTH_DA[m - 1]} ${fmt(G.goal_by_month[m], 1)} kr/dag`).join(' · '));
     const tiles = h('div', { class: 'tiles four' },
       ptile('I dag', per.today, 'indtil nu'), ptile('Denne uge', per.week, `hele ugen ${fmt(per.week.goal, 0)} kr`),
       ptile('Denne måned', per.month, `hele måneden ${fmt(per.month.goal, 0)} kr`), ptile('I år', per.year, `hele året ${fmt(per.year.goal, 0)} kr`));
