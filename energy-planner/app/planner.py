@@ -1211,6 +1211,7 @@ class Planner:
             "amps": self.ha.number(opts["charger_current_entity"]),
             "secs_since_status": secs, "sell": self.sell_price_now(opts),
             "phase_amps": self._phase_amps(opts),
+            "now": now.astimezone(self.tz).isoformat(timespec="seconds"),
         }
         soc_est = self.car_soc_now(opts, now)
         live["car_soc"] = soc_est["soc"]

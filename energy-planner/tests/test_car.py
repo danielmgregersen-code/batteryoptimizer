@@ -406,3 +406,36 @@ def test_gaps_in_the_power_log_are_not_energy():
     last = carmod.add_energy(log, t0, 11000.0, last)
     last = carmod.add_energy(log, t0 + timedelta(minutes=10), 11000.0, last)   # 10 min without samples
     assert log[-1][1] == 0.0
+
+
+def _row(t, grid, dt=1.0):
+    return {"t": t, "car_grid": grid, "car_pv": 0.0, "car_bat": 0.0, "dt": dt, "buy": 1.5}
+
+
+def test_the_last_hour_charges_at_full_power_instead_of_spreading_it():
+    now = "2026-11-24T04:05:00+01:00"
+    row = _row("2026-11-24T04:00:00+01:00", 3.0 * 55 / 60, dt=55 / 60)       # 2.75 kWh left this hour
+    d = carmod.decide(live(now=now), row, OPTS, ahead=[_row("2026-11-24T05:00:00+01:00", 0.0)])
+    assert d["action"] == "charge" and d["target_amps"] == 16 and "full power" in d["reason"]
+    old = carmod.decide(live(now=now), row, {**OPTS, "car_full_power": False}, ahead=[_row("2026-11-24T05:00:00+01:00", 0.0)])
+    assert old["target_amps"] == 6                                            # 3 kW spread over the hour (the 6 A minimum)
+
+
+def test_full_power_stays_within_the_main_fuse_minus_the_margin():
+    now = "2026-11-24T04:05:00+01:00"
+    # worst phase 14 A, of which the car draws 16 A x 230 V... charging at 6 A now (1.38 kW per phase x 3)
+    lv = live(now=now, phase_amps=[14.0, 9.0, 8.0], charger_w=6 * 690.0, amps=6)
+    d = carmod.decide(lv, _row("2026-11-24T04:00:00+01:00", 2.0, dt=55 / 60), {**OPTS, "main_fuse_amps": 25, "fuse_margin_amps": 3},
+                      ahead=[_row("2026-11-24T05:00:00+01:00", 0.0)])
+    assert d["target_amps"] == 25 - 3 - (14 - 6)                              # 14 A
+
+
+def test_the_first_hour_of_a_longer_charge_starts_late_at_full_power_and_runs_on():
+    row = _row("2026-11-24T02:00:00+01:00", 2.0)
+    ahead = [_row("2026-11-24T03:00:00+01:00", 11.0)]
+    early = carmod.decide(live(status="suspended_evse", now="2026-11-24T02:10:00+01:00"), row, OPTS, ahead=ahead)
+    assert early["action"] == "idle" and "02:47" in early["reason"]            # 2 kWh at 11 kW = 11 min + 2
+    late = carmod.decide(live(status="suspended_evse", now="2026-11-24T02:48:00+01:00"), row, OPTS, ahead=ahead)
+    assert late["action"] == "charge" and late["target_amps"] == 16
+    mid = carmod.decide(live(now="2026-11-24T02:20:00+01:00"), row, OPTS, ahead=ahead)   # already charging
+    assert mid["action"] == "charge" and mid["target_amps"] == 16

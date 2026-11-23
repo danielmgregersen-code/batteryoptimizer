@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.28.0
+
+- **The car charges at full power** (`car_full_power`): in an hour where the plan charges from the grid,
+  at the highest current the main fuse allows (minus `fuse_margin_amps`) instead of a low current spread
+  over the hour - less charging loss. The last hour of a session stops when its energy is in; the first
+  hour of a longer session starts late at full power and runs on into the next hour, so no extra pause.
+
 ## 0.27.2
 
 - **Goals follow the historical value:** the 12 000 kr a year are spread over the months by what each

@@ -29,6 +29,12 @@ Create two helpers (Settings → Devices & services → Helpers → Toggle):
   (`charger_power_entity`, sampled every 5 s) × `car_eta`. So the controller stops at the limit or
   target instead of up to ~3 % past it. A full charge (≥ 99 %) still only counts from the car's own
   report. Shown in the Bil tab; `soc_estimated`, `soc_kia`, `soc_kia_at` on the car sensor.
+- **Full power** (`car_full_power`, on): in an hour where the plan charges the car from the grid, the
+  car charges at the highest current the main fuse allows (`car_max_amps`, within `main_fuse_amps` -
+  `fuse_margin_amps` on the worst phase) instead of a low current spread over the hour (less charging
+  loss). The last hour of a session charges at full power from its start and stops when its energy is
+  in; the first hour of a session that goes on starts as late as it can at full power and runs on into
+  the next hour, so no extra pause is made.
 - **At least 2 kWh per charge** (`car_min_session_kwh` 2, 0 = off): a planned session (hours with
   car charging, pauses up to `car_pause_gap_hours` included) that brings the car less is taken out of
   the plan, the preview ("Sæt bilen til") and the controller never starts the charger for it (unless

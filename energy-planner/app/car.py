@@ -253,6 +253,23 @@ def fuse_room_amps(live: dict, opts):
     return room, imax
 
 
+def full_power_amps(live: dict, opts) -> int:
+    """The highest current the car may draw: car_max_amps, within the main fuse minus fuse_margin_amps
+    on the worst phase (the house's own draw measured, the car's taken out)."""
+    amax = int(opts["car_max_amps"])
+    phases = live.get("phase_amps")
+    if not phases or not opts.get("main_fuse_amps"):
+        return amax
+    imax = max(abs(float(a)) for a in phases)
+    car_draw = max(0.0, float(live.get("charger_w") or 0.0)) / watt_per_amp(opts) if live.get("status") == "charging" else 0.0
+    room = math.floor(float(opts["main_fuse_amps"]) - float(opts.get("fuse_margin_amps", 0) or 0) - max(0.0, imax - car_draw))
+    return int(max(int(opts["car_min_amps"]), min(amax, room)))
+
+
+def _car_kwh(r) -> float:
+    return float((r or {}).get("car_grid") or 0) + float((r or {}).get("car_pv") or 0) + float((r or {}).get("car_bat") or 0)
+
+
 def short_gap(plan_row, ahead, opts):
     """While the car charges from the grid and the plan wants a pause for this hour only: is the next
     planned charge close (car_pause_gap_hours) and the saving of waiting small (below
@@ -372,6 +389,26 @@ def decide(live: dict, plan_row, opts, ahead=None) -> dict:
         reason, source = f"car at max SoC ({soc:.0f} %)", "max_soc"
     elif need["critical"]:
         want, amps, reason, source = True, amax, "critical SoC", "critical"
+    elif planned_forced_kw > PLAN_KW_MIN and opts.get("car_full_power", True) and live.get("now"):
+        # Full power (less charging loss than a low current spread over the hour): the last hour of a
+        # session charges at full power from its start and stops when its energy is in (the plan is
+        # re-made every few minutes); the first hour of a session that goes on starts as late as it
+        # can at full power and runs on into the next hour without a pause.
+        from datetime import datetime, timedelta
+        full = full_power_amps(live, opts)
+        full_kw = full * wpa / 1000.0
+        energy = (float(plan_row["car_grid"]) + float(plan_row["car_bat"]) + float(plan_row["car_pv"]))
+        continues = bool(ahead) and _car_kwh(ahead[0]) > 0.1
+        now_l = datetime.fromisoformat(live["now"])
+        hour_end = now_l.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        left_min = (hour_end - now_l).total_seconds() / 60.0
+        need_min = energy / full_kw * 60.0 + 2.0 if full_kw > 0 else 60.0
+        if continues and not charging and need_min < left_min:
+            start_at = hour_end - timedelta(minutes=need_min)
+            reason, source = f"plan: waiting to start at full power at {start_at:%H:%M}", "plan_wait"
+        else:
+            want, amps = True, full
+            reason = f"plan: {energy:.1f} kWh this hour at full power ({full} A)"
     elif planned_forced_kw > PLAN_KW_MIN:
         want = True
         amps = amps_for(planned_forced_kw + planned_pv_kw)
