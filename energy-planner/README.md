@@ -363,6 +363,11 @@ Expected per year: the last 365 days; once there are 90 days after the tax chang
 to a year by the months' share of the solar production. Payback: `installation_cost_dkk` (110 000)
 minus the total, at the expected rate (or the day the total passed the cost). Expected over
 `installation_life_years` (25): the total plus the yearly forecast for the years left.
+Goals: the expected value per day is the yearly forecast spread over the calendar months by their
+share of the solar production. The card shows today / this week / this month / this year against the
+goal so far, "Overblik mål" (the total so far and the forecast, dashed, against the price), the week's
+days against their goal (‹ › to page back), a results table per day for a chosen month (green from
+100 %, orange from 75 %, red below) and "År status" per month.
 `GET api/lifetime` (cached 6 h, `?refresh=true`).
 
 ## Appliances

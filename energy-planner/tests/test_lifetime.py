@@ -59,3 +59,21 @@ def test_after_the_tax_change_the_forecast_uses_only_the_new_days_scaled_by_sola
     exp = lm.expected_per_year(days, CHANGE, lm.solar_weights(days, CHANGE))
     true_year = sum((20.0 if 4 <= m <= 9 else 5.0) * 0.5 * lm._month_days(m) for m in range(1, 13))
     assert exp["dkk"] == pytest.approx(true_year, rel=0.02) and "siden 2026-01-01" in exp["basis"]
+
+
+def test_goals_per_day_week_month_and_year():
+    weights = {m: (2.0 if 4 <= m <= 9 else 1.0) for m in range(1, 13)}
+    gpd = lm.goal_per_day(9000.0, weights)
+    assert sum(gpd[m] * lm._month_days(m) for m in range(1, 13)) == pytest.approx(9000.0)
+    assert gpd[7] > gpd[1]
+    today = date(2026, 11, 19)                                            # a Thursday
+    days = [{"day": d.isoformat(), "value": 30.0, "source": "measured", "solar_kwh": 5.0} for d in span(date(2025, 1, 1), today - timedelta(days=1))]
+    g = lm.goals(days, 12.0, today, gpd, date(2048, 7, 1))
+    assert g["days"][-1] == {"day": "2026-11-19", "value": 12.0, "goal": round(gpd[11], 2), "source": "today", "partial": True}
+    w = g["periods"]["week"]
+    assert w["value"] == pytest.approx(3 * 30 + 12) and w["goal_sofar"] == pytest.approx(round(4 * gpd[11]))
+    assert w["goal"] == pytest.approx(round(7 * gpd[11]))
+    assert g["periods"]["month"]["value"] == pytest.approx(18 * 30 + 12)
+    assert g["months"][-1]["month"] == "2026-11" and g["months"][0]["month"] == "2025-01"
+    assert g["forecast"][0]["month"] == "2026-11" and g["forecast"][0]["value"] == pytest.approx(round(gpd[11] * 11))
+    assert g["forecast"][-1]["month"] == "2048-07"

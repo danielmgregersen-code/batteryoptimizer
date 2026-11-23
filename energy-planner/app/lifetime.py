@@ -131,7 +131,9 @@ def summary(days: list, today_dkk: float, cost: float, life_years: float, instal
         payback = date.fromisoformat(paid_on) if paid_on else None
     end_of_life = date(install.year + int(life_years), install.month, install.day) if life_years else None
     years_left = max(0.0, (end_of_life - today).days / 365.25) if end_of_life else 0.0
+    gl = goals(days, today_dkk, today, goal_per_day(per_year, solar_weights(days, price_change)), end_of_life)
     return {
+        "goals": gl,
         "total_dkk": round(total, 0), "today_dkk": round(today_dkk or 0.0, 2),
         "by_source": {k: {"dkk": round(v["dkk"], 0), "days": v["days"]} for k, v in by_src.items()},
         "months": [{k: (round(v, 1) if isinstance(v, float) else v) for k, v in e.items()} for e in months.values()],
@@ -143,3 +145,66 @@ def summary(days: list, today_dkk: float, cost: float, life_years: float, instal
         "end_of_life": end_of_life.isoformat() if end_of_life else None,
         "installed": install.isoformat(),
     }
+
+
+# ---- goals: the expected value per day, to compare the actual days against ---------------------
+def goal_per_day(per_year: float, weights: dict) -> dict:
+    """{calendar month: kr per day}: the expected value per year spread over the months by their share
+    of the solar production (a flat year without weights)."""
+    total = sum(weights.values()) if weights else 0.0
+    if not total:
+        return {m: per_year / 365.0 for m in range(1, 13)}
+    return {m: per_year * weights.get(m, 0.0) / total / _month_days(m) for m in range(1, 13)}
+
+
+def goals(days: list, today_dkk: float, today: date, goal_by_month: dict, end_of_life: date = None) -> dict:
+    """The recent days with their goal (today included, partial), the totals for today / this week /
+    this month / this year against the goal so far and for the whole period, the months of this and
+    last year, and the forecast per month to the end of the installation's life."""
+    g = lambda d: goal_by_month.get(d.month, 0.0)  # noqa: E731
+    recent = [{"day": x["day"], "value": round(x["value"], 2), "goal": round(g(_d(x["day"])), 2), "source": x["source"]}
+              for x in days[-400:]]
+    recent.append({"day": today.isoformat(), "value": round(today_dkk or 0.0, 2), "goal": round(g(today), 2),
+                   "source": "today", "partial": True})
+    by_day = {x["day"]: x for x in recent}
+    week0 = today - timedelta(days=today.weekday())
+    month0 = today.replace(day=1)
+    year0 = today.replace(month=1, day=1)
+
+    def period(a: date, b: date) -> dict:
+        val = goal_sofar = goal_all = 0.0
+        d = a
+        while d <= b:
+            gd = g(d)
+            goal_all += gd
+            if d <= today:
+                goal_sofar += gd
+                val += by_day.get(d.isoformat(), {}).get("value", 0.0)
+            d += timedelta(days=1)
+        return {"value": round(val, 0), "goal_sofar": round(goal_sofar, 0), "goal": round(goal_all, 0),
+                "pct": round(100.0 * val / goal_sofar, 0) if goal_sofar > 0 else None}
+    next_month = (month0 + timedelta(days=32)).replace(day=1)
+    periods = {"today": period(today, today), "week": period(week0, week0 + timedelta(days=6)),
+               "month": period(month0, next_month - timedelta(days=1)),
+               "year": period(year0, today.replace(month=12, day=31))}
+    months = {}
+    for x in days:
+        dd = _d(x["day"])
+        if dd.year >= today.year - 1:
+            e = months.setdefault(x["day"][:7], {"month": x["day"][:7], "value": 0.0, "goal": 0.0})
+            e["value"] += x["value"]
+            e["goal"] += g(dd)
+    e = months.setdefault(today.isoformat()[:7], {"month": today.isoformat()[:7], "value": 0.0, "goal": 0.0})
+    e["value"] += today_dkk or 0.0
+    e["goal"] += g(today)
+    forecast = []
+    if end_of_life:
+        m = next_month
+        rest_this = g(today) * ((next_month - today).days - 1)      # the days after today this month
+        forecast.append({"month": today.isoformat()[:7], "value": round(rest_this, 0)})
+        while m <= end_of_life:
+            forecast.append({"month": m.isoformat()[:7], "value": round(g(m) * _month_days(m.month), 0)})
+            m = (m + timedelta(days=32)).replace(day=1)
+    return {"days": recent, "periods": periods, "goal_by_month": {k: round(v, 2) for k, v in goal_by_month.items()},
+            "months": [{k: (round(v, 0) if isinstance(v, float) else v) for k, v in e.items()} for e in sorted(months.values(), key=lambda x: x["month"])],
+            "forecast": forecast}

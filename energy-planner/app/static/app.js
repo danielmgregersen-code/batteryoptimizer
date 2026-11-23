@@ -433,7 +433,7 @@
             const y0 = yv(0), y1 = yv(v);
             const hgt = Math.abs(y1 - y0);
             if (hgt < 0.5) return;
-            svg('path', { d: barPath(gx + j * (barW + 2), Math.min(y0, y1), barW, hgt, v > 0, v < 0), style: { fill: cfg.series[j].color } }, g);
+            svg('path', { d: barPath(gx + j * (barW + 2), Math.min(y0, y1), barW, hgt, v > 0, v < 0), style: { fill: (it.colors && it.colors[j]) || cfg.series[j].color } }, g);
           });
         }
         if (cfg.valueLabels && k === 1 && it.values[0] != null && band >= 34) {
@@ -476,10 +476,17 @@
       }
       const pts = items.map((it, i) => [xs(i), yv(it.value)]);
       const line = pts.map(([x, y], i) => (i ? 'L' : 'M') + x + ',' + y).join('');
-      svg('path', { d: line + `L${xs(n - 1)},${yv(0)}L${xs(0)},${yv(0)}Z`, style: { fill: cfg.color, opacity: 0.1 } }, root);
-      svg('path', { d: line, style: { fill: 'none', stroke: cfg.color, strokeWidth: 2, strokeLinejoin: 'round', strokeLinecap: 'round' } }, root);
+      const cut = cfg.dashFrom != null ? Math.max(1, Math.min(n, cfg.dashFrom + 1)) : n;
+      const solid = pts.slice(0, cut).map(([x, y], i) => (i ? 'L' : 'M') + x + ',' + y).join('');
+      svg('path', { d: solid + `L${xs(cut - 1)},${yv(0)}L${xs(0)},${yv(0)}Z`, style: { fill: cfg.color, opacity: 0.1 } }, root);
+      svg('path', { d: solid, style: { fill: 'none', stroke: cfg.color, strokeWidth: 2, strokeLinejoin: 'round', strokeLinecap: 'round' } }, root);
+      if (cut < n) {
+        const dash = pts.slice(cut - 1).map(([x, y], i) => (i ? 'L' : 'M') + x + ',' + y).join('');
+        svg('path', { d: dash, style: { fill: 'none', stroke: cfg.dashColor || cfg.color, strokeWidth: 2, strokeDasharray: '6 5', strokeLinecap: 'round' } }, root);
+      }
+      void line;
       const [ex, ey] = pts[n - 1];
-      svg('circle', { cx: ex, cy: ey, r: 4, style: { fill: cfg.color, stroke: 'var(--surface)', strokeWidth: 2 } }, root);
+      svg('circle', { cx: ex, cy: ey, r: 4, style: { fill: cut < n ? (cfg.dashColor || cfg.color) : cfg.color, stroke: 'var(--surface)', strokeWidth: 2 } }, root);
       svg('text', { x: ex + 8, y: ey + 4, class: 'endlabel' }, root, fmt(vals[n - 1], 0) + (cfg.unit ? ' ' + cfg.unit : ''));
       const labelEvery = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(pw / 56))));
       items.forEach((it, i) => {
@@ -1664,17 +1671,19 @@
         meter(Math.min(100, L.paid_pct || 0), [])),
       tile('Forventet pr. år', kr(L.expected_per_year_dkk), L.expected_basis),
       tile(`Forventet over ${fmt(L.life_years, 0)} år`, kr(L.expected_life_dkk), `til ${monthName((L.end_of_life || '').slice(0, 7) || L.installed.slice(0, 7))} · ${fmt(L.expected_life_dkk - L.cost_dkk, 0)} kr mere end prisen`));
-    const barBox = h('div', { class: 'chart' }), cumBox = h('div', { class: 'chart' });
+    const barBox = h('div', { class: 'chart' });
+    const goals = goalsSection(L);
     const rates = Object.entries(L.rates || {}).map(([m, r]) => `${MONTH_DA[+m - 1]} ${fmt(r, 2)}`).join(' · ');
     const el = h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('h2', {}, 'Livstid'), h('span', { class: 'hint' }, `Opdateret ${L.updated.slice(11, 16)} · uafhængig af perioden ovenfor`)),
       tiles,
+      goals ? h('div', { style: { marginTop: '12px' } }, goals.el) : null,
       h('div', { class: 'hint', style: { margin: '12px 0 6px' } }, 'Værdi pr. måned (kr)'), barBox,
       h('div', { style: { marginTop: '8px' } }, legend([{ color: C.batt, label: 'Målt (add-on’en)' }, { color: C.sun, label: 'Gammel sensor' }, { color: C.muted, label: 'Estimeret' }])),
-      h('div', { class: 'hint', style: { margin: '12px 0 6px' } }, 'Tjent i alt mod anlæggets pris (kr)'), cumBox,
       h('div', { class: 'hint', style: { marginTop: '8px' } },
         `Hver dag bruger den bedste kilde: add-on’ens målte anlægsværdi, ellers den gamle sensor, ellers et estimat (solproduktion × kr pr. kWh for samme måned, lært af dagene før ${L.price_change}, så elafgiften fra før nedsættelsen bruges). Kr pr. produceret kWh: ${rates || '–'}.`));
     const draw = () => {
+      if (goals) goals.draw();
       const ms = L.months || [];
       columnChart(barBox, { label: 'Værdi pr. måned', height: 200, stacked: true,
         items: ms.map((m) => ({ label: MONTH_DA[+m.month.slice(5) - 1] + (m.month.endsWith('-01') ? ' ' + m.month.slice(2, 4) : ''), values: [m.measured, m.old, m.estimated], r: m })),
@@ -1684,14 +1693,98 @@
           it.r.measured ? ttRow(C.batt, 'Målt', fmt(it.r.measured, 0) + ' kr', '') : null,
           it.r.old ? ttRow(C.sun, 'Gammel sensor', fmt(it.r.old, 0) + ' kr', '') : null,
           it.r.estimated ? ttRow(C.muted, 'Estimeret', fmt(it.r.estimated, 0) + ' kr', '') : null) });
-      let acc = 0;
-      lineChart(cumBox, { label: 'Tjent i alt', height: 200, color: C.batt, unit: 'kr', refLine: { value: L.cost_dkk, label: `Pris ${fmt(L.cost_dkk, 0)} kr` },
-        items: ms.map((m) => { acc += m.value; return { label: m.month.endsWith('-01') ? m.month.slice(0, 4) : '', value: acc, r: m }; }),
-        tooltip: (it) => h('div', {}, h('div', { class: 'tt-head' }, monthName(it.r.month)), ttRow(C.batt, 'Tjent i alt', fmt(it.value, 0) + ' kr'),
-          ttRow(C.ink2, 'Denne måned', fmt(it.r.value, 0) + ' kr')) });
     };
     return { el, draw };
   }
+  // Goals: the actual days against the expected value per day (the yearly forecast spread by the sun).
+  function goalColor(v, goal) {
+    if (v < 0) return 'var(--critical)';
+    const p = goal > 0 ? v / goal : 1;
+    return p >= 1 ? C.gridbat : p >= 0.75 ? C.sun : 'var(--critical)';
+  }
+  function goalsSection(L) {
+    const G = L.goals;
+    if (!G) return null;
+    const kr0 = (v) => h('span', {}, fmt(v, 0), h('small', {}, ' kr'));
+    const per = G.periods;
+    const ptile = (title, x, more) => tile(title, kr0(x.value),
+      `mål ${fmt(x.goal_sofar, 0)} kr${x.pct != null ? ` · ${fmt(x.pct, 0)} %` : ''}${more ? ' · ' + more : ''}`,
+      meter(Math.max(0, Math.min(100, x.pct || 0)), []));
+    const tiles = h('div', { class: 'tiles four' },
+      ptile('I dag', per.today, 'indtil nu'), ptile('Denne uge', per.week, `hele ugen ${fmt(per.week.goal, 0)} kr`),
+      ptile('Denne måned', per.month, `hele måneden ${fmt(per.month.goal, 0)} kr`), ptile('I år', per.year, `hele året ${fmt(per.year.goal, 0)} kr`));
+    const days = G.days || [];
+    const byDay = Object.fromEntries(days.map((d) => [d.day, d]));
+    // week
+    const lastDay = days.length ? days[days.length - 1].day : null;
+    const weekStart = (iso) => { const d = new Date(iso + 'T12:00:00'); const wd = (d.getDay() + 6) % 7; d.setDate(d.getDate() - wd); return d; };
+    const isoOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const off = state.goalWeek || 0;
+    const ws = lastDay ? weekStart(lastDay) : new Date(); ws.setDate(ws.getDate() - 7 * off);
+    const week = [...Array(7)].map((_, i) => { const d = new Date(ws); d.setDate(d.getDate() + i); return isoOf(d); });
+    const weekNo = (() => { const d = new Date(Date.UTC(ws.getFullYear(), ws.getMonth(), ws.getDate() + 3)); const y0 = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
+      return 1 + Math.round(((d - y0) / 86400000 - 3 + ((y0.getUTCDay() + 6) % 7)) / 7); })();
+    const navBtn = (lbl, dir, disabled) => h('button', { type: 'button', class: 'btn', disabled: disabled ? true : null, 'aria-label': dir > 0 ? 'Forrige uge' : 'Næste uge',
+      onclick: () => { state.goalWeek = Math.max(0, off + dir); renderEconomy(); } }, lbl);
+    const weekBox = h('div', { class: 'chart' }), overBox = h('div', { class: 'chart' }), yearBox = h('div', { class: 'chart' });
+    // results table for a month
+    const monthsAvail = [...new Set(days.map((d) => d.day.slice(0, 7)))].reverse();
+    const selMonth = state.goalMonth && monthsAvail.includes(state.goalMonth) ? state.goalMonth : monthsAvail[0];
+    const monthSel = h('select', { 'aria-label': 'Måned', onchange: (e) => { state.goalMonth = e.target.value; renderEconomy(); } },
+      monthsAvail.map((m) => h('option', { value: m, selected: m === selMonth ? true : null }, `${MONTH_DA[+m.slice(5) - 1]} ${m.slice(0, 4)}`)));
+    const rowsM = days.filter((d) => d.day.startsWith(selMonth)).slice().reverse();
+    const chip = (d) => h('span', { style: { display: 'inline-block', minWidth: '72px', padding: '2px 8px', borderRadius: '6px', fontWeight: '600', color: '#0b0b0b', background: goalColor(d.value, d.goal) } }, fmt(d.value, 2) + ' kr');
+    const table = h('table', {},
+      h('thead', {}, h('tr', {}, ['Dato', 'Mål', 'Faktisk', 'Faktisk %', 'Kilde'].map((x) => h('th', {}, x)))),
+      h('tbody', {}, rowsM.map((d) => h('tr', {},
+        h('td', {}, dayName(d.day, { weekday: 'short', day: 'numeric', month: 'short' }) + (d.partial ? ' (indtil nu)' : '')),
+        h('td', {}, fmt(d.goal, 2) + ' kr'), h('td', {}, chip(d)),
+        h('td', {}, d.goal > 0 ? fmt(100 * d.value / d.goal, 1) + ' %' : '–'),
+        h('td', { class: 'ink2' }, { measured: 'målt', old: 'gammel sensor', estimated: 'estimeret', today: 'i dag' }[d.source] || d.source)))));
+    const year = String(new Date().getFullYear());
+    const el = h('div', { class: 'stack' },
+      tiles,
+      h('div', { class: 'grid-2' },
+        h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', {}, 'Overblik mål'),
+          h('span', { class: 'hint' }, 'tjent i alt · prognose stiplet · anlæggets pris')), overBox,
+          h('div', { style: { marginTop: '8px' } }, legend([{ color: C.gridbat, label: 'Faktisk', line: true }, { color: C.sun, label: 'Prognose', line: true }]))),
+        h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', {}, `Uge ${weekNo}`),
+          h('span', { style: { display: 'inline-flex', gap: '6px' } }, navBtn('‹', 1, false), navBtn('›', -1, off === 0))), weekBox,
+          h('div', { style: { marginTop: '8px' } }, legend([{ color: C.gridbat, label: 'Faktisk (orange under 100 %, rød under 75 %)' }, { color: C.muted, label: 'Mål' }])))),
+      h('div', { class: 'grid-2' },
+        h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', {}, 'Resultater'), monthSel), h('div', { class: 'table-wrap' }, table)),
+        h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', {}, `År status ${year}`), h('span', { class: 'hint' }, 'kr pr. måned')), yearBox,
+          h('div', { style: { marginTop: '8px' } }, legend([{ color: C.gridbat, label: 'Faktisk' }, { color: C.muted, label: 'Mål' }])))));
+    const draw = () => {
+      columnChart(weekBox, { label: 'Ugen', height: 220,
+        items: week.map((d) => { const x = byDay[d]; return { label: dayName(d, { weekday: 'short' }), values: [x ? x.value : null, x ? x.goal : null], colors: [x ? goalColor(x.value, x.goal) : null, null], r: x, d }; }),
+        series: [{ label: 'Faktisk', color: C.gridbat }, { label: 'Mål', color: C.muted }],
+        tooltip: (it) => h('div', {}, h('div', { class: 'tt-head' }, dayName(it.d, { weekday: 'long', day: 'numeric', month: 'long' })),
+          it.r ? [ttRow(goalColor(it.r.value, it.r.goal), 'Faktisk', fmt(it.r.value, 2) + ' kr'), ttRow(C.muted, 'Mål', fmt(it.r.goal, 2) + ' kr'),
+            ttRow(C.ink2, 'Faktisk %', it.r.goal > 0 ? fmt(100 * it.r.value / it.r.goal, 0) + ' %' : '–')] : h('div', {}, 'Ingen data')) });
+      const ym = (G.months || []).filter((m) => m.month.startsWith(year));
+      columnChart(yearBox, { label: 'År status', height: 220,
+        items: ym.map((m) => ({ label: MONTH_DA[+m.month.slice(5) - 1], values: [m.value, m.goal], colors: [goalColor(m.value, m.goal), null], r: m })),
+        series: [{ label: 'Faktisk', color: C.gridbat }, { label: 'Mål', color: C.muted }],
+        tooltip: (it) => h('div', {}, h('div', { class: 'tt-head' }, `${MONTH_DA[+it.r.month.slice(5) - 1]} ${it.r.month.slice(0, 4)}`),
+          ttRow(goalColor(it.r.value, it.r.goal), 'Faktisk', fmt(it.r.value, 0) + ' kr'), ttRow(C.muted, 'Mål', fmt(it.r.goal, 0) + ' kr'),
+          ttRow(C.ink2, 'Faktisk %', it.r.goal > 0 ? fmt(100 * it.r.value / it.r.goal, 0) + ' %' : '–')) });
+      // cumulative: actual months, then the forecast per month (dashed) to the end of life
+      const ms = L.months || [];
+      let acc = 0;
+      const items = ms.map((m) => { acc += m.value; return { label: m.month.endsWith('-01') ? m.month.slice(0, 4) : '', value: acc, month: m.month, kind: 'Faktisk' }; });
+      const fc = G.forecast || [];
+      if (fc.length) acc += fc[0].value;
+      for (const f of fc.slice(1)) { acc += f.value; items.push({ label: f.month.endsWith('-01') && +f.month.slice(0, 4) % 2 === 0 ? f.month.slice(0, 4) : '', value: acc, month: f.month, kind: 'Prognose' }); }
+      lineChart(overBox, { label: 'Overblik mål', height: 240, color: C.gridbat, dashColor: C.sun, dashFrom: ms.length - 1, unit: 'kr',
+        refLine: { value: L.cost_dkk, label: `Samlet investering ${fmt(L.cost_dkk, 0)} kr` }, items,
+        tooltip: (it) => h('div', {}, h('div', { class: 'tt-head' }, `${MONTH_DA[+it.month.slice(5) - 1]} ${it.month.slice(0, 4)}`),
+          ttRow(it.kind === 'Faktisk' ? C.gridbat : C.sun, it.kind, fmt(it.value, 0) + ' kr'),
+          ttRow(C.ink2, it.value >= L.cost_dkk ? 'Over prisen' : 'Til prisen', fmt(Math.abs(L.cost_dkk - it.value), 0) + ' kr')) });
+    };
+    return { el, draw };
+  }
+
   async function loadLifetime() {
     try { state.lifetime = await getJSON('api/lifetime'); state.lifetimeError = null; }
     catch (e) { state.lifetimeError = e.message; }

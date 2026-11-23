@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.27.0
+
+- **Goals on the Livstid card:** the expected value per day (the yearly forecast spread over the months
+  by the sun) against the actual days: tiles for today / this week / this month / this year, "Overblik
+  mål" (the total and the dashed forecast to the end of life against the price), the week's days
+  against the goal (page back with ‹ ›), a results table per day for a chosen month with coloured
+  percentages, and "År status" per month.
+
 ## 0.26.0
 
 - **Lifetime value, forecast and payback** (Økonomi tab, "Livstid"): what the installation has earned
