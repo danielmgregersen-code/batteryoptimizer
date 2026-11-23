@@ -463,7 +463,9 @@
       const xs = (i) => ml + (i / (n - 1)) * pw;
       const vals = items.map((it) => it.value);
       const ref = cfg.refLine;
-      const nt = niceTicks(Math.min(0, ...vals), Math.max(0, ...vals, 0.1, ref ? ref.value : 0), 4);
+      const refS = cfg.refSeries;
+      const refVals = refS ? refS.values.filter((v) => v != null) : [];
+      const nt = niceTicks(Math.min(0, ...vals), Math.max(0, ...vals, 0.1, ref ? ref.value : 0, ...refVals), 4);
       const yv = (v) => top + ph - ((v - nt.lo) / (nt.hi - nt.lo)) * ph;
       const root = svg('svg', { viewBox: `0 0 ${W} ${H}`, height: H, role: 'img', 'aria-label': cfg.label || '' });
       for (const t of nt.ticks) {
@@ -473,6 +475,11 @@
       if (ref) {
         svg('line', { x1: ml, x2: ml + pw, y1: yv(ref.value), y2: yv(ref.value), style: { stroke: 'var(--ink-2)', strokeDasharray: '4 4', strokeWidth: 1.5 } }, root);
         svg('text', { x: ml + 6, y: yv(ref.value) - 6, class: 'tick' }, root, ref.label);
+      }
+      if (refS) {
+        const rp = refS.values.map((v, i) => (v == null ? null : [xs(i), yv(v)])).filter(Boolean);
+        if (rp.length > 1) svg('path', { d: rp.map(([x, y], i) => (i ? 'L' : 'M') + x + ',' + y).join(''),
+          style: { fill: 'none', stroke: refS.color || 'var(--muted)', strokeWidth: 1.5, strokeDasharray: '2 4' } }, root);
       }
       const pts = items.map((it, i) => [xs(i), yv(it.value)]);
       const line = pts.map(([x, y], i) => (i ? 'L' : 'M') + x + ',' + y).join('');
@@ -1710,6 +1717,9 @@
     const ptile = (title, x, more) => tile(title, kr0(x.value),
       `mål ${fmt(x.goal_sofar, 0)} kr${x.pct != null ? ` · ${fmt(x.pct, 0)} %` : ''}${more ? ' · ' + more : ''}`,
       meter(Math.max(0, Math.min(100, x.pct || 0)), []));
+    const goalNote = h('div', { class: 'hint', style: { marginBottom: '8px' } },
+      `Mål: ${fmt(G.goal_per_year_dkk, 0)} kr om året (${fmt(L.cost_dkk, 0)} kr tilbagebetalt på ${G.goal_payback_years} år), fordelt efter solen: `
+      + [1, 4, 7, 10].map((m) => `${MONTH_DA[m - 1]} ${fmt(G.goal_by_month[m], 1)} kr/dag`).join(' · '));
     const tiles = h('div', { class: 'tiles four' },
       ptile('I dag', per.today, 'indtil nu'), ptile('Denne uge', per.week, `hele ugen ${fmt(per.week.goal, 0)} kr`),
       ptile('Denne måned', per.month, `hele måneden ${fmt(per.month.goal, 0)} kr`), ptile('I år', per.year, `hele året ${fmt(per.year.goal, 0)} kr`));
@@ -1743,11 +1753,12 @@
         h('td', { class: 'ink2' }, { measured: 'målt', old: 'gammel sensor', estimated: 'estimeret', today: 'i dag' }[d.source] || d.source)))));
     const year = String(new Date().getFullYear());
     const el = h('div', { class: 'stack' },
-      tiles,
+      h('div', {}, goalNote, tiles),
       h('div', { class: 'grid-2' },
         h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', {}, 'Overblik mål'),
           h('span', { class: 'hint' }, 'tjent i alt · prognose stiplet · anlæggets pris')), overBox,
-          h('div', { style: { marginTop: '8px' } }, legend([{ color: C.gridbat, label: 'Faktisk', line: true }, { color: C.sun, label: 'Prognose', line: true }]))),
+          h('div', { style: { marginTop: '8px' } }, legend([{ color: C.gridbat, label: 'Faktisk', line: true }, { color: C.sun, label: 'Prognose', line: true },
+            { color: C.ink2, label: `Mål: tilbagebetalt på ${G.goal_payback_years || 10} år`, line: true }]))),
         h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', {}, `Uge ${weekNo}`),
           h('span', { style: { display: 'inline-flex', gap: '6px' } }, navBtn('‹', 1, false), navBtn('›', -1, off === 0))), weekBox,
           h('div', { style: { marginTop: '8px' } }, legend([{ color: C.gridbat, label: 'Faktisk (orange under 100 %, rød under 75 %)' }, { color: C.muted, label: 'Mål' }])))),
@@ -1776,10 +1787,15 @@
       const fc = G.forecast || [];
       if (fc.length) acc += fc[0].value;
       for (const f of fc.slice(1)) { acc += f.value; items.push({ label: f.month.endsWith('-01') && +f.month.slice(0, 4) % 2 === 0 ? f.month.slice(0, 4) : '', value: acc, month: f.month, kind: 'Prognose' }); }
+      const inst = L.installed.slice(0, 7), gy = G.goal_payback_years || 10;
+      const monthsSince = (m) => (+m.slice(0, 4) - +inst.slice(0, 4)) * 12 + (+m.slice(5, 7) - +inst.slice(5, 7)) + 1;
+      const goalVals = items.map((it) => Math.min(L.cost_dkk * 1.0, (G.goal_per_year_dkk || 0) * monthsSince(it.month) / 12));
       lineChart(overBox, { label: 'Overblik mål', height: 240, color: C.gridbat, dashColor: C.sun, dashFrom: ms.length - 1, unit: 'kr',
+        refSeries: { values: goalVals.map((v, i) => (monthsSince(items[i].month) <= gy * 12 + 1 ? v : null)), color: C.ink2 },
         refLine: { value: L.cost_dkk, label: `Samlet investering ${fmt(L.cost_dkk, 0)} kr` }, items,
         tooltip: (it) => h('div', {}, h('div', { class: 'tt-head' }, `${MONTH_DA[+it.month.slice(5) - 1]} ${it.month.slice(0, 4)}`),
           ttRow(it.kind === 'Faktisk' ? C.gridbat : C.sun, it.kind, fmt(it.value, 0) + ' kr'),
+          ttRow(C.ink2, `Mål (${gy} år)`, fmt(Math.min(L.cost_dkk, (G.goal_per_year_dkk || 0) * monthsSince(it.month) / 12), 0) + ' kr'),
           ttRow(C.ink2, it.value >= L.cost_dkk ? 'Over prisen' : 'Til prisen', fmt(Math.abs(L.cost_dkk - it.value), 0) + ' kr')) });
     };
     return { el, draw };

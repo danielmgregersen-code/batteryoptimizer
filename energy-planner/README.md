@@ -360,11 +360,12 @@ the same calendar month, learned only from days before `lifetime_price_change` (
 electricity tax was cut), so the early months are priced at the old tax level.
 
 Expected per year: the last 365 days; once there are 90 days after the tax change, only those, scaled
-to a year by the months' share of the solar production. Payback: `installation_cost_dkk` (110 000)
+to a year by the months' share of the solar production. Payback: `installation_cost_dkk` (120 000)
 minus the total, at the expected rate (or the day the total passed the cost). Expected over
 `installation_life_years` (25): the total plus the yearly forecast for the years left.
-Goals: the expected value per day is the yearly forecast spread over the calendar months by their
-share of the solar production. The card shows today / this week / this month / this year against the
+Goals: `installation_cost_dkk` (120 000) paid back in `goal_payback_years` (10), i.e. 12 000 kr a year,
+spread over the calendar months by their share of the solar production (summer days have a higher goal
+than winter days, a year adds up to 12 000 kr). The card shows today / this week / this month / this year against the
 goal so far, "Overblik mål" (the total so far and the forecast, dashed, against the price), the week's
 days against their goal (‹ › to page back), a results table per day for a chosen month (green from
 100 %, orange from 75 %, red below) and "År status" per month.

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.27.1
+
+- **Realistic goals:** the goal is the payback the installation was bought for - `installation_cost_dkk`
+  (now 120 000 kr) in `goal_payback_years` (10), i.e. 12 000 kr a year - spread over the months by the
+  sun, so a July day has a higher goal than a January day and a year adds up to 12 000 kr. "Overblik
+  mål" shows the goal line (paid back in 10 years) next to the actual total and the forecast.
+
 ## 0.27.0
 
 - **Goals on the Livstid card:** the expected value per day (the yearly forecast spread over the months

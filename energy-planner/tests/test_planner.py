@@ -1423,7 +1423,7 @@ def test_lifetime_combines_the_old_sensor_and_the_estimate_and_is_cached(tmp_pat
     assert res["rates"][7] == pytest.approx(1.2)                         # 12 kr / 10 kWh, from 2024-2025
     est = res["by_source"]["estimated"]["dkk"]
     assert est == pytest.approx(12.0 * res["by_source"]["estimated"]["days"], abs=1)
-    assert res["cost_dkk"] == 110000 and res["payback_date"] and res["installed"] == "2023-07-01"
+    assert res["cost_dkk"] == 120000 and res["goals"]["goal_per_year_dkk"] == 12000 and res["payback_date"] and res["installed"] == "2023-07-01"
     ha.stats = {}
     assert p.lifetime(datetime(2026, 11, 23, 10, 0, tzinfo=UTC)) is res     # cached
 

@@ -103,7 +103,9 @@ def solar_weights(days: list, price_change: date) -> dict:
 
 
 def summary(days: list, today_dkk: float, cost: float, life_years: float, install: date, today: date,
-            price_change: date) -> dict:
+            price_change: date, goal_years: float = 10.0) -> dict:
+    """goal_years: the payback the installation was bought for; the goal per year is cost / goal_years,
+    spread over the calendar months by their share of the solar production."""
     total = sum(x["value"] for x in days) + (today_dkk or 0.0)
     by_src = {}
     for x in days:
@@ -131,7 +133,9 @@ def summary(days: list, today_dkk: float, cost: float, life_years: float, instal
         payback = date.fromisoformat(paid_on) if paid_on else None
     end_of_life = date(install.year + int(life_years), install.month, install.day) if life_years else None
     years_left = max(0.0, (end_of_life - today).days / 365.25) if end_of_life else 0.0
-    gl = goals(days, today_dkk, today, goal_per_day(per_year, solar_weights(days, price_change)), end_of_life)
+    goal_year = (cost / goal_years) if cost and goal_years else per_year
+    gl = goals(days, today_dkk, today, goal_per_day(goal_year, solar_weights(days, price_change)), end_of_life)
+    gl.update(goal_per_year_dkk=round(goal_year, 0), goal_payback_years=goal_years)
     return {
         "goals": gl,
         "total_dkk": round(total, 0), "today_dkk": round(today_dkk or 0.0, 2),

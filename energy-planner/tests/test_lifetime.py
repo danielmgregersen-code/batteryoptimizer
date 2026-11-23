@@ -77,3 +77,14 @@ def test_goals_per_day_week_month_and_year():
     assert g["months"][-1]["month"] == "2026-11" and g["months"][0]["month"] == "2025-01"
     assert g["forecast"][0]["month"] == "2026-11" and g["forecast"][0]["value"] == pytest.approx(round(gpd[11] * 11))
     assert g["forecast"][-1]["month"] == "2048-07"
+
+
+def test_the_goal_is_payback_in_10_years_spread_by_the_sun():
+    days = [{"day": d.isoformat(), "value": 10.0, "source": "old", "solar_kwh": (30.0 if 4 <= d.month <= 9 else 4.0)}
+            for d in span(date(2024, 1, 1), date(2025, 12, 31))]
+    s = lm.summary(days, 0.0, 120000, 25, INSTALL, date(2026, 1, 15), CHANGE, goal_years=10)
+    g = s["goals"]
+    assert g["goal_per_year_dkk"] == 12000 and g["goal_payback_years"] == 10
+    gpd = {int(k): v for k, v in g["goal_by_month"].items()}
+    assert sum(gpd[m] * lm._month_days(m) for m in range(1, 13)) == pytest.approx(12000, abs=2)
+    assert gpd[7] > 5 * gpd[1]
