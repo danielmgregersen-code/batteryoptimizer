@@ -1248,28 +1248,42 @@
   // Diagnosis: what changed on the charger and the car after charging stopped.
   function traceCard() {
     const traces = state.traces || [];
-    const mmss = (sec) => `+${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
-    const short = (e) => e.replace(/^[a-z_]+\./, '').replace(/^garage_growatt_thor_ev_charger_/, 'THOR ').replace(/^ioniq_9_/, 'IONIQ ');
+    const onlyKey = !!state.traceOnlyKey;
+    const mmss = (sec) => { const h_ = Math.floor(sec / 3600), m_ = Math.floor((sec % 3600) / 60), s_ = sec % 60;
+      return '+' + (h_ ? `${h_}:${String(m_).padStart(2, '0')}` : `${m_}`) + ':' + String(s_).padStart(2, '0'); };
+    const clock = (t, sec) => { const d = new Date(new Date(t.started).getTime() + sec * 1000); return d.toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit', second: '2-digit' }); };
+    const short = (e) => e === 'add-on' ? 'Add-on' : e.replace(/^[a-z_]+\./, '').replace(/^garage_growatt_thor_ev_charger_/, 'THOR ').replace(/^ioniq_9_/, 'IONIQ ');
     const val = (v) => (v == null ? '–' : typeof v === 'object' ? JSON.stringify(v) : String(v));
-    const items = traces.map((t, i) => h('details', { class: 'trace', open: i === 0 && !t.ended ? true : null },
-      h('summary', {}, `${dayName(t.started.slice(0, 10), { weekday: 'short' })} ${t.started.slice(11, 19)} · ${t.status_before || '?'} → ${t.status_after || '?'} · ${t.trigger}`
-        + (t.ended ? ` · ${t.changes.length} ændringer` : ' · optager …')),
-      t.changes.length
-        ? h('div', { class: 'table-wrap' }, h('table', {},
-          h('thead', {}, h('tr', {}, ['Tid', 'Entitet', 'Hvad', 'Fra', 'Til'].map((x) => h('th', {}, x)))),
-          h('tbody', {}, t.changes.map((c) => h('tr', {}, h('td', {}, mmss(c.s)), h('td', { style: { textAlign: 'left' } }, short(c.entity)),
-            h('td', {}, c.what === 'state' ? 'tilstand' : c.what), h('td', {}, val(c.from)), h('td', {}, val(c.to)))))))
-        : h('div', { class: 'hint' }, 'Ingen ændringer endnu.'),
-      h('details', {}, h('summary', { class: 'hint' }, `Startbillede (${Object.keys(t.initial || {}).length} entiteter)`),
-        h('div', { class: 'table-wrap' }, h('table', {}, h('tbody', {}, Object.entries(t.initial || {}).map(([e, v]) => h('tr', {},
-          h('td', { style: { textAlign: 'left' } }, short(e)), h('td', {}, val(v.state))))))))));
+    const dur = (t) => { const end = t.ended ? new Date(t.ended) : new Date(); const m_ = Math.round((end - new Date(t.started)) / 60000);
+      return m_ >= 60 ? `${Math.floor(m_ / 60)} t ${m_ % 60} min` : `${m_} min`; };
+    const key = (c) => c.entity === 'add-on' || (c.what === 'state' && /status|ev_charging$|plugged|lasetilstand/.test(c.entity)) || /LockState|ConnectorFastening|SequenceDetails/.test(c.what);
+    const whatName = { state: 'tilstand', beslutning: 'beslutning', kald: 'kald', svar: 'svar', stop: 'stop', start: 'start', plan: 'plan' };
+    const items = traces.map((t, i) => {
+      const rows = onlyKey ? t.changes.filter(key) : t.changes;
+      return h('details', { class: 'trace', open: i === 0 && !t.ended ? true : null },
+        h('summary', {}, `${dayName(t.started.slice(0, 10), { weekday: 'short' })} ${t.started.slice(11, 16)}–${t.ended ? t.ended.slice(11, 16) : 'nu'} · ${dur(t)} · ${t.trigger}`
+          + (t.ended ? ` · ${t.changes.length} ændringer` : ' · optager …')),
+        rows.length
+          ? h('div', { class: 'table-wrap' }, h('table', {},
+            h('thead', {}, h('tr', {}, ['Tid', 'Kl.', 'Entitet', 'Hvad', 'Fra', 'Til'].map((x) => h('th', {}, x)))),
+            h('tbody', {}, rows.map((c) => h('tr', { style: c.entity === 'add-on' ? { fontWeight: '600', background: 'color-mix(in srgb, var(--s-batt) 10%, transparent)' } : null },
+              h('td', {}, mmss(c.s)), h('td', {}, clock(t, c.s)), h('td', { style: { textAlign: 'left' } }, short(c.entity)),
+              h('td', {}, whatName[c.what] || c.what), h('td', {}, val(c.from)), h('td', { style: { textAlign: 'left' } }, val(c.to)))))))
+          : h('div', { class: 'hint' }, 'Ingen ændringer endnu.'),
+        h('details', {}, h('summary', { class: 'hint' }, `Startbillede (${Object.keys(t.initial || {}).length} entiteter)`),
+          h('div', { class: 'table-wrap' }, h('table', {}, h('tbody', {}, Object.entries(t.initial || {}).map(([e, v]) => h('tr', {},
+            h('td', { style: { textAlign: 'left' } }, short(e)), h('td', {}, val(v.state)))))))));
+    });
     const btn = h('button', { type: 'button', class: 'btn', onclick: async () => {
-      try { await getJSON('api/car/trace', { method: 'POST' }); toast('Diagnose startet (10 min)'); setTimeout(loadCar, 6000); } catch (e) { toast('Diagnose: ' + e.message); }
-    } }, 'Start diagnose nu');
+      try { await getJSON('api/car/trace', { method: 'POST' }); toast('Diagnose startet'); setTimeout(loadCar, 6000); } catch (e) { toast('Diagnose: ' + e.message); }
+    } }, 'Start diagnose nu (10 min)');
+    const filter = h('label', { class: 'hint', style: { display: 'inline-flex', gap: '6px', alignItems: 'center', marginBottom: '10px' } },
+      h('input', { type: 'checkbox', checked: onlyKey ? true : null, onchange: (e) => { state.traceOnlyKey = e.target.checked; renderCar(); } }),
+      'Kun add-on, status og ladestikket');
     return h('div', { class: 'card' },
-      h('div', { class: 'card-head' }, h('h2', {}, 'Diagnose: hvad skete der efter pausen'), btn),
-      h('div', { class: 'hint', style: { marginBottom: '10px' } }, 'Starter af sig selv, når laderen går fra "lader" til noget andet, og optager laderens og bilens entiteter hvert 5. sekund i 10 min (kun ændringer).'),
-      items.length ? items : h('div', { class: 'empty' }, 'Ingen optagelser endnu.'));
+      h('div', { class: 'card-head' }, h('h2', {}, 'Diagnose: hele opladningen'), btn),
+      h('div', { class: 'hint', style: { marginBottom: '10px' } }, 'Starter af sig selv, når en opladning starter, og optager laderens og bilens entiteter hvert 5. sekund (kun ændringer) til 10 min efter, at den er stoppet. Add-on’ens beslutninger, kald og svartider står med fed.'),
+      filter, items.length ? items : h('div', { class: 'empty' }, 'Ingen optagelser endnu.'));
   }
 
   function extraCard(ci, carSoc) {

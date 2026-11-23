@@ -5,6 +5,7 @@ import math
 import logging
 import os
 import threading
+import time as _time
 from datetime import datetime, timedelta, timezone
 
 import appliances as appl
@@ -115,6 +116,8 @@ class Planner:
         self._car_last_logged = None
         self._last_kia = None          # (service, charger status, time) of the last Kia call
         self._car_stop_sent = None     # (time, via) of the last pause sent, before its call returns
+        self._trace_plan_last = None   # (car kWh this hour, battery mode) last written into a trace
+        self._trace_decision_last = None
         self._kia_block_until = None   # PIN / access error: no Kia calls before this
         self._kia_fails = 0            # consecutive failed Kia calls (backoff)
         self._kia_next_try = None
@@ -330,19 +333,31 @@ class Planner:
                                                   self.ha.number(opts["charger_power_entity"]), self._charge_last)
             while self._charge_log and now.astimezone(UTC) - self._charge_log[0][0] > timedelta(hours=24):
                 self._charge_log.popleft()
-        if manual or (prev == "charging" and status not in (None, "charging")):
+        stopped = prev == "charging" and status not in (None, "charging")
+        started = status in ("charging", "preparing") and prev not in ("charging", "preparing")
+        cause = None
+        if stopped or manual:
             last = (self.car_latest or {}).get("executed") or []
             kia = next((x for x in last if x.get("service") == "kia_uvo.stop_charge"), None)
             sent = self._car_stop_sent    # set before the call: it can take longer than the car takes to stop
             recent = sent and (now.astimezone(UTC) - sent[0]).total_seconds() < 180
-            trigger = ("manuel start fra panelet" if manual else
-                       f"add-on'en: pause via {sent[1]}" if recent else
-                       f"add-on'en: kia stop_charge ({kia.get('status')})" if kia else "ukendt (bil, app eller lader?)")
-            if self.trace.start(now, trigger, prev, status):
-                log.info("car trace started: %s (%s -> %s)", trigger, prev, status)
+            cause = (f"add-on'en: pause via {sent[1]} kl. {sent[0].astimezone(self.tz):%H:%M:%S}" if recent else
+                     f"add-on'en: kia stop_charge ({kia.get('status')})" if kia else "ukendt (bil, app eller lader?)")
+        if manual:
+            if self.trace.start(now, "manuel start fra panelet", prev, status, charging=status == "charging"):
+                log.info("car trace started by hand")
+        elif started:
+            if self.trace.start(now, "opladning startet", prev, status, charging=True):
+                log.info("car trace started: charging (%s -> %s)", prev, status)
+        elif stopped and self.trace.start(now, cause, prev, status):
+            log.info("car trace started: %s (%s -> %s)", cause, prev, status)
+        if stopped:
+            self.trace.event(now, "stop", f"laderen: {prev} → {status} · årsag: {cause}")
+        elif status == "charging" and prev not in (None, "charging"):
+            self.trace.event(now, "start", f"laderen: {prev} → {status}")
         if self.trace.active():
             states = self.ha.all_states() if hasattr(self.ha, "all_states") else []
-            self.trace.sample(states, cartrace.prefixes(opts), now)
+            self.trace.sample(states, cartrace.prefixes(opts), now, charging=status == "charging")
 
     def car_soc_now(self, opts: dict, now: datetime) -> dict:
         """The car's SoC: the last reported one plus what the charger delivered since (see
@@ -1100,6 +1115,13 @@ class Planner:
             car_label = f"Lader bilen til {car_info['extra']['target_pct']:.0f} % (ekstra)"
         elif car_info.get("full_charge", {}).get("active"):
             car_label = "Lader bilen til 100 % (bundpris)"
+        if self.trace.active() and rows:
+            r0 = rows[0]
+            car0 = (r0.get("car_grid") or 0) + (r0.get("car_pv") or 0) + (r0.get("car_bat") or 0)
+            if (round(car0, 1), sp["mode"]) != self._trace_plan_last:
+                self._trace_plan_last = (round(car0, 1), sp["mode"])
+                self.trace.event(now.astimezone(self.tz), "plan",
+                                 f"ny plan: bilen {car0:.1f} kWh resten af timen · husbatteri {sp['mode']}")
         snapshot["heat_pump"] = self._heat_pump_step(opts, rows, now)
         try:
             snapshot["appliances"] = self._appliances_step(opts, rows, now)
@@ -1228,6 +1250,14 @@ class Planner:
             self._session_ended_at = None
         if status not in carmod.CONNECTED:
             self._thor_stopped = False            # cable out: the next plug-in starts fresh
+        dkey = (d["action"], d["target_amps"], d["reason"].split(" (")[0])
+        if dkey != self._trace_decision_last or d["calls"]:
+            self._trace_decision_last = dkey
+            self.trace.event(now.astimezone(self.tz), "beslutning",
+                             f"{d['action']}" + (f" {d['target_amps']} A" if d.get("target_amps") else "")
+                             + f" · {reason_da(d['reason'])}" + ("" if car_production else " (manuel styring: intet sendes)"),
+                             {"soc": live.get("car_soc"), "surplus_w": d.get("surplus_w"), "status": status,
+                              "plan_row": {k: (row or {}).get(k) for k in ("car_grid", "car_pv", "car_bat", "buy")}})
         if car_production:
             d["executed"], d["warning"] = self._car_production_step(d, opts, live, snap, now)
         extra_warn = []
@@ -1378,74 +1408,86 @@ class Planner:
             self.ha.set_allowed_entities(writer.allowed_entities(opts))
         done = []
         for c in calls:
-            svc = c["service"]
-            res = {"service": svc, "value": c.get("value")}
+            t_call, n_done = _time.monotonic(), len(done)
+            via = c.get("entity_id") or (opts.get("car_charge_switch_entity") if c["service"] == "kia_uvo.stop_charge" else None)
+            self.trace.event(now, "kald", f"sender {c['service']}" + (f" {via}" if via else "")
+                             + (f" = {c['value']}" if c.get("value") is not None else ""))
             try:
-                if svc == "number.set_value":
-                    self.ha.call_service("number", "set_value", {"entity_id": c["entity_id"], "value": c["value"]})
-                elif svc == "button.press":
-                    self.ha.call_service("button", "press", {"entity_id": c["entity_id"]})
-                elif svc.startswith("kia_uvo."):
-                    device = opts.get("car_device_id")
-                    # The pause goes through the car's charging switch: kia_uvo.stop_charge makes the
-                    # IONIQ end the session (the THOR registers an unplug 3 min later and cannot
-                    # restart), the switch only pauses it.
-                    switch = opts.get("car_charge_switch_entity") if svc == "kia_uvo.stop_charge" else None
-                    if switch:
-                        res["via"] = switch
-                    if not device and not switch:
-                        res.update(status="skipped", error="car_device_id is not set")
-                        done.append(res)
-                        continue
-                    if self._kia_block_until is not None and now < self._kia_block_until:
-                        res.update(status="skipped", error=f"Kia blocked after: {self._kia_last_error}")
-                        done.append(res)
-                        continue
-                    if self._kia_next_try is not None and now < self._kia_next_try:
-                        res.update(status="skipped", error="waiting after a failed Kia call")
-                        done.append(res)
-                        continue
-                    last = self._last_kia
-                    if last and last[0] == svc and last[1] == status and (now - last[2]).total_seconds() < KIA_REPEAT_S:
-                        res.update(status="skipped", error="repeated within 10 min (Kia cloud quota)")
-                        done.append(res)
-                        continue
-                    call = getattr(self.ha, "call_service_ws", None) or self.ha.call_service
-                    if svc == "kia_uvo.stop_charge":
-                        self._car_stop_sent = (now.astimezone(UTC), switch or "kia_uvo.stop_charge")
-                    try:
+                svc = c["service"]
+                res = {"service": svc, "value": c.get("value")}
+                try:
+                    if svc == "number.set_value":
+                        self.ha.call_service("number", "set_value", {"entity_id": c["entity_id"], "value": c["value"]})
+                    elif svc == "button.press":
+                        self.ha.call_service("button", "press", {"entity_id": c["entity_id"]})
+                    elif svc.startswith("kia_uvo."):
+                        device = opts.get("car_device_id")
+                        # The pause goes through the car's charging switch: kia_uvo.stop_charge makes the
+                        # IONIQ end the session (the THOR registers an unplug 3 min later and cannot
+                        # restart), the switch only pauses it.
+                        switch = opts.get("car_charge_switch_entity") if svc == "kia_uvo.stop_charge" else None
                         if switch:
-                            call("switch", "turn_off", {"entity_id": switch})
-                        else:
-                            call("kia_uvo", svc.split(".", 1)[1], {"device_id": device})
-                    except Exception as e:
-                        # The car may have followed even though the call failed or timed out: ask the
-                        # charger before counting it as a failure.
-                        fresh = self.ha.text(opts["charger_status_entity"]) if opts.get("charger_status_entity") else None
-                        followed = ((svc == "kia_uvo.stop_charge" and status == "charging" and fresh in carmod.SUSPENDED)
-                                    or (svc == "kia_uvo.start_charge" and status != "charging" and fresh == "charging"))
-                        if followed or isinstance(e, TimeoutError):
-                            self._last_kia = (svc, status, now)
-                            res.update(status="ok" if followed else "unknown", error=str(e) or "no reply in time",
-                                       paused=followed and svc == "kia_uvo.stop_charge")
-                            log.info("car: %s returned %s, the charger now says %s", svc, e or "a timeout", fresh)
+                            res["via"] = switch
+                        if not device and not switch:
+                            res.update(status="skipped", error="car_device_id is not set")
                             done.append(res)
                             continue
-                        self._kia_failed(str(e), now)
-                        raise
-                    self._last_kia = (svc, status, now)
-                    self._kia_fails, self._kia_next_try, self._kia_last_error = 0, None, None
-                    self._kia_block_until = None
-                else:
-                    res.update(status="skipped", error="unknown call")
-                    done.append(res)
-                    continue
-                res["status"] = "ok"
-                log.info("car: %s %s", svc, c.get("value", ""))
-            except Exception as e:
-                res.update(status="error", error=str(e))
-                log.warning("car call %s failed: %s", svc, e)
-            done.append(res)
+                        if self._kia_block_until is not None and now < self._kia_block_until:
+                            res.update(status="skipped", error=f"Kia blocked after: {self._kia_last_error}")
+                            done.append(res)
+                            continue
+                        if self._kia_next_try is not None and now < self._kia_next_try:
+                            res.update(status="skipped", error="waiting after a failed Kia call")
+                            done.append(res)
+                            continue
+                        last = self._last_kia
+                        if last and last[0] == svc and last[1] == status and (now - last[2]).total_seconds() < KIA_REPEAT_S:
+                            res.update(status="skipped", error="repeated within 10 min (Kia cloud quota)")
+                            done.append(res)
+                            continue
+                        call = getattr(self.ha, "call_service_ws", None) or self.ha.call_service
+                        if svc == "kia_uvo.stop_charge":
+                            self._car_stop_sent = (now.astimezone(UTC), switch or "kia_uvo.stop_charge")
+                        try:
+                            if switch:
+                                call("switch", "turn_off", {"entity_id": switch})
+                            else:
+                                call("kia_uvo", svc.split(".", 1)[1], {"device_id": device})
+                        except Exception as e:
+                            # The car may have followed even though the call failed or timed out: ask the
+                            # charger before counting it as a failure.
+                            fresh = self.ha.text(opts["charger_status_entity"]) if opts.get("charger_status_entity") else None
+                            followed = ((svc == "kia_uvo.stop_charge" and status == "charging" and fresh in carmod.SUSPENDED)
+                                        or (svc == "kia_uvo.start_charge" and status != "charging" and fresh == "charging"))
+                            if followed or isinstance(e, TimeoutError):
+                                self._last_kia = (svc, status, now)
+                                res.update(status="ok" if followed else "unknown", error=str(e) or "no reply in time",
+                                           paused=followed and svc == "kia_uvo.stop_charge")
+                                log.info("car: %s returned %s, the charger now says %s", svc, e or "a timeout", fresh)
+                                done.append(res)
+                                continue
+                            self._kia_failed(str(e), now)
+                            raise
+                        self._last_kia = (svc, status, now)
+                        self._kia_fails, self._kia_next_try, self._kia_last_error = 0, None, None
+                        self._kia_block_until = None
+                    else:
+                        res.update(status="skipped", error="unknown call")
+                        done.append(res)
+                        continue
+                    res["status"] = "ok"
+                    log.info("car: %s %s", svc, c.get("value", ""))
+                except Exception as e:
+                    res.update(status="error", error=str(e))
+                    log.warning("car call %s failed: %s", svc, e)
+                done.append(res)
+            finally:
+                if len(done) > n_done:
+                    r = done[-1]
+                    r["secs"] = round(_time.monotonic() - t_call, 1)
+                    self.trace.event(now + timedelta(seconds=r["secs"]), "svar",
+                                     f"{r['service']}: {r.get('status')} efter {r['secs']:g} s"
+                                     + (f" ({r['error']})" if r.get("error") else ""))
         return done
 
     def _kia_failed(self, message: str, now: datetime):

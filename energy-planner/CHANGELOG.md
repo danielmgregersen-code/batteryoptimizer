@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.25.0
+
+- **Diagnosis traces cover the whole charge:** a trace starts when charging starts and runs until 10
+  minutes after it last stopped (a pause that resumes within 10 minutes stays in the same trace, at
+  most 24 h). The add-on's decisions, its calls (written before they are sent) and their replies
+  with the time they took are in the trace, so what happened before a stop can be read in order.
+- Less noise: the charger's heartbeat timestamps are left out, and the car's vehicle data is stored
+  only by the fields that changed (e.g. `ChargingConnector.LockState 2 → 1`).
+- Panel: the trace shows start, end, duration and the clock time of each change, the add-on's rows
+  in bold, and a filter "Kun add-on, status og ladestikket".
+
 ## 0.24.6
 
 - **The car card after the THOR ended the session** (status `idle`): "Opladningen er afsluttet" -

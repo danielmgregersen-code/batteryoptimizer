@@ -1100,16 +1100,22 @@ def test_trace_starts_when_charging_stops_and_by_hand(tmp_path):
     status = DEFAULTS["charger_status_entity"]
     ha.all_states = lambda: [{"entity_id": status, "state": ha.texts[status], "attributes": {}}]
     p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
-    ha.texts[status] = "charging"
-    p.trace_tick(datetime(2026, 11, 18, 1, 55, tzinfo=UTC))
+    ha.texts[status] = "suspended_ev"
+    p.trace_tick(datetime(2026, 11, 18, 1, 54, tzinfo=UTC))
     assert not p.trace.active()
+    ha.texts[status] = "charging"                                       # charging starts: the trace starts
+    p.trace_tick(datetime(2026, 11, 18, 1, 55, tzinfo=UTC))
+    assert p.trace.active() and p.trace.list()[0]["trigger"] == "opladning startet"
     ha.texts[status] = "suspended_ev"
     p.trace_tick(datetime(2026, 11, 18, 1, 55, 41, tzinfo=UTC))
-    assert p.trace.active() and p.trace.list()[0]["trigger"].startswith("ukendt")
+    ev = [c for c in p.trace.list()[0]["changes"] if c["entity"] == "add-on"]
+    assert ev[-1]["what"] == "stop" and "ukendt" in ev[-1]["to"]
     ha.texts[status] = "finishing"
     p.trace_tick(datetime(2026, 11, 18, 1, 58, 41, tzinfo=UTC))
     ch = p.trace.list()[0]["changes"]
-    assert ch[-1]["s"] == 180 and ch[-1]["to"] == "finishing"
+    assert ch[-1]["s"] == 221 and ch[-1]["to"] == "finishing"
+    p.trace_tick(datetime(2026, 11, 18, 2, 5, 41, tzinfo=UTC))           # 10 min after the stop: done
+    assert not p.trace.active() and p.trace.list()[0]["ended"]
     p2 = Planner(ha, tz=TZ, log_path=str(tmp_path / "e" / "d.jsonl"), car_log_path=str(tmp_path / "f.jsonl"))
     p2.trace_tick(datetime(2026, 11, 18, 12, 0, tzinfo=UTC), manual=True)
     assert p2.trace.active() and p2.trace.list()[0]["trigger"] == "manuel start fra panelet"
@@ -1120,7 +1126,8 @@ def test_trace_starts_when_charging_stops_and_by_hand(tmp_path):
     p3._car_stop_sent = (datetime(2026, 11, 23, 4, 0, 21, tzinfo=UTC), "switch.ioniq_9_ev_charging")
     ha.texts[status] = "suspended_ev"
     p3.trace_tick(datetime(2026, 11, 23, 4, 0, 25, tzinfo=UTC))
-    assert p3.trace.list()[0]["trigger"] == "add-on'en: pause via switch.ioniq_9_ev_charging"
+    ev = [c for c in p3.trace.list()[0]["changes"] if c["entity"] == "add-on"]
+    assert "add-on'en: pause via switch.ioniq_9_ev_charging kl. 05:00:21" in ev[-1]["to"]
 
 
 
@@ -1136,11 +1143,17 @@ def test_pause_goes_through_the_car_charging_switch_not_stop_charge(tmp_path):
     def ws(domain, service, data=None):
         calls.append((domain, service, data))
     ha.call_service_ws = ws
+    p.trace.start(NIGHT, "opladning startet", "preparing", "charging", charging=True)
     d = p.car_cycle(NIGHT)
     assert d["action"] == "pause"
     assert calls == [("switch", "turn_off", {"entity_id": sw})]
     ex = d["executed"][0]
-    assert ex["service"] == "kia_uvo.stop_charge" and ex["via"] == sw and ex["status"] == "ok"
+    assert ex["service"] == "kia_uvo.stop_charge" and ex["via"] == sw and ex["status"] == "ok" and "secs" in ex
+    # the decision, the call and its reply are in the running diagnosis trace, in that order
+    ev = [(c["what"], c["to"]) for c in p.trace.list()[0]["changes"] if c["entity"] == "add-on"]
+    kinds = [k for k, _ in ev]
+    assert kinds.index("beslutning") < kinds.index("kald") < kinds.index("svar")
+    assert any(k == "kald" and sw in t for k, t in ev) and any(k == "svar" and "ok efter" in t for k, t in ev)
     from writer import allowed_entities
     assert sw in allowed_entities(p.options_fn())
 

@@ -1,20 +1,28 @@
-"""Diagnosis: what changes on the charger and the car in the minutes after charging stops.
+"""Diagnosis: what the charger, the car and the add-on did during a charge and the 10 minutes after.
 
-A watcher reads the charger status every few seconds. When it leaves "charging" (a pause from the
-add-on, the car or the app), or when started by hand from the panel, a trace runs for 10 minutes:
-every sample reads all HA states, keeps the charger's and the car's entities (by object-id prefix)
-and stores only what changed (state and attributes), with the seconds since the start. Saved in
-/data/car_traces/, the latest 10 kept.
+A watcher reads the charger status every few seconds. A trace starts when charging starts (or when
+it stops without a trace running, e.g. after a restart, or by hand from the panel) and runs until 10
+minutes after the charger last left "charging"; a pause that resumes within those 10 minutes stays in
+the same trace (at most MAX_DURATION). Every sample reads all HA states, keeps the charger's and the
+car's entities (by object-id prefix) and stores only what changed, with the seconds since the start:
+the state, the attributes (noise like the charger's message timestamps left out) and, for big
+JSON attributes such as the car's vehicle data, only the fields that changed ("…LockState 2 → 1").
+The add-on writes its own decisions and calls into the running trace (entity "add-on"), so cause
+and effect can be read in order. Saved in /data/car_traces/, the latest 10 kept.
 """
 import json
 import os
 import threading
 from datetime import datetime, timedelta
 
-DURATION = timedelta(minutes=10)
+DURATION = timedelta(minutes=10)          # after the charger last left "charging"
+MAX_DURATION = timedelta(hours=24)
 KEEP = 10
+MAX_LEAVES = 60                           # changed fields of one JSON attribute per sample
 IGNORED_ATTRS = {"friendly_name", "icon", "unit_of_measurement", "device_class", "state_class",
-                 "entity_picture", "supported_features", "attribution"}
+                 "entity_picture", "supported_features", "attribution",
+                 "last_message_at", "last_heartbeat_at"}          # the charger's 5-second heartbeat
+QUIET_ACTIONS = {"Heartbeat", "CallResult"}
 
 
 def _object_id(entity_id: str) -> str:
@@ -47,6 +55,43 @@ def _view(state: dict) -> dict:
     return {"state": state.get("state"), "attributes": attrs}
 
 
+def _leaves(value, path=""):
+    """A nested dict / list -> {path: leaf value}."""
+    out = {}
+    if isinstance(value, dict):
+        for k, v in value.items():
+            out.update(_leaves(v, f"{path}.{k}" if path else str(k)))
+    elif isinstance(value, list):
+        for i, v in enumerate(value):
+            out.update(_leaves(v, f"{path}[{i}]"))
+    else:
+        out[path] = value
+    return out
+
+
+def _parse_json(v):
+    if isinstance(v, str) and v[:1] in "{[":
+        try:
+            return json.loads(v)
+        except ValueError:
+            return v
+    return v
+
+
+def attr_changes(key: str, a, b) -> list:
+    """[(what, from, to)] for one attribute; nested values only by their changed fields."""
+    if key == "last_message_action" and a in QUIET_ACTIONS and b in QUIET_ACTIONS:
+        return []
+    pa, pb = _parse_json(a), _parse_json(b)
+    if isinstance(pa, (dict, list)) and isinstance(pb, (dict, list)):
+        la, lb = _leaves(pa), _leaves(pb)
+        diff = [(f"{key}.{p}", la.get(p), lb.get(p)) for p in sorted(set(la) | set(lb)) if la.get(p) != lb.get(p)]
+        if len(diff) > MAX_LEAVES:
+            diff = diff[:MAX_LEAVES] + [(f"{key}…", None, f"{len(diff) - MAX_LEAVES} felter mere")]
+        return diff
+    return [(key, a, b)]
+
+
 class CarTrace:
     def __init__(self, data_dir: str):
         self.dir = os.path.join(data_dir, "car_traces")
@@ -57,24 +102,45 @@ class CarTrace:
     def active(self) -> bool:
         return self.current is not None
 
-    def start(self, now: datetime, trigger: str, status_before=None, status_after=None):
+    def start(self, now: datetime, trigger: str, status_before=None, status_after=None, charging: bool = False):
+        """charging: the charge is running (the trace ends 10 min after it stops); otherwise the 10
+        minutes run from now."""
         with self._lock:
             if self.current is not None:
                 return False
             self.current = {"started": now.isoformat(timespec="seconds"), "trigger": trigger,
                             "status_before": status_before, "status_after": status_after,
-                            "initial": {}, "changes": [], "ended": None}
+                            "initial": {}, "changes": [], "ended": None,
+                            "stopped_at": None if charging else now.isoformat(timespec="seconds")}
             self._last = {}
             return True
 
-    def sample(self, states: list, pfx: list, now: datetime):
-        """Record what changed since the last sample; finish after DURATION."""
+    def _secs(self, tr, now) -> int:
+        return int((now - datetime.fromisoformat(tr["started"])).total_seconds())
+
+    def event(self, now: datetime, kind: str, text: str, data: dict = None):
+        """An add-on decision or call, written into the running trace."""
+        with self._lock:
+            tr = self.current
+            if tr is None:
+                return
+            e = {"s": self._secs(tr, now), "entity": "add-on", "what": kind, "from": None, "to": text}
+            if data:
+                e["data"] = data
+            tr["changes"].append(e)
+
+    def sample(self, states: list, pfx: list, now: datetime, charging: bool = None):
+        """Record what changed since the last sample; finish 10 min after charging stopped."""
         with self._lock:
             tr = self.current
             if tr is None:
                 return
             t0 = datetime.fromisoformat(tr["started"])
             secs = int((now - t0).total_seconds())
+            if charging is True:
+                tr["stopped_at"] = None
+            elif charging is False and tr.get("stopped_at") is None:
+                tr["stopped_at"] = now.isoformat(timespec="seconds")
             for st in states or []:
                 eid = st.get("entity_id", "")
                 if not any(_object_id(eid).startswith(p) for p in pfx):
@@ -82,7 +148,7 @@ class CarTrace:
                 v = _view(st)
                 old = self._last.get(eid)
                 if old is None:
-                    if not self._last_initialised(tr):
+                    if not tr.get("initialised"):
                         tr["initial"][eid] = v
                     else:
                         tr["changes"].append({"s": secs, "entity": eid, "what": "state", "from": None, "to": v["state"]})
@@ -92,19 +158,17 @@ class CarTrace:
                     for k in sorted(set(old["attributes"]) | set(v["attributes"])):
                         a, b = old["attributes"].get(k), v["attributes"].get(k)
                         if a != b:
-                            tr["changes"].append({"s": secs, "entity": eid, "what": k, "from": a, "to": b})
+                            for what, x, y in attr_changes(k, a, b):
+                                tr["changes"].append({"s": secs, "entity": eid, "what": what, "from": x, "to": y})
                 self._last[eid] = v
             tr["initialised"] = True
-            if now - t0 >= DURATION:
+            stopped = tr.get("stopped_at")
+            if (stopped and now - datetime.fromisoformat(stopped) >= DURATION) or now - t0 >= MAX_DURATION:
                 tr["ended"] = now.isoformat(timespec="seconds")
                 self._save(tr)
                 self.current = None
             elif secs % 60 < 6:
                 self._save(tr)                 # visible while it runs
-
-    @staticmethod
-    def _last_initialised(tr) -> bool:
-        return bool(tr.get("initialised"))
 
     def _save(self, tr: dict):
         try:

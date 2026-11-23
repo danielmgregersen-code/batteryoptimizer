@@ -37,10 +37,14 @@ Create two helpers (Settings → Devices & services → Helpers → Toggle):
   plan wants a one-hour pause while charging from the grid, the next planned charge is within the gap
   and waiting saves less than 0.20 kr/kWh, the car keeps charging at `car_min_amps` instead (a pause
   through Kia has been followed by the charger ending the session 3 minutes later). 0 = off.
-- **Diagnosis** (Bil tab): when the charger leaves "charging" (or by hand: "Start diagnose nu"), every
-  5 s for 10 minutes the add-on records what changes on the charger's and the car's entities (by
-  object-id prefix, plus `car_trace_prefixes`) in `/data/car_traces/` (latest 10), with what
-  triggered the stop. `GET api/car/traces`.
+- **Diagnosis** (Bil tab): from the start of a charge to 10 minutes after it last stopped (a pause
+  that resumes within 10 minutes stays in the same trace; at most 24 h; or by hand: "Start diagnose
+  nu"), every 5 s the add-on records what changes on the charger's and the car's entities (by
+  object-id prefix, plus `car_trace_prefixes`): states and attributes, the charger's heartbeat
+  timestamps left out, big JSON attributes (the car's vehicle data) only by the fields that changed
+  (e.g. `…ChargingConnector.LockState 2 → 1`). The add-on's own decisions, calls (before they are
+  sent) and replies (with the time they took) are written in between, so cause and effect read in
+  order. `/data/car_traces/` (latest 10), `GET api/car/traces`.
 - **Turn off the THOR's own automatic charging schedule** (ShinePhone; in HA
   `time.…_automatic_charging_start` / `_stop`, option `charger_schedule_entities`). At the schedule's
   start or stop time the charger ends the running session ("Unknown Stop" on its display), and a

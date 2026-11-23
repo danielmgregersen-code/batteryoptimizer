@@ -60,7 +60,7 @@ def _battery_fast_loop():
 
 
 def _trace_loop():
-    """Charger status every 5 s; a diagnosis trace runs for 10 min after charging stops."""
+    """Charger status every 5 s; a diagnosis trace runs from the start of a charge to 10 min after it stops."""
     _stop.wait(25)
     while not _stop.is_set():
         try:
