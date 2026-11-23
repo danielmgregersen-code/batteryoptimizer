@@ -462,12 +462,17 @@
       const n = items.length;
       const xs = (i) => ml + (i / (n - 1)) * pw;
       const vals = items.map((it) => it.value);
-      const nt = niceTicks(Math.min(0, ...vals), Math.max(0, ...vals, 0.1), 4);
+      const ref = cfg.refLine;
+      const nt = niceTicks(Math.min(0, ...vals), Math.max(0, ...vals, 0.1, ref ? ref.value : 0), 4);
       const yv = (v) => top + ph - ((v - nt.lo) / (nt.hi - nt.lo)) * ph;
       const root = svg('svg', { viewBox: `0 0 ${W} ${H}`, height: H, role: 'img', 'aria-label': cfg.label || '' });
       for (const t of nt.ticks) {
         svg('line', { x1: ml, x2: ml + pw, y1: yv(t), y2: yv(t), class: t === 0 ? 'baseline' : 'gridline' }, root);
         svg('text', { x: ml - 6, y: yv(t) + 4, class: 'tick', 'text-anchor': 'end' }, root, fmt(t, Number.isInteger(nt.step) ? 0 : 1));
+      }
+      if (ref) {
+        svg('line', { x1: ml, x2: ml + pw, y1: yv(ref.value), y2: yv(ref.value), style: { stroke: 'var(--ink-2)', strokeDasharray: '4 4', strokeWidth: 1.5 } }, root);
+        svg('text', { x: ml + 6, y: yv(ref.value) - 6, class: 'tick' }, root, ref.label);
       }
       const pts = items.map((it, i) => [xs(i), yv(it.value)]);
       const line = pts.map(([x, y], i) => (i ? 'L' : 'M') + x + ',' + y).join('');
@@ -1598,7 +1603,9 @@
         h('td', {}, fmt(d.import_kwh, 1)), h('td', {}, fmt(d.export_kwh, 1)), h('td', {}, fmt(d.solar_kwh, 1)), h('td', {}, fmt(d.car_dkk, 2)),
         h('td', {}, d.self_sufficiency_pct != null ? fmt(d.self_sufficiency_pct, 0) + ' %' : '–')))));
 
+    const life = lifetimeCard();
     root.replaceChildren(h('div', { class: 'stack' }, filters, banners, tiles,
+      life ? life.el : null,
       card(`Anlægsværdi pr. ${unit} (kr)`, 'Hvad sol og batteri sparede i forhold til at købe alt fra nettet', valueBox,
         [{ color: C.sun, label: 'Sol' }, { color: C.batt, label: 'Batteri (negativ når det lader fra nettet)' }]),
       h('div', { class: 'grid-2' },
@@ -1608,6 +1615,7 @@
       h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', {}, 'Pr. dag'), h('span', { class: 'hint' }, 'kr og kWh · bilen regnet ved købspris')),
         h('div', { class: 'table-wrap' }, table))));
 
+    if (life) life.draw();
     const valueTip = (r) => h('div', {}, h('div', { class: 'tt-head' }, head(r)),
       ttRow(C.sun, 'Sol', fmt(r.solar_value_dkk, 2) + ' kr', ''), ttRow(C.batt, 'Batteri', fmt(r.battery_value_dkk, 2) + ' kr', ''),
       ttSec('I alt'), ttRow(C.ink2, 'Anlægsværdi', fmt(r.value_dkk, 2) + ' kr'), ttRow(C.ink2, 'Uden anlæg', fmt(r.without_dkk, 2) + ' kr'),
@@ -1635,6 +1643,59 @@
         ttRow(C.sun, 'Sol produceret', fmt(it.r.solar_kwh, 2) + ' kWh', ''), ttRow(C.gridbat, 'Købt', fmt(it.r.import_kwh, 2) + ' kWh', ''),
         ttRow(C.export, 'Solgt', fmt(it.r.export_kwh, 2) + ' kWh', ''), ttRow(C.ink2, 'Forbrug', fmt(it.r.consumption_kwh, 2) + ' kWh'),
         it.r.car_kwh > 0.05 ? ttRow(C.ink2, 'Heraf bil', fmt(it.r.car_kwh, 2) + ' kWh') : null) });
+  }
+
+  // Lifetime: what the installation has earned since it was installed, the forecast and the payback.
+  const MONTH_DA = ['jan.', 'feb.', 'mar.', 'apr.', 'maj', 'jun.', 'jul.', 'aug.', 'sep.', 'okt.', 'nov.', 'dec.'];
+  function lifetimeCard() {
+    const L = state.lifetime;
+    if (!L) return state.lifetimeError ? { el: h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', {}, 'Livstid')),
+      h('div', { class: 'empty' }, 'Kunne ikke beregne livstidsværdien: ' + state.lifetimeError)), draw: () => {} } : null;
+    const kr = (v) => h('span', {}, fmt(v, 0), h('small', {}, ' kr'));
+    const monthName = (iso) => { const [y, m] = iso.split('-'); return `${MONTH_DA[+m - 1]} ${y}`; };
+    const pb = L.payback_date ? monthName(L.payback_date.slice(0, 7)) : '–';
+    const src = L.by_source || {};
+    const srcText = [['measured', 'målt'], ['old', 'gammel sensor'], ['estimated', 'estimeret']]
+      .filter(([k]) => src[k]).map(([k, l]) => `${l} ${fmt(src[k].dkk, 0)} kr`).join(' · ');
+    const tiles = h('div', { class: 'tiles four' },
+      tile('Tjent i alt', kr(L.total_dkk), `siden ${monthName(L.installed.slice(0, 7))} · ${srcText}`),
+      tile('Tilbagebetalt', h('span', {}, fmt(L.paid_pct, 0), h('small', {}, ' %')),
+        L.paid_back ? `af ${fmt(L.cost_dkk, 0)} kr · tjent hjem ${pb}` : `af ${fmt(L.cost_dkk, 0)} kr · ${fmt(L.remaining_dkk, 0)} kr tilbage · forventet ${pb} (${fmt(L.payback_years, 1)} år efter køb)`,
+        meter(Math.min(100, L.paid_pct || 0), [])),
+      tile('Forventet pr. år', kr(L.expected_per_year_dkk), L.expected_basis),
+      tile(`Forventet over ${fmt(L.life_years, 0)} år`, kr(L.expected_life_dkk), `til ${monthName((L.end_of_life || '').slice(0, 7) || L.installed.slice(0, 7))} · ${fmt(L.expected_life_dkk - L.cost_dkk, 0)} kr mere end prisen`));
+    const barBox = h('div', { class: 'chart' }), cumBox = h('div', { class: 'chart' });
+    const rates = Object.entries(L.rates || {}).map(([m, r]) => `${MONTH_DA[+m - 1]} ${fmt(r, 2)}`).join(' · ');
+    const el = h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', {}, 'Livstid'), h('span', { class: 'hint' }, `Opdateret ${L.updated.slice(11, 16)} · uafhængig af perioden ovenfor`)),
+      tiles,
+      h('div', { class: 'hint', style: { margin: '12px 0 6px' } }, 'Værdi pr. måned (kr)'), barBox,
+      h('div', { style: { marginTop: '8px' } }, legend([{ color: C.batt, label: 'Målt (add-on’en)' }, { color: C.sun, label: 'Gammel sensor' }, { color: C.muted, label: 'Estimeret' }])),
+      h('div', { class: 'hint', style: { margin: '12px 0 6px' } }, 'Tjent i alt mod anlæggets pris (kr)'), cumBox,
+      h('div', { class: 'hint', style: { marginTop: '8px' } },
+        `Hver dag bruger den bedste kilde: add-on’ens målte anlægsværdi, ellers den gamle sensor, ellers et estimat (solproduktion × kr pr. kWh for samme måned, lært af dagene før ${L.price_change}, så elafgiften fra før nedsættelsen bruges). Kr pr. produceret kWh: ${rates || '–'}.`));
+    const draw = () => {
+      const ms = L.months || [];
+      columnChart(barBox, { label: 'Værdi pr. måned', height: 200, stacked: true,
+        items: ms.map((m) => ({ label: MONTH_DA[+m.month.slice(5) - 1] + (m.month.endsWith('-01') ? ' ' + m.month.slice(2, 4) : ''), values: [m.measured, m.old, m.estimated], r: m })),
+        series: [{ label: 'Målt', color: C.batt }, { label: 'Gammel sensor', color: C.sun }, { label: 'Estimeret', color: C.muted }],
+        tooltip: (it) => h('div', {}, h('div', { class: 'tt-head' }, monthName(it.r.month)),
+          ttRow(C.ink2, 'Værdi', fmt(it.r.value, 0) + ' kr'), ttRow(C.sun, 'Sol', fmt(it.r.solar_kwh, 0) + ' kWh'),
+          it.r.measured ? ttRow(C.batt, 'Målt', fmt(it.r.measured, 0) + ' kr', '') : null,
+          it.r.old ? ttRow(C.sun, 'Gammel sensor', fmt(it.r.old, 0) + ' kr', '') : null,
+          it.r.estimated ? ttRow(C.muted, 'Estimeret', fmt(it.r.estimated, 0) + ' kr', '') : null) });
+      let acc = 0;
+      lineChart(cumBox, { label: 'Tjent i alt', height: 200, color: C.batt, unit: 'kr', refLine: { value: L.cost_dkk, label: `Pris ${fmt(L.cost_dkk, 0)} kr` },
+        items: ms.map((m) => { acc += m.value; return { label: m.month.endsWith('-01') ? m.month.slice(0, 4) : '', value: acc, r: m }; }),
+        tooltip: (it) => h('div', {}, h('div', { class: 'tt-head' }, monthName(it.r.month)), ttRow(C.batt, 'Tjent i alt', fmt(it.value, 0) + ' kr'),
+          ttRow(C.ink2, 'Denne måned', fmt(it.r.value, 0) + ' kr')) });
+    };
+    return { el, draw };
+  }
+  async function loadLifetime() {
+    try { state.lifetime = await getJSON('api/lifetime'); state.lifetimeError = null; }
+    catch (e) { state.lifetimeError = e.message; }
+    if (state.tab === 'okonomi') renderEconomy();
   }
 
   async function loadEcon(dim) {
@@ -1692,7 +1753,7 @@
     if (name === 'bil') { renderCar(); loadCar(); }
     if (name === 'sol') { renderSolar(); loadSolar(); }
     if (name === 'evaluering') { renderEval(); loadEval(!!state.evalData); }
-    if (name === 'okonomi') { renderEconomy(); loadEcon(!!state.econData); }
+    if (name === 'okonomi') { renderEconomy(); loadEcon(!!state.econData); if (!state.lifetime) loadLifetime(); }
   }
   document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => selectTab(b.dataset.tab, true)));
   $('#run').addEventListener('click', async () => {

@@ -1402,3 +1402,32 @@ def test_tomorrows_forecast_is_remembered_from_yesterdays_sensor_and_history(tmp
     ha.history = lambda e, start, end=None: []
     snap = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl")).run_once(now)
     assert all(r["price_source"] == "forecast" for r in snap["plan"] if r["t"].startswith("2026-11-16"))
+
+
+def test_lifetime_combines_the_old_sensor_and_the_estimate_and_is_cached(tmp_path):
+    tz = TZ
+    old_e, sol_e = DEFAULTS["lifetime_value_entity"], DEFAULTS["solar_counter"]
+    rows_old, rows_sol = [], []
+    d = datetime(2023, 7, 1, tzinfo=tz)
+    while d < datetime(2026, 11, 23, tzinfo=tz):
+        ms = d.timestamp() * 1000
+        rows_sol.append({"start": ms, "change": 10.0})
+        if d >= datetime(2023, 10, 25, tzinfo=tz):
+            rows_old.append({"start": ms, "change": 12.0 if d.year < 2026 else 6.0})
+        d += timedelta(days=1)
+    ha = make_ha(stats={old_e: rows_old, sol_e: rows_sol})
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    p._today_economy = lambda opts, now: {"value_dkk": 3.0}
+    res = p.lifetime(datetime(2026, 11, 23, 9, 0, tzinfo=UTC))
+    assert res["by_source"]["estimated"]["days"] == (date_(2023, 10, 25) - date_(2023, 7, 1)).days
+    assert res["rates"][7] == pytest.approx(1.2)                         # 12 kr / 10 kWh, from 2024-2025
+    est = res["by_source"]["estimated"]["dkk"]
+    assert est == pytest.approx(12.0 * res["by_source"]["estimated"]["days"], abs=1)
+    assert res["cost_dkk"] == 110000 and res["payback_date"] and res["installed"] == "2023-07-01"
+    ha.stats = {}
+    assert p.lifetime(datetime(2026, 11, 23, 10, 0, tzinfo=UTC)) is res     # cached
+
+
+def date_(y, m, d):
+    from datetime import date
+    return date(y, m, d)

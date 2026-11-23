@@ -153,6 +153,15 @@ ECONOMY_CACHE_S = 600
 ECONOMY_PERIODS = (1, 7, 30, 90, 365)
 
 
+@app.get("/api/lifetime")
+async def get_lifetime(refresh: bool = False):
+    """The installation's lifetime value, expected value per year and payback (cached 6 h)."""
+    try:
+        return await asyncio.to_thread(planner.lifetime, None, refresh)
+    except Exception as e:  # statistics unavailable (no websocket, HA restarting)
+        raise HTTPException(status_code=503, detail=f"statistics unavailable: {e}")
+
+
 @app.get("/api/economy")
 async def get_economy(days: int = 30):
     """What the installation cost and earned over the last `days` days (HA long-term statistics)."""

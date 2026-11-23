@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning and control of a Growatt hybrid inverter, home battery and EV charging."
-version: "0.25.0"
+version: "0.26.0"
 slug: "energy_planner"
 init: false
 arch:
@@ -123,6 +123,11 @@ options:
   heat_pump_off_min_temp: 10
   appliances: "Opvask=sensor.shelly_opvaskemaskine_power,Vask+Tørretumbler=sensor.bryggers_shelly_vask_og_torre_effekt"
   appliance_dryer_min_w: 700
+  lifetime_value_entity: "sensor.power_sum_vaerdi_af_anlaeg_kr"
+  installation_date: "2023-07-01"
+  installation_cost_dkk: 110000
+  installation_life_years: 25
+  lifetime_price_change: "2026-01-01"
   heat_pump_production_switch_entity: "input_boolean.energy_planner_varmepumpe_produktion"
   battery_taper_start_pct: 90
   battery_taper_end_kw: 1.0
@@ -242,6 +247,11 @@ schema:
   heat_pump_off_min_temp: float(0,20)
   appliances: str?
   appliance_dryer_min_w: int(100,5000)
+  lifetime_value_entity: str?
+  installation_date: str
+  installation_cost_dkk: int(0,10000000)
+  installation_life_years: int(1,50)
+  lifetime_price_change: str
   heat_pump_production_switch_entity: str?
   battery_taper_start_pct: int(50,100)
   battery_taper_end_kw: float(0.1,50)

@@ -6,10 +6,11 @@ import logging
 import os
 import threading
 import time as _time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import appliances as appl
 import batterycurve
+import lifetime as lifemod
 import car as carmod
 import cartrace
 import economy
@@ -1822,6 +1823,60 @@ class Planner:
             "title": f"Anlægget: {signed(value)} i dag",
             "text": " · ".join(parts),
             "updated": local.isoformat(timespec="seconds")})
+
+    LIFETIME_CHUNK_DAYS = 90
+    LIFETIME_CACHE = timedelta(hours=6)
+
+    def lifetime(self, now: datetime = None, force: bool = False) -> dict:
+        """The installation's lifetime value, expected value per year and payback (see lifetime.py).
+        Heavy (years of statistics): cached for 6 hours."""
+        opts = self.options_fn()
+        now = (now or datetime.now(UTC)).astimezone(UTC)
+        cached = getattr(self, "_lifetime_cache", None)
+        if cached and not force and now - cached[0] < self.LIFETIME_CACHE:
+            return cached[1]
+        tz = self.tz
+        install = date.fromisoformat(str(opts.get("installation_date") or "2023-07-01")[:10])
+        change = date.fromisoformat(str(opts.get("lifetime_price_change") or "2026-01-01")[:10])
+        today = now.astimezone(tz).date()
+        yesterday = today - timedelta(days=1)
+        start = datetime(install.year, install.month, install.day, tzinfo=tz)
+        midnight = datetime(today.year, today.month, today.day, tzinfo=tz)
+
+        def by_day(rows):
+            out = {}
+            for r in rows or []:
+                v = r.get("change")
+                if v is None:
+                    continue
+                out[parse_ts(r["start"]).astimezone(tz).date()] = float(v)
+            return out
+        old_e, sol_e = opts.get("lifetime_value_entity"), opts.get("solar_counter")
+        daily = self.ha.statistics([e for e in (old_e, sol_e) if e], start, midnight, "day")
+        old = {d: v for d, v in by_day(daily.get(old_e)).items() if install <= d <= yesterday} if old_e else {}
+        solar = {d: max(0.0, v) for d, v in by_day(daily.get(sol_e)).items() if install <= d <= yesterday} if sol_e else {}
+        measured, ids = {}, economy.entity_ids(opts)
+        t = start
+        while t < midnight:
+            t2 = min(midnight, t + timedelta(days=self.LIFETIME_CHUNK_DAYS))
+            try:
+                stats = self.ha.statistics([v for v in dict.fromkeys(ids.values()) if v], t, t2, "hour")
+                res = economy.compute(stats, ids, tz, hourly=False)
+                for dd in res["days"]:
+                    if (dd.get("hours") or 0) >= lifemod.MIN_HOURS:
+                        measured[date.fromisoformat(dd["day"])] = float(dd["value_dkk"])
+            except Exception as e:  # a chunk without statistics: those days come from the other sources
+                log.info("lifetime: hourly statistics %s - %s unavailable: %s", t.date(), t2.date(), e)
+            t = t2
+        days = lifemod.daily_values(install, yesterday, measured, old, solar, change)
+        tot = self._today_economy(opts, now)
+        res = lifemod.summary(days["days"], (tot or {}).get("value_dkk", 0.0),
+                              float(opts.get("installation_cost_dkk") or 0), float(opts.get("installation_life_years") or 0),
+                              install, today, change)
+        res.update(rates=days["rates"], per_day=days["per_day"], price_change=change.isoformat(),
+                   updated=now.astimezone(tz).isoformat(timespec="minutes"))
+        self._lifetime_cache = (now, res)
+        return res
 
     def _publish_front(self, snap: dict, now: datetime):
         """Front-page sensors: the price now and the cheapest hours, and the warnings."""

@@ -350,6 +350,21 @@ dashboard → Add card → Manual. They show:
   something needs attention (car/Kia problems, manual control, planning errors, missing entities,
   the THOR's own schedule).
 
+## Lifetime value and payback (Økonomi tab)
+
+Day by day from `installation_date` (2023-07-01) the best source is used: the add-on's own measured
+value ("Anlægsværdi", days with at least 22 hours of counters and prices), else the daily change of
+the older value sensor `lifetime_value_entity` (`sensor.power_sum_vaerdi_af_anlaeg_kr`, from 25 Oct
+2023), else an estimate: the day's solar production (`solar_counter`) x the value per produced kWh of
+the same calendar month, learned only from days before `lifetime_price_change` (2026-01-01, when the
+electricity tax was cut), so the early months are priced at the old tax level.
+
+Expected per year: the last 365 days; once there are 90 days after the tax change, only those, scaled
+to a year by the months' share of the solar production. Payback: `installation_cost_dkk` (110 000)
+minus the total, at the expected rate (or the day the total passed the cost). Expected over
+`installation_life_years` (25): the total plus the yearly forecast for the years left.
+`GET api/lifetime` (cached 6 h, `?refresh=true`).
+
 ## Appliances
 
 `appliances` lists the meters: `Opvask=sensor.shelly_opvaskemaskine_power,Vask+Tørretumbler=sensor.bryggers_shelly_vask_og_torre_effekt`.

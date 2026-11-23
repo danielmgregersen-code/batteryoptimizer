@@ -172,6 +172,20 @@ class FakeHA:
         """Hourly means like HA's long-term statistics. As on the SPH10000TL3, the house load includes
         the car but not the battery's charging (that has its own sensor)."""
         rows = {i: [] for i in ids}
+        if period == "day":                 # the lifetime card: the old value sensor and the solar counter
+            t = start
+            while t < end:
+                doy = t.timetuple().tm_yday
+                sol = max(1.0, 28 * math.sin(math.pi * (doy - 30) / 330) ** 2)
+                ms = t.timestamp() * 1000
+                if DEFAULTS["solar_counter"] in rows:
+                    rows[DEFAULTS["solar_counter"]].append({"start": ms, "change": sol})
+                if DEFAULTS["lifetime_value_entity"] in rows and t >= datetime(2023, 10, 25, tzinfo=TZ):
+                    rows[DEFAULTS["lifetime_value_entity"]].append({"start": ms, "change": sol * (1.6 if t.year < 2026 else 1.0)})
+                t += timedelta(days=1)
+            return rows
+        if end - start > timedelta(days=60) and start < datetime.now(TZ) - timedelta(days=120):
+            return rows                     # no hourly statistics that far back
         load_id, car_id = DEFAULTS["house_load_entity"], DEFAULTS["car_power_entity"]
         bat_id, pv_id = DEFAULTS["battery_charge_power_entity"], DEFAULTS["pv_power_entity"]
         t = start.replace(minute=0, second=0, microsecond=0)

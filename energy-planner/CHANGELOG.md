@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.26.0
+
+- **Lifetime value, forecast and payback** (Økonomi tab, "Livstid"): what the installation has earned
+  since July 2023 - the add-on's measured value where it has data, the old value sensor
+  (`sensor.power_sum_vaerdi_af_anlaeg_kr`) before that, and for July - October 2023 an estimate from
+  the solar production x the value per kWh of the same months in 2023 - 2025 (never 2026, after the
+  tax cut). Paid back in % of 110 000 kr with the expected date, expected value per year (from 2026's
+  level once there is enough of it) and over 25 years; a monthly chart by source and the total against
+  the price.
+
 ## 0.25.0
 
 - **Diagnosis traces cover the whole charge:** a trace starts when charging starts and runs until 10
