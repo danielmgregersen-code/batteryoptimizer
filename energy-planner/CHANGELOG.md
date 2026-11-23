@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.24.4
+
+- **The I dag card shows "Anlægsværdi"** (the same number as the Økonomi tab), with the sun's and the
+  battery's part in the text: "Anlægget: +12 kr i dag" · "sol +14 kr · batteri −2 kr · forventet
+  +20 kr i alt". The expected total counts the plan's hours to midnight (the current hour in full).
+
 ## 0.24.3
 
 - **The I dag card no longer subtracts the battery's SoC drop.** "Forventet" valued the change of

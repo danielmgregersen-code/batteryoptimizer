@@ -333,15 +333,12 @@ dashboard → Add card → Manual. They show:
   3 consecutive hours, e.g. "billigst i nat kl. 02–05 · 1,12 kr") for washing and drying.
 - **Husbatteri** `sensor.energy_planner_mode`: `title` ("Lader fra nettet · 41 %") and
   `next_action`.
-- **I dag** `sensor.energy_planner_savings_today`: what the battery and its control have earned or
-  cost today compared with using / selling the sun directly (as "Batteri" in the Økonomi tab:
-  out x buy - grid in x buy - sun in x sell, so sun stored counts as a lost sale until it is used; sun
-  stored in battery first while the house buys from the grid costs the buy price instead),
-  so far and `expected_dkk` for the whole day (plus the plan's hours to midnight). A cash view: a
-  charge costs in its hour, using the battery earns in its hour (also energy charged yesterday);
-  nothing is booked for the SoC itself. `title` "Tjent 7 kr i dag" / "Kostet 5 kr indtil
-  nu", `text` "forventet +12 kr i alt · sol 9,2 af 18,4 kWh". `system_value_dkk` (sun and battery
-  against no installation) and `solar_value_dkk` are attributes.
+- **I dag** `sensor.energy_planner_savings_today`: the installation's value today, as "Anlægsværdi"
+  in the Økonomi tab (consumption at the buy price minus the net cost), so far (the counters, whole
+  hours) and `expected_dkk` for the whole day (plus the plan's hours to midnight, the current hour in
+  full). `title` "Anlægget: +12 kr i dag", `text` "sol +14 kr · batteri −2 kr · forventet +20 kr i alt
+  · sol 9,2 af 18,4 kWh": sun stored instead of sold is a lost sale in the battery's part, matched by
+  the sun's part until it is used. `solar_value_dkk` / `battery_value_dkk` are attributes.
 - **Maskiner** `sensor.energy_planner_appliances`: the best start of each appliance in the next 24
   hours (`title` "Opvask i nat kl. 03 · Vask nu · Tørretumbler kl. 13", `text` one line each with the
   cost and the saving against starting now, `appliances` the details). See *Appliances* below.

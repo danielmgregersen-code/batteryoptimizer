@@ -1204,9 +1204,9 @@ def test_savings_today_from_the_counters_and_the_rest_of_the_plan(tmp_path):
     state, attrs = ha.published["sensor.energy_planner_savings_today"]
     # consumption = import + sun + battery out = 11*0.2 + 3*2 + 8*0.5 = 12.2 kWh; saved = (12.2 - 2.2) * 2 kr
     # battery: 8 h x 0.5 kWh out at 2 kr, nothing charged today = 8 kr; the whole system saved 20 kr
-    assert state == pytest.approx(8.0, abs=0.01) and attrs["solar_kwh"] == 6.0
-    assert attrs["system_value_dkk"] == pytest.approx(20.0, abs=0.01) and attrs["solar_value_dkk"] == pytest.approx(12.0, abs=0.01)
-    assert attrs["title"] == "Tjent 8 kr i dag" and attrs["text"].startswith("forventet ")
+    assert state == pytest.approx(20.0, abs=0.01) and attrs["solar_kwh"] == 6.0          # = "Anlægsværdi"
+    assert attrs["battery_value_dkk"] == pytest.approx(8.0, abs=0.01) and attrs["solar_value_dkk"] == pytest.approx(12.0, abs=0.01)
+    assert attrs["title"] == "Anlægget: +20 kr i dag" and attrs["text"].startswith("sol +12 kr · batteri +8 kr · forventet ")
     assert "sol 6,0 af" in attrs["text"] and attrs["expected_dkk"] == pytest.approx(state + attrs["rest_dkk"])
     assert "sol 6,0 af" in ha.published["sensor.energy_planner_cost_today"][1]["text"]
 
@@ -1223,20 +1223,19 @@ def test_savings_expected_is_the_counters_plus_the_rest_of_the_plan(tmp_path):
              "pv_exp": 0.0, "soc_pct": 10.0 if h >= 21 else 58.0 - (h - 16) * 12 if h >= 17 else 58.0}
             for h in range(14, 24)]
     p.latest = {"plan": plan, "soc_pct": 58.0}
-    # so far today only sun into the battery: a lost sale of 5 kr
+    # so far today only sun into the battery: the sun's part +5 kr, the battery's lost sale -5 kr
     p._today_economy = lambda opts, now: {"value_dkk": 0.0, "battery_value_dkk": -5.0, "solar_value_dkk": 5.0,
                                           "net_dkk": 1.0, "solar_kwh": 5.4}
     p._publish_savings(DEFAULTS, now)
     state, attrs = p.ha.published["sensor.energy_planner_savings_today"]
-    assert state == -5.0 and attrs["title"] == "Kostet 5 kr indtil nu"
-    assert attrs["expected_dkk"] == pytest.approx(-5.0 + 4 * 0.9 * 3.45)    # the evening's discharge counts once
-    assert attrs["text"].startswith("forventet +7 kr i alt")
-    # sun into the battery while the house buys (battery first) costs the buy price, and the current
-    # hour (the counters stop at the last whole hour) counts in full
-    plan[0].update(t="2026-11-20T14:00:00+01:00", dt=0.5, pv_bat=0.5, grid_load=0.25, buy=2.0, sell=1.0)
+    assert state == 0.0 and attrs["title"] == "Anlægget: 0 kr i dag"
+    assert attrs["expected_dkk"] == pytest.approx(4 * 0.9 * 3.45)         # the evening's use of the battery
+    assert attrs["text"].startswith("sol +5 kr · batteri −5 kr · forventet +12 kr i alt")
+    # the current hour (the counters stop at the last whole hour) counts in full
+    plan[0].update(dt=0.5, grid_load=0.25)
     p._publish_savings(DEFAULTS, now)
     _, attrs = p.ha.published["sensor.energy_planner_savings_today"]
-    assert attrs["expected_dkk"] == pytest.approx(-5.0 + 4 * 0.9 * 3.45 - (0.25 * 2.0 + 0.25 * 1.0) / 0.5)
+    assert attrs["expected_dkk"] == pytest.approx(4 * 0.9 * 3.45 + (0.5 * 2.0 - 0.25 * 2.0) / 0.5)
 
 
 class _P:

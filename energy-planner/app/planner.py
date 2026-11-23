@@ -1734,12 +1734,11 @@ class Planner:
                 "text": f"{num_da(cost, 0)} kr indtil nu" + (f" · {st}" if st else "")}
 
     def _publish_savings(self, opts: dict, now: datetime):
-        """sensor.energy_planner_savings_today: what the battery and its control have earned (or cost)
-        today against the same day with the panels but no battery (economy.battery_value, as "Batteri" in
-        the Økonomi tab), so far (the counters, whole hours) and expected for the whole day (plus the
-        plan's hours from the current one to midnight). A cash view: charging costs in the hour it
-        happens (sun at the sale it loses, or the buy price), using the battery earns the buy price in
-        the hour it is used - also for energy charged yesterday; nothing is booked for the SoC itself."""
+        """sensor.energy_planner_savings_today: the installation's value today ("Anlægsværdi" in the
+        Økonomi tab: consumption at the buy price minus the net cost, the same economy.report), so far
+        (the counters, whole hours) and expected for the whole day (plus the plan's hours from the current
+        one to midnight). The text splits it into the sun's and the battery's part: sun stored instead of
+        sold is a lost sale in the battery's part, matched by the sun's part until it is used."""
         snap = self.latest
         tot = self._today_economy(opts, now)
         if not snap or tot is None:
@@ -1749,28 +1748,31 @@ class Planner:
         rows = [r for r in snap["plan"] if r["t"][:10] == today]
         rest = 0.0
         for i, r in enumerate(rows):
-            out = (r.get("bat_load") or 0) + (r.get("car_bat") or 0)
-            pv_bat, grid_load = r.get("pv_bat") or 0.0, (r.get("grid_load") or 0.0) + (r.get("car_grid") or 0.0)
-            # the plan's own flows: sun into the battery in an hour the house buys is battery first
-            v = economy.battery_value(out, r.get("grid_bat") or 0.0, pv_bat, grid_load, 1.0, r["buy"], r["sell"])
+            car = (r.get("car_pv") or 0) + (r.get("car_grid") or 0) + (r.get("car_bat") or 0)
+            without = (r["load"] + car) * r["buy"]
+            net = (r["grid_load"] + r["grid_bat"] + (r.get("car_grid") or 0)) * r["buy"] - r["pv_exp"] * r["sell"]
+            v = without - net
             if i == 0 and r["t"][:13] == snap["plan"][0]["t"][:13] and 0 < (r.get("dt") or 1) < 1:
                 v /= r["dt"]     # the counters stop at the last whole hour: the current hour counts in full
             rest += v
-        value = round(tot["battery_value_dkk"], 2)
+        value = round(tot["value_dkk"], 2)
         expected = round(value + rest, 2)
         solar = round(tot["solar_kwh"], 1)
         st = self._solar_text(solar, self._solar_forecast_today(now))
-        title = (f"Tjent {num_da(value, 0)} kr i dag" if value >= 0.5
-                 else f"Kostet {num_da(-value, 0)} kr indtil nu" if value <= -0.5 else "0 kr indtil nu")
-        sign = "+" if expected >= 0.5 else "−" if expected <= -0.5 else ""
+
+        def signed(v):
+            return ("+" if v >= 0.5 else "−" if v <= -0.5 else "") + f"{num_da(abs(v), 0)} kr"
+        parts = [f"sol {signed(tot['solar_value_dkk'])}", f"batteri {signed(tot['battery_value_dkk'])}",
+                 f"forventet {signed(expected)} i alt"] + ([st] if st else [])
         self.ha.set_state("sensor.energy_planner_savings_today", value, {
-            "friendly_name": "Energy Planner batteriets værdi i dag", "icon": "mdi:piggy-bank",
+            "friendly_name": "Energy Planner anlæggets værdi i dag", "icon": "mdi:piggy-bank",
             "unit_of_measurement": "DKK",
             "expected_dkk": expected, "rest_dkk": round(rest, 2), "net_dkk": round(tot["net_dkk"], 2),
-            "solar_value_dkk": round(tot["solar_value_dkk"], 2), "system_value_dkk": round(tot["value_dkk"], 2),
+            "solar_value_dkk": round(tot["solar_value_dkk"], 2), "battery_value_dkk": round(tot["battery_value_dkk"], 2),
+            "system_value_dkk": value,
             "solar_kwh": solar, "solar_forecast_kwh": self._solar_forecast_today(now),
-            "title": title,
-            "text": f"forventet {sign}{num_da(abs(expected), 0)} kr i alt" + (f" · {st}" if st else ""),
+            "title": f"Anlægget: {signed(value)} i dag",
+            "text": " · ".join(parts),
             "updated": local.isoformat(timespec="seconds")})
 
     def _publish_front(self, snap: dict, now: datetime):
