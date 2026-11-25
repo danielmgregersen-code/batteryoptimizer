@@ -1636,7 +1636,6 @@
     const life = lifetimeCard();
     root.replaceChildren(h('div', { class: 'stack' }, filters, banners, tiles,
       life ? life.el : null,
-      sizingCard(),
       card(`Anlægsværdi pr. ${unit} (kr)`, 'Hvad sol og batteri sparede i forhold til at købe alt fra nettet', valueBox,
         [{ color: C.sun, label: 'Sol' }, { color: C.batt, label: 'Batteri (negativ når det lader fra nettet)' }]),
       h('div', { class: 'grid-2' },
@@ -1819,69 +1818,6 @@
     return { el, draw };
   }
 
-  // "Større batteri?": the last year replayed with 1–4 extra modules (api/battery_sizing).
-  function modulePrice() {
-    try { return Number(localStorage.getItem('ep.modulePrice')) || null; } catch (e) { return null; }
-  }
-  function sizingCard() {
-    const S = state.sizing || {};
-    const R = S.result;
-    const running = S.status === 'running';
-    const btn = h('button', { type: 'button', class: 'btn', disabled: running ? true : null, onclick: startSizing },
-      running ? `Beregner … ${fmt((S.progress || 0) * 100, 0)} %` : R ? 'Beregn igen' : 'Beregn');
-    const price = modulePrice();
-    const input = h('input', { type: 'number', min: 0, step: 500, class: 'num', value: price || '', placeholder: 'fx 9000',
-      'aria-label': 'Pris pr. modul i kroner', onchange: (e) => {
-        try { localStorage.setItem('ep.modulePrice', String(Math.max(0, Number(e.target.value) || 0))); } catch (err) { /* private window */ }
-        renderEconomy();
-      } });
-    const head = h('div', { class: 'card-head' }, h('h2', {}, 'Større batteri?'), btn);
-    const intro = h('div', { class: 'hint', style: { marginBottom: '10px' } },
-      'Det sidste års timer (sol, forbrug inkl. bil og timepriser) køres gennem den samme optimering som planen – med det nuværende batteri og med 1–4 ekstra moduler. Forskellen er, hvad et større batteri ville have sparet.');
-    if (!R) {
-      return h('div', { class: 'card' }, head, intro,
-        S.status === 'error' ? h('div', { class: 'hint warn' }, 'Beregningen fejlede: ' + S.error) : h('div', { class: 'hint' }, running ? 'Det tager et minut eller to.' : 'Tryk "Beregn".'));
-    }
-    const rows = R.sizes.map((x) => {
-      const cost = price && x.modules ? price * x.modules : null;
-      const payback = cost && x.extra_saving_per_year_dkk > 0 ? cost / x.extra_saving_per_year_dkk : null;
-      const prevSave = x.modules ? R.sizes[x.modules - 1].extra_saving_per_year_dkk : 0;
-      return h('tr', { style: x.modules === 0 ? { fontWeight: '600' } : null },
-        h('td', {}, x.modules === 0 ? `${fmt(x.kwh, 2)} kWh (nu)` : `+${x.modules} · ${fmt(x.kwh, 2)} kWh`),
-        h('td', {}, x.modules === 0 ? '–' : fmt(x.extra_saving_per_year_dkk, 0) + ' kr'),
-        h('td', {}, x.modules === 0 ? '–' : '+' + fmt(x.extra_saving_per_year_dkk - prevSave, 0) + ' kr'),
-        h('td', {}, cost ? fmt(cost, 0) + ' kr' : '–'),
-        h('td', { style: payback && payback > 12 ? { color: 'var(--warn, #b45309)' } : null },
-          payback ? fmt(payback, 1) + ' år' + (payback > 12 ? ' ⚠' : '') : x.modules && price ? 'aldrig' : '–'),
-        h('td', {}, fmt(x.cycles_per_year, 0)),
-        h('td', {}, fmt(x.export_kwh_per_year, 0) + ' kWh'));
-    });
-    const table = h('div', { class: 'table-wrap' }, h('table', {},
-      h('thead', {}, h('tr', {}, ['Batteri', 'Sparet ekstra pr. år', 'Dette modul', 'Pris', 'Tilbagebetaling', 'Cykler/år', 'Solgt/år'].map((x) => h('th', {}, x)))),
-      h('tbody', {}, rows)));
-    const notes = [
-      `${R.days} dages data (${(R.start || '').slice(0, 10)} – ${(R.end || '').slice(0, 10)})` + (R.skipped_days ? `, ${R.skipped_days} ufuldstændige dage sprunget over` : ''),
-      `Nuværende kapacitet: ${R.base_source === 'measured' ? 'målt' : R.base_source === 'bms' ? "fra BMS'en" : 'opgivet'}; nye moduler à ${fmt(R.module_kwh, 2)} kWh; effekten holdt på ${fmt(R.max_power_kw, 1)} kW`,
-      `Perfekt prognose: simuleret nettopris med nuværende batteri ${fmt(R.simulated_net_dkk, 0)} kr mod målt ${fmt(R.measured_net_dkk, 0)} kr – besparelsen er et loft`,
-      'Et batteri holder typisk 10–15 år: en tilbagebetaling over ca. 12 år er markeret med ⚠',
-    ];
-    return h('div', { class: 'card' }, head, intro,
-      h('label', { class: 'hint', style: { display: 'inline-flex', gap: '8px', alignItems: 'center', marginBottom: '10px' } }, 'Pris pr. modul inkl. montering (kr)', input),
-      R.warning ? h('div', { class: 'hint warn', style: { marginBottom: '8px' } }, R.warning) : null,
-      table, h('ul', { class: 'diag' }, notes.map((t) => h('li', {}, t))),
-      S.status === 'error' ? h('div', { class: 'hint warn' }, 'Seneste beregning fejlede: ' + S.error) : null);
-  }
-  async function loadSizing() {
-    try { state.sizing = await getJSON('api/battery_sizing'); } catch (e) { state.sizing = { status: 'error', error: e.message }; }
-    if (state.tab === 'okonomi') renderEconomy();
-    if (state.sizing && state.sizing.status === 'running') setTimeout(loadSizing, 3000);
-  }
-  async function startSizing() {
-    try { state.sizing = await getJSON('api/battery_sizing', { method: 'POST' }); } catch (e) { toast('Beregning: ' + e.message); return; }
-    if (state.tab === 'okonomi') renderEconomy();
-    setTimeout(loadSizing, 2000);
-  }
-
   async function loadLifetime() {
     try { state.lifetime = await getJSON('api/lifetime'); state.lifetimeError = null; }
     catch (e) { state.lifetimeError = e.message; }
@@ -1943,7 +1879,7 @@
     if (name === 'bil') { renderCar(); loadCar(); }
     if (name === 'sol') { renderSolar(); loadSolar(); }
     if (name === 'evaluering') { renderEval(); loadEval(!!state.evalData); }
-    if (name === 'okonomi') { renderEconomy(); loadEcon(!!state.econData); if (!state.lifetime) loadLifetime(); if (!state.sizing) loadSizing(); }
+    if (name === 'okonomi') { renderEconomy(); loadEcon(!!state.econData); if (!state.lifetime) loadLifetime(); }
   }
   document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => selectTab(b.dataset.tab, true)));
   $('#run').addEventListener('click', async () => {

@@ -403,22 +403,6 @@ days against their goal (‹ › to page back), a results table per day for a ch
 100 %, orange from 75 %, red below) and "År status" per month.
 `GET api/lifetime` (cached 6 h, `?refresh=true`).
 
-## Bigger battery? (Økonomi tab)
-
-"Større batteri?" replays the last 365 days (HA's hourly statistics: solar, consumption incl. the car,
-and the hourly buy and sell price, as in the Økonomi tab) through the planner's optimisation: per
-local day with all its hours, the LP over the day plus 12 hours with what actually came, the day kept
-and the SoC carried on (each run starts at the SoC floor). Done for the capacity the plan uses now
-(measured, BMS or configured) and with 1–4 extra modules of `battery_module_kwh` (2.56, a Growatt ARK
-module); the battery's power stays at `battery_max_power_kw`. The difference in net cost (import x buy
-- export x sell + wear) per year is the extra saving; with a price per module typed in the panel (kept
-in the browser) it shows the payback, marked ⚠ above 12 years (a battery lasts about 10–15). A perfect
-forecast makes every size look a little better than in practice (the card compares the simulated and
-the measured net cost for the current battery); the differences between sizes are what count. Under
-300 days of data the card warns that the seasons are not covered. Runs in the background (a minute or
-two) on "Beregn": `POST api/battery_sizing`, `GET api/battery_sizing`, result in
-`/data/battery_sizing.json`.
-
 ## Appliances
 
 `appliances` lists the meters: `Opvask=sensor.shelly_opvaskemaskine_power,Vask+Tørretumbler=sensor.bryggers_shelly_vask_og_torre_effekt`.

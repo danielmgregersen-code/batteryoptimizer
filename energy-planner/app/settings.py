@@ -36,8 +36,7 @@ DEFAULTS = {
     "reg_export_limit": "number.growatt_grid_export_limit",
     "battery_capacity_kwh": 7.75,
     "battery_capacity_learn": True,        # use the measured capacity (state of health), see batteryhealth
-    "battery_soh_entity": "",
-    "battery_module_kwh": 2.56,            # one extra battery module, for "Større batteri?" (Økonomi)              # optional: the BMS's own state of health in % (wins over the measurement)
+    "battery_soh_entity": "",              # optional: the BMS's own state of health in % (wins over the measurement)
     "battery_max_power_kw": 4.0,
     "inverter_kw": 10.0,
     "soc_floor_pct": 10,

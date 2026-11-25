@@ -11,7 +11,6 @@ from datetime import date, datetime, timedelta, timezone
 import appliances as appl
 import batterycurve
 import batteryhealth
-import batterysizing
 import lifetime as lifemod
 import car as carmod
 import cartrace
@@ -143,7 +142,6 @@ class Planner:
         self.battery_runs_path = os.path.join(os.path.dirname(log_path) or ".", "battery_runs.json")
         self._bat_runs = pvd.load_json(self.battery_runs_path, [])     # charge / discharge runs (batteryhealth)
         self._bat_health_at = None
-        self.battery_sizing_path = os.path.join(os.path.dirname(log_path) or ".", "battery_sizing.json")
         self._appl_learned_at = None
         self.price_fc_path = os.path.join(os.path.dirname(log_path) or ".", "price_forecast.json")
         self._price_fc = pvd.load_json(self.price_fc_path, {})          # {utc hour iso: forecast buy price}
@@ -747,24 +745,6 @@ class Planner:
         if runs:
             self._bat_runs = batteryhealth.remember(self._bat_runs, runs)
             pvd.save_json(self.battery_runs_path, self._bat_runs)
-
-    def battery_sizing(self, now: datetime = None, progress=None) -> dict:
-        """Would a bigger battery pay? The last 365 days replayed with the capacity the plan uses and
-        1..4 extra modules (see batterysizing). Saved in /data/battery_sizing.json."""
-        opts = self.options_fn()
-        now = (now or datetime.now(UTC)).astimezone(UTC)
-        ids = economy.entity_ids(opts)
-        start = (now.astimezone(self.tz) - timedelta(days=365)).replace(hour=0, minute=0, second=0, microsecond=0)
-        stats = self.ha.statistics([v for v in dict.fromkeys(ids.values()) if v], start, now, "hour")
-        eco = economy.compute(stats, ids, self.tz, self.recent_decisions(LOG_READ), hourly=True)
-        base, health = self.battery_capacity(opts)
-        res = batterysizing.report(eco.get("hours") or [], lambda c: battery_params(opts, c), base,
-                                   float(opts.get("battery_module_kwh", 2.56)),
-                                   measured_net_dkk=(eco.get("totals") or {}).get("net_dkk"), progress=progress)
-        res.update(base_source=health["source"], module_kwh=float(opts.get("battery_module_kwh", 2.56)),
-                   max_power_kw=float(opts["battery_max_power_kw"]), missing=eco.get("missing"))
-        pvd.save_json(self.battery_sizing_path, res)
-        return res
 
     def battery_capacity(self, opts: dict) -> tuple:
         """The capacity the plan uses -> (kWh, info). The BMS's own SoH (battery_soh_entity) first, then

@@ -180,38 +180,6 @@ async def get_economy(days: int = 30):
     return res
 
 
-_sizing = {"status": "idle", "progress": 0.0, "error": None}
-_sizing_lock = threading.Lock()
-
-
-def _run_sizing():
-    def progress(f):
-        _sizing["progress"] = round(f, 3)
-    try:
-        planner.battery_sizing(progress=progress)
-        _sizing.update(status="done", progress=1.0, error=None)
-    except Exception as e:  # statistics unavailable, LP failure: shown in the panel
-        log.exception("battery sizing failed: %s", e)
-        _sizing.update(status="error", error=str(e))
-
-
-@app.get("/api/battery_sizing")
-def get_battery_sizing():
-    """The last "bigger battery?" result (kept in /data) and the state of a running calculation."""
-    import pvdampening as pvd
-    return {**_sizing, "result": pvd.load_json(planner.battery_sizing_path, None)}
-
-
-@app.post("/api/battery_sizing")
-def start_battery_sizing():
-    """Start the calculation in the background (a minute or two); GET shows the progress."""
-    with _sizing_lock:
-        if _sizing["status"] != "running":
-            _sizing.update(status="running", progress=0.0, error=None)
-            threading.Thread(target=_run_sizing, daemon=True, name="battery-sizing").start()
-    return get_battery_sizing()
-
-
 @app.post("/api/run")
 async def run_now():
     try:

@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning and control of a Growatt hybrid inverter, home battery and EV charging."
-version: "0.31.0"
+version: "0.30.0"
 slug: "energy_planner"
 init: false
 arch:
@@ -35,7 +35,6 @@ options:
   battery_capacity_kwh: 7.75
   battery_capacity_learn: true
   battery_soh_entity: ""
-  battery_module_kwh: 2.56
   battery_max_power_kw: 4.0
   inverter_kw: 10.0
   soc_floor_pct: 10
@@ -167,7 +166,6 @@ schema:
   battery_capacity_kwh: float(1,100)
   battery_capacity_learn: bool
   battery_soh_entity: str?
-  battery_module_kwh: float(0.5,20)
   battery_max_power_kw: float(0.5,50)
   inverter_kw: float(1,50)
   soc_floor_pct: int(0,50)
