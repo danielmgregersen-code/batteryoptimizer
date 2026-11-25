@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.31.1
+
+- Removed the "Større batteri?" calculation from the Økonomi tab again (its API, `battery_module_kwh`
+  and the background job). An old `/data/battery_sizing.json` is no longer read and can be deleted.
+
 ## 0.31.0
 
 - **"Større batteri?" on the Økonomi tab:** the last year's hours (solar, consumption, hourly prices)
