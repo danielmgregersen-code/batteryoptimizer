@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.29.1
+
+- **Diagnosis traces keep only the key rows** (as the panel's "Kun add-on, status og ladestikket"):
+  the add-on's decisions, calls and replies, the charger's and the car's status, plug and charging
+  states, the connector lock and the car's charging sequence. Last night's trace had 30 368 rows, of
+  which 68 are kept. The starting picture is stored without attributes. `car_trace_full: true` keeps
+  everything as before.
+
 ## 0.29.0
 
 - **One charge instead of several with a pause between them** (`car_one_session`,

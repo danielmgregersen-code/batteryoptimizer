@@ -1301,7 +1301,7 @@
       'Kun add-on, status og ladestikket');
     return h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('h2', {}, 'Diagnose: hele opladningen'), btn),
-      h('div', { class: 'hint', style: { marginBottom: '10px' } }, 'Starter af sig selv, når en opladning starter, og optager laderens og bilens entiteter hvert 5. sekund (kun ændringer) til 10 min efter, at den er stoppet. Add-on’ens beslutninger, kald og svartider står med fed.'),
+      h('div', { class: 'hint', style: { marginBottom: '10px' } }, 'Starter af sig selv, når en opladning starter, og optager laderens og bilens entiteter hvert 5. sekund (kun ændringer) til 10 min efter, at den er stoppet. Add-on’ens beslutninger, kald og svartider står med fed. Der gemmes kun add-on, status og ladestikket (alt: car_trace_full).'),
       filter, items.length ? items : h('div', { class: 'empty' }, 'Ingen optagelser endnu.'));
   }
 

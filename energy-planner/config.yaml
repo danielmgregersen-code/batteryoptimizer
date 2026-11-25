@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning and control of a Growatt hybrid inverter, home battery and EV charging."
-version: "0.29.0"
+version: "0.29.1"
 slug: "energy_planner"
 init: false
 arch:
@@ -108,6 +108,7 @@ options:
   car_one_session: true
   car_one_session_max_dkk: 5.0
   car_pause_min_saving_dkk: 0.20
+  car_trace_full: false
   car_trace_prefixes: ""
   car_thor_stop_fallback: true
   charger_stop_button: "button.garage_growatt_thor_ev_charger_stop_charging"
@@ -236,6 +237,7 @@ schema:
   car_one_session: bool
   car_one_session_max_dkk: float(0,100)
   car_pause_min_saving_dkk: float(0,2)
+  car_trace_full: bool
   car_trace_prefixes: str?
   car_thor_stop_fallback: bool
   charger_stop_button: str

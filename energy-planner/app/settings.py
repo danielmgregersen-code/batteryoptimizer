@@ -125,6 +125,7 @@ DEFAULTS = {
     "car_one_session": True,
     "car_one_session_max_dkk": 5.0,
     "car_pause_min_saving_dkk": 0.20,
+    "car_trace_full": False,                # every change in the diagnosis traces, not only the key rows
     "car_trace_prefixes": "",               # the IONIQ 9's device id for kia_uvo.start_charge / stop_charge
     # Emergency stop on the charger when the car cannot be paused through Kia, only while charging
     # from the grid (not on sun) and when nothing more is planned before the deadline. The THOR cannot

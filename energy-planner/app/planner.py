@@ -361,7 +361,8 @@ class Planner:
             self.trace.event(now, "start", f"laderen: {prev} → {status}")
         if self.trace.active():
             states = self.ha.all_states() if hasattr(self.ha, "all_states") else []
-            self.trace.sample(states, cartrace.prefixes(opts), now, charging=status == "charging")
+            self.trace.sample(states, cartrace.prefixes(opts), now, charging=status == "charging",
+                              full=bool(opts.get("car_trace_full")))
 
     def car_soc_now(self, opts: dict, now: datetime) -> dict:
         """The car's SoC: the last reported one plus what the charger delivered since (see

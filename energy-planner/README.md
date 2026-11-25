@@ -61,7 +61,10 @@ Create two helpers (Settings → Devices & services → Helpers → Toggle):
   timestamps left out, big JSON attributes (the car's vehicle data) only by the fields that changed
   (e.g. `…ChargingConnector.LockState 2 → 1`). The add-on's own decisions, calls (before they are
   sent) and replies (with the time they took) are written in between, so cause and effect read in
-  order. `/data/car_traces/` (latest 10), `GET api/car/traces`.
+  order. Only the key rows are kept: the add-on's rows, the charger's and the car's status, plug and
+  charging states, the connector lock and the car's charging sequence (a night's charge went from
+  30 000 rows to under 100); `car_trace_full: true` keeps every change and the starting picture's
+  attributes. `/data/car_traces/` (latest 10), `GET api/car/traces`.
 - **Turn off the THOR's own automatic charging schedule** (ShinePhone; in HA
   `time.…_automatic_charging_start` / `_stop`, option `charger_schedule_entities`). At the schedule's
   start or stop time the charger ends the running session ("Unknown Stop" on its display), and a

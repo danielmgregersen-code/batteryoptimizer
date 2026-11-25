@@ -89,3 +89,26 @@ def test_noise_is_left_out_and_json_attributes_are_diffed_by_field():
     assert ("vehicle_data.Green.ChargingInformation.SequenceDetails", 8, 12) in got and len(got) == 2
     view = cartrace._view({"state": "x", "attributes": {"last_message_at": "1", "last_heartbeat_at": "2", "a": 1}})
     assert view["attributes"] == {"a": 1}
+
+
+def test_only_key_rows_are_kept_unless_full(tmp_path):
+    def st(status, power, lock, seq, msg):
+        return [{"entity_id": DEFAULTS["charger_status_entity"], "state": status,
+                 "attributes": {"last_message_action": msg}},
+                {"entity_id": "sensor.garage_growatt_thor_ev_charger_charging_power", "state": str(power), "attributes": {}},
+                {"entity_id": "sensor.ioniq_9_data", "state": "ok",
+                 "attributes": {"vehicle_data": {"Green": {"ChargingConnector": {"LockState": lock},
+                                                            "ChargingInformation": {"SequenceDetails": seq, "RemainTime": power}}}}}]
+    for full, expect in ((False, 4), (True, 7)):
+        tr = cartrace.CarTrace(str(tmp_path / str(full)))
+        pfx = cartrace.prefixes({**DEFAULTS, "car_trace_prefixes": "ioniq_9"})
+        tr.start(T0, "test", charging=True)
+        tr.sample(st("charging", 11000, 2, 7, "MeterValues"), pfx, T0, charging=True, full=full)
+        tr.event(T0 + timedelta(seconds=5), "kald", "sender pause")
+        tr.sample(st("suspended_ev", 0, 1, 12, "StatusNotification"), pfx, T0 + timedelta(seconds=10), charging=False, full=full)
+        cur = tr.list()[0]
+        whats = [c["what"] for c in cur["changes"]]
+        assert len(whats) == expect, whats
+        assert {"kald", "state", "vehicle_data.Green.ChargingConnector.LockState",
+                "vehicle_data.Green.ChargingInformation.SequenceDetails"} <= set(whats)
+        assert ("attributes" in cur["initial"][DEFAULTS["charger_status_entity"]]) is full

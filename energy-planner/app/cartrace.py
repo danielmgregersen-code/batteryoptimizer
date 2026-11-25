@@ -7,11 +7,15 @@ the same trace (at most MAX_DURATION). Every sample reads all HA states, keeps t
 car's entities (by object-id prefix) and stores only what changed, with the seconds since the start:
 the state, the attributes (noise like the charger's message timestamps left out) and, for big
 JSON attributes such as the car's vehicle data, only the fields that changed ("…LockState 2 → 1").
+Only the key rows are kept (the add-on's own rows, the charger's and the car's status, plug and
+charging states, the connector lock and the car's charging sequence; KEY_STATE / KEY_FIELD) and the
+starting picture without attributes, unless car_trace_full is on: a night's charge was 30 000 rows.
 The add-on writes its own decisions and calls into the running trace (entity "add-on"), so cause
 and effect can be read in order. Saved in /data/car_traces/, the latest 10 kept.
 """
 import json
 import os
+import re
 import threading
 from datetime import datetime, timedelta
 
@@ -23,6 +27,14 @@ IGNORED_ATTRS = {"friendly_name", "icon", "unit_of_measurement", "device_class",
                  "entity_picture", "supported_features", "attribution",
                  "last_message_at", "last_heartbeat_at"}          # the charger's 5-second heartbeat
 QUIET_ACTIONS = {"Heartbeat", "CallResult"}
+KEY_STATE = re.compile(r"status|ev_charging$|plugged|lasetilstand")     # entities whose state is kept
+KEY_FIELD = re.compile(r"LockState|ConnectorFastening|SequenceDetails")  # attribute fields that are kept
+
+
+def is_key(entity: str, what: str) -> bool:
+    """A row the short trace keeps (the panel's "Kun add-on, status og ladestikket")."""
+    return (entity == "add-on" or (what == "state" and bool(KEY_STATE.search(entity)))
+            or bool(KEY_FIELD.search(what)))
 
 
 def _object_id(entity_id: str) -> str:
@@ -129,8 +141,9 @@ class CarTrace:
                 e["data"] = data
             tr["changes"].append(e)
 
-    def sample(self, states: list, pfx: list, now: datetime, charging: bool = None):
-        """Record what changed since the last sample; finish 10 min after charging stopped."""
+    def sample(self, states: list, pfx: list, now: datetime, charging: bool = None, full: bool = False):
+        """Record what changed since the last sample; finish 10 min after charging stopped.
+        full: every change and the attributes of the starting picture, not only the key rows."""
         with self._lock:
             tr = self.current
             if tr is None:
@@ -141,6 +154,10 @@ class CarTrace:
                 tr["stopped_at"] = None
             elif charging is False and tr.get("stopped_at") is None:
                 tr["stopped_at"] = now.isoformat(timespec="seconds")
+            def add(eid, what, x, y):
+                if full or is_key(eid, what):
+                    tr["changes"].append({"s": secs, "entity": eid, "what": what, "from": x, "to": y})
+
             for st in states or []:
                 eid = st.get("entity_id", "")
                 if not any(_object_id(eid).startswith(p) for p in pfx):
@@ -149,17 +166,17 @@ class CarTrace:
                 old = self._last.get(eid)
                 if old is None:
                     if not tr.get("initialised"):
-                        tr["initial"][eid] = v
+                        tr["initial"][eid] = v if full else {"state": v["state"]}
                     else:
-                        tr["changes"].append({"s": secs, "entity": eid, "what": "state", "from": None, "to": v["state"]})
+                        add(eid, "state", None, v["state"])
                 elif old != v:
                     if old["state"] != v["state"]:
-                        tr["changes"].append({"s": secs, "entity": eid, "what": "state", "from": old["state"], "to": v["state"]})
+                        add(eid, "state", old["state"], v["state"])
                     for k in sorted(set(old["attributes"]) | set(v["attributes"])):
                         a, b = old["attributes"].get(k), v["attributes"].get(k)
                         if a != b:
                             for what, x, y in attr_changes(k, a, b):
-                                tr["changes"].append({"s": secs, "entity": eid, "what": what, "from": x, "to": y})
+                                add(eid, what, x, y)
                 self._last[eid] = v
             tr["initialised"] = True
             stopped = tr.get("stopped_at")
