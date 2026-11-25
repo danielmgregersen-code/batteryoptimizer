@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.30.0
+
+- **The house battery's real capacity (state of health):** measured from charges and discharges that
+  move the SoC at least 25 points, as energy / ΔSoC from the 5-minute statistics (SoC and the
+  battery's input / output counters). Charge and discharge are combined so the losses cancel. With
+  5 runs each way and a result within 70–105 % of `battery_capacity_kwh`, the plan uses it instead of
+  the configured 7.75 kWh (`battery_capacity_learn`). `battery_soh_entity` can point at the BMS's own
+  SoH. The Plan tab shows "Kapacitet 7,30 kWh · SoH 94 % af 7,75 kWh (målt på …)", or how far the
+  learning has come.
+
 ## 0.29.1
 
 - **Diagnosis traces keep only the key rows** (as the panel's "Kun add-on, status og ladestikket"):

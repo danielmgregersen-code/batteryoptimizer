@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import appliances as appl
 import batterycurve
+import batteryhealth
 import lifetime as lifemod
 import car as carmod
 import cartrace
@@ -51,8 +52,9 @@ class PlannerError(Exception):
     pass
 
 
-def battery_params(opts: dict) -> BatteryParams:
-    cap = float(opts["battery_capacity_kwh"])
+def battery_params(opts: dict, capacity: float = None) -> BatteryParams:
+    """capacity: the battery's real capacity (Planner.battery_capacity), else the configured one."""
+    cap = float(capacity or opts["battery_capacity_kwh"])
     return BatteryParams(
         capacity_kwh=cap,
         max_power_kw=float(opts["battery_max_power_kw"]),
@@ -137,6 +139,9 @@ class Planner:
         self._hp_power = {}               # its meter's hourly mean power (W)
         self.appliance_runs_path = os.path.join(os.path.dirname(log_path) or ".", "appliance_runs.json")
         self._appl_runs = pvd.load_json(self.appliance_runs_path, {})   # {appliance name: [runs]}
+        self.battery_runs_path = os.path.join(os.path.dirname(log_path) or ".", "battery_runs.json")
+        self._bat_runs = pvd.load_json(self.battery_runs_path, [])     # charge / discharge runs (batteryhealth)
+        self._bat_health_at = None
         self._appl_learned_at = None
         self.price_fc_path = os.path.join(os.path.dirname(log_path) or ".", "price_forecast.json")
         self._price_fc = pvd.load_json(self.price_fc_path, {})          # {utc hour iso: forecast buy price}
@@ -245,6 +250,7 @@ class Planner:
                         log.info("solar statistics for %s days unavailable: %s", days, e)
             self._refresh_car_history(opts, now)
             self._learn_battery_curve(opts, now)
+            self._learn_battery_health(opts, now)
             if opts.get("heat_pump_power_entity"):
                 self._hp_power = _by_start(stats.get(opts["heat_pump_power_entity"]))
             for i in ids:
@@ -724,13 +730,43 @@ class Planner:
                                              float(opts.get("battery_taper_start_pct", 90)),
                                              float(opts.get("battery_taper_end_kw", 1.0)))
 
+    def _learn_battery_health(self, opts: dict, now: datetime):
+        """Charge and discharge runs from the 5-minute statistics, once an hour (see batteryhealth)."""
+        ids = [opts.get("battery_soc_entity"), opts.get("battery_input_counter"), opts.get("battery_output_counter")]
+        if not all(ids) or (self._bat_health_at and now - self._bat_health_at < timedelta(hours=1)):
+            return
+        self._bat_health_at = now
+        try:
+            stats = self.ha.statistics(ids, now - timedelta(days=10), now, "5minute")
+        except Exception as e:  # best effort: the runs kept in /data stay
+            log.info("battery health: 5-minute statistics unavailable: %s", e)
+            return
+        runs = batteryhealth.find_runs(stats.get(ids[0]), stats.get(ids[1]), stats.get(ids[2]))
+        if runs:
+            self._bat_runs = batteryhealth.remember(self._bat_runs, runs)
+            pvd.save_json(self.battery_runs_path, self._bat_runs)
+
+    def battery_capacity(self, opts: dict) -> tuple:
+        """The capacity the plan uses -> (kWh, info). The BMS's own SoH (battery_soh_entity) first, then
+        the measured capacity once it has enough runs and lies within 70–105 % of the configured one."""
+        nominal = float(opts["battery_capacity_kwh"])
+        est = batteryhealth.estimate(self._bat_runs, nominal)
+        info = {**est, "nominal_kwh": nominal, "source": "nominal", "used_kwh": nominal}
+        soh = self.ha.number(opts["battery_soh_entity"]) if opts.get("battery_soh_entity") else None
+        if soh is not None and 50.0 <= soh <= 110.0:
+            info.update(source="bms", used_kwh=round(nominal * soh / 100.0, 2), soh_pct=round(soh, 1))
+        elif (opts.get("battery_capacity_learn", True) and est["learned"]
+              and 0.70 * nominal <= est["kwh"] <= 1.05 * nominal):
+            info.update(source="measured", used_kwh=est["kwh"])
+        return info["used_kwh"], info
+
     def _charge_lines(self, opts: dict, horizon) -> tuple:
         """Per step, the LP lines for the BMS taper (see batterycurve), and the curve used."""
         max_kw = float(opts["battery_max_power_kw"])
         info = self._bat_curve or {"curve": batterycurve.default_curve(
             max_kw, float(opts.get("battery_taper_start_pct", 90)), float(opts.get("battery_taper_end_kw", 1.0))),
             "learned": False, "samples": {}}
-        cap = float(opts["battery_capacity_kwh"])
+        cap = self.battery_capacity(opts)[0]
         cache = {}
         lines = []
         for dt in horizon.dt:
@@ -962,7 +998,8 @@ class Planner:
         if n_fc - n_pf:
             warnings.append(f"{n_fc - n_pf} of {len(horizon)} hours use estimated prices (same hour of the last known day)")
 
-        params = battery_params(opts)
+        bat_cap, bat_health = self.battery_capacity(opts)
+        params = battery_params(opts, bat_cap)
         soc0 = params.capacity_kwh * soc_pct / 100.0
         tv = terminal_value_for(horizon.buy, params)
 
@@ -1125,6 +1162,7 @@ class Planner:
                               "default": curve_info.get("default") or batterycurve.default_curve(
                                   float(opts["battery_max_power_kw"]), float(opts.get("battery_taper_start_pct", 90)),
                                   float(opts.get("battery_taper_end_kw", 1.0)))},
+            "battery_health": bat_health,
             "export_min_price": exp_min,
             "actual_registers": actual,
             "counters": counters,
@@ -1192,6 +1230,9 @@ class Planner:
             **summ, "soc_pct": snap["soc_pct"], "title": title, "text": text,
             "savings_vs_solar_only_dkk": snap["savings_vs_solar_only_dkk"],
             "horizon_hours": snap["horizon_hours"], "car": snap.get("car"),
+            "battery_capacity_kwh": (snap.get("battery_health") or {}).get("used_kwh"),
+            "battery_soh_pct": (snap.get("battery_health") or {}).get("soh_pct"),
+            "battery_capacity_source": (snap.get("battery_health") or {}).get("source"),
         })
         self.ha.set_state("sensor.energy_planner_soc_floor", sp["min_soc_pct"], {
             **common, "friendly_name": "Energy Planner SoC floor", "unit_of_measurement": "%"})

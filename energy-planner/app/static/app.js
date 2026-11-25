@@ -690,7 +690,8 @@
       h('div', { class: 'card-head' }, h('h2', {}, 'Batteriets ladekurve (kW mod SoC)'),
         h('span', { class: 'hint' }, bc.learned ? `Lært af ${fmt(nSamples, 0)} 5-minutters målinger over 80 %` : `Standardkurve (for få målinger over 80 %: ${fmt(nSamples, 0)})`)),
       curveBox, h('div', { style: { marginTop: '10px' } }, legend([{ color: C.batt, label: bc.learned ? 'Lært' : 'Brugt' }, { color: C.muted, label: 'Standard' }])),
-      h('div', { class: 'hint', style: { marginTop: '6px' } }, 'Planen regner med, at batteriet trapper ned i den sidste del og ikke kan tage fuld effekt helt op til 100 %.')) : null;
+      h('div', { class: 'hint', style: { marginTop: '6px' } }, 'Planen regner med, at batteriet trapper ned i den sidste del og ikke kan tage fuld effekt helt op til 100 %.'),
+      healthLine(p.battery_health)) : null;
     const split = prof && prof.parts ? profileSeries(prof) : null;
     const profKind = state.profKind || 'weekday';
     const profCard = prof ? h('div', { class: 'card' },
@@ -1265,6 +1266,18 @@
   }
 
   // Diagnosis: what changed on the charger and the car after charging stopped.
+  // The house battery's capacity the plan uses: the BMS's SoH, the measured one, or the configured one.
+  function healthLine(bh) {
+    if (!bh) return null;
+    const runs = `${bh.charge_runs} opladninger og ${bh.discharge_runs} afladninger`;
+    let text;
+    if (bh.source === 'bms') text = `Kapacitet ${fmt(bh.used_kwh, 2)} kWh · SoH ${fmt(bh.soh_pct, 0)} % (fra BMS'en)`;
+    else if (bh.source === 'measured') text = `Kapacitet ${fmt(bh.used_kwh, 2)} kWh · SoH ${fmt(bh.soh_pct, 0)} % af ${fmt(bh.nominal_kwh, 2)} kWh (målt på ${runs})`;
+    else if (bh.kwh && bh.learned) text = `Opgivet kapacitet ${fmt(bh.nominal_kwh, 2)} kWh bruges · målt ${fmt(bh.kwh, 2)} kWh (${fmt(bh.soh_pct, 0)} %) ligger uden for 70–105 % eller er slået fra`;
+    else text = `Opgivet kapacitet ${fmt(bh.nominal_kwh, 2)} kWh · lærer den reelle kapacitet (${Math.min(bh.charge_runs, 5)}/5 opladninger, ${Math.min(bh.discharge_runs, 5)}/5 afladninger på mindst 25 %-point)`;
+    return h('div', { class: 'hint', style: { marginTop: '6px' } }, text);
+  }
+
   function traceCard() {
     const traces = state.traces || [];
     const onlyKey = !!state.traceOnlyKey;

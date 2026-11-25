@@ -1478,3 +1478,24 @@ def test_car_waits_for_a_plan_with_it_and_asks_for_one(tmp_path):
     p.run_once(now + timedelta(minutes=12))
     d = p.car_cycle(now + timedelta(minutes=12))
     assert "plan_pending" not in d["live"] and p._car_noplan_since is None
+
+
+def test_battery_capacity_uses_the_measured_one_within_limits_and_the_bms_first(tmp_path):
+    import batteryhealth
+    from test_batteryhealth import sim
+    ha = make_ha()
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    opts = dict(DEFAULTS)
+    assert p.battery_capacity(opts)[0] == 7.75                                  # nothing learned yet
+    p._bat_runs = batteryhealth.find_runs(*sim(cap=7.0))
+    cap, info = p.battery_capacity(opts)
+    assert info["source"] == "measured" and abs(cap - 7.0) < 0.15
+    snap = p.run_once(datetime(2026, 11, 14, 11, 30, tzinfo=UTC))
+    assert snap["battery_health"]["source"] == "measured"
+    assert ha.published["sensor.energy_planner_mode"][1]["battery_capacity_kwh"] == cap
+    assert p.battery_capacity({**opts, "battery_capacity_learn": False})[0] == 7.75
+    p._bat_runs = batteryhealth.find_runs(*sim(cap=4.0))                       # 52 %: implausible
+    assert p.battery_capacity(opts)[1]["source"] == "nominal"
+    ha.numbers["sensor.growatt_bms_soh"] = 90.0
+    cap, info = p.battery_capacity({**opts, "battery_soh_entity": "sensor.growatt_bms_soh"})
+    assert info["source"] == "bms" and abs(cap - 7.75 * 0.9) < 0.01

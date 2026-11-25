@@ -107,6 +107,16 @@ Before tomorrow's prices are published the horizon is extended to `min_horizon_h
   the cheapest price in the horizon × the discharge efficiency (what a stored kWh can at least save).
 - Battery limits: capacity, max charge/discharge power, SoC floor and ceiling, and separate losses for
   solar → battery, grid → battery and battery → house.
+- **Real capacity (state of health)** (`battery_capacity_learn`, on): the BMS reports the SoC as a
+  share of the real capacity, so charges and discharges that move the SoC at least 25 points (between
+  10 and 95 %) show it: energy / ΔSoC from the 5-minute statistics of `battery_soc_entity` and the
+  battery's input / output counters. A charge gives capacity / η (a little high), a discharge
+  capacity × η (a little low); the capacity is the geometric mean of the two medians (the latest 30
+  of each), so the losses cancel. Runs are kept in `/data/battery_runs.json`. With at least 5 runs
+  each way and a result within 70–105 % of `battery_capacity_kwh`, the plan uses it (SoC in kWh, the
+  floor and ceiling, the BMS taper). `battery_soh_entity` (the BMS's own SoH in %, if the inverter
+  integration has one) wins over the measurement. Shown under the battery's charge curve in the Plan
+  tab and as `battery_capacity_kwh` / `battery_soh_pct` on `sensor.energy_planner_mode`.
 - The battery only serves the house. It is never sold to the grid (no arbitrage in this version).
 
 Consequences that fall out of the numbers rather than out of rules:
