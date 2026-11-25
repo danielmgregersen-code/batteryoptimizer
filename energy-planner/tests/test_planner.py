@@ -1499,3 +1499,15 @@ def test_battery_capacity_uses_the_measured_one_within_limits_and_the_bms_first(
     ha.numbers["sensor.growatt_bms_soh"] = 90.0
     cap, info = p.battery_capacity({**opts, "battery_soh_entity": "sensor.growatt_bms_soh"})
     assert info["source"] == "bms" and abs(cap - 7.75 * 0.9) < 0.01
+
+
+def test_battery_sizing_runs_on_the_statistics_and_is_saved(tmp_path):
+    import json
+    import os
+    ha = make_ha(stats={})
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    seen = []
+    res = p.battery_sizing(datetime(2026, 11, 14, 11, 30, tzinfo=UTC), progress=seen.append)
+    assert len(res["sizes"]) == 5 and res["base_source"] == "nominal" and res["sizes"][0]["kwh"] == 7.75
+    assert os.path.exists(p.battery_sizing_path) and json.load(open(p.battery_sizing_path))["sizes"]
+    assert not res["days"] or (seen and seen[-1] == 1.0)

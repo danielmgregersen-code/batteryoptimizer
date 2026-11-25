@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.31.0
+
+- **"Større batteri?" on the Økonomi tab:** the last year's hours (solar, consumption, hourly prices)
+  replayed through the planner's optimisation with the current battery and 1–4 extra modules
+  (`battery_module_kwh` 2.56). Shows the extra saving per year, what each extra module adds, cycles
+  per year and the payback for a module price typed in the panel (⚠ above 12 years). The battery's
+  power is kept unchanged, and the perfect forecast makes the saving an upper bound. Runs in the
+  background on "Beregn".
+
 ## 0.30.0
 
 - **The house battery's real capacity (state of health):** measured from charges and discharges that
