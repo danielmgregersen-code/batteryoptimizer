@@ -122,6 +122,8 @@ DEFAULTS = {
     "car_pause_gap_hours": 2,
     "car_min_session_kwh": 2.0,
     "car_full_power": True,
+    "car_one_session": True,
+    "car_one_session_max_dkk": 5.0,
     "car_pause_min_saving_dkk": 0.20,
     "car_trace_prefixes": "",               # the IONIQ 9's device id for kia_uvo.start_charge / stop_charge
     # Emergency stop on the charger when the car cannot be paused through Kia, only while charging

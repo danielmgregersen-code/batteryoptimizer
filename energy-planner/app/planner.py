@@ -36,6 +36,7 @@ KIA_BACKOFF_MIN = (2, 4, 8, 15)      # minutes between retries after failed Kia 
 KIA_BLOCK = timedelta(hours=6)       # after a PIN / access error: no Kia calls for this long
 KIA_STOP_IGNORED = timedelta(minutes=10)   # a successful stop the car has not followed after this
 THOR_STOP_AFTER = timedelta(minutes=5)     # the pause must have been wanted this long before an emergency stop
+CAR_PLAN_WAIT = timedelta(minutes=10)       # car connected, no plan row for it: wait this long before the fallback
 NON_RETRYABLE = ("pin", "unauthorized", "unauthorised", "locked", "token", "forbidden", "401", "403")
 MAX_LOG_LINES = 12000      # with a cycle every 5 min, 9000 lines are about 31 days
 KEEP_LOG_LINES = 9000
@@ -117,6 +118,8 @@ class Planner:
         self._car_last_logged = None
         self._last_kia = None          # (service, charger status, time) of the last Kia call
         self._car_stop_sent = None     # (time, via) of the last pause sent, before its call returns
+        self.replan_event = threading.Event()   # set to make the planner loop plan again at once
+        self._car_noplan_since = None  # the car is connected with a known SoC, the plan has no row for it
         self._trace_plan_last = None   # (car kWh this hour, battery mode) last written into a trace
         self._trace_decision_last = None
         self._kia_block_until = None   # PIN / access error: no Kia calls before this
@@ -586,6 +589,34 @@ class Planner:
             pl, dropped = solve_fn(cp), True
         return pl, cp, dropped
 
+    @staticmethod
+    def _one_session(solve_fn, pl, cp, opts, keep_first: bool = False, critical: bool = False):
+        """The plan's grid charging of the car in one block when it has pauses in between (the THOR
+        ends the session ~3 min after a pause): solve again with the car available only in the
+        cheapest run that holds the same energy, and keep that if it costs at most
+        car_one_session_max_dkk more and misses nothing. -> (plan, car params, info or None)."""
+        if cp is None or critical or not opts.get("car_one_session", True) or pl.grid_car is None:
+            return pl, cp, None
+        grid = [float(g + b) for g, b in zip(pl.grid_car, pl.bat_car)]
+        total = [g + float(s) for g, s in zip(grid, pl.pv_car)]
+        sessions = carmod.grid_sessions(total)          # any charging of the car, sun included
+        if len(sessions) < 2:
+            return pl, cp, None
+        if any(float(pl.pv_car[i]) > 0.1 for i in range(sessions[0][0], sessions[-1][-1] + 1)):
+            return pl, cp, None                         # sun in the stretch: left as planned
+        cap = [float(cp.max_kw) * float(d) for d in pl.dt]
+        off = set(carmod.consolidate_window(grid, pl.buy, cap, cp.available, keep_first))
+        if not off:
+            return pl, cp, {"used": False, "why": "no_window", "sessions": len(sessions)}
+        cp2 = dataclasses.replace(cp, available=[a and i not in off for i, a in enumerate(cp.available)])
+        pl2 = solve_fn(cp2)
+        extra = float(pl2.net_cost - pl.net_cost)
+        total2 = [float(g + b + s) for g, b, s in zip(pl2.grid_car, pl2.bat_car, pl2.pv_car)]
+        ok = (len(carmod.grid_sessions(total2)) <= 1 and pl2.car_shortfall <= pl.car_shortfall + 0.05
+              and extra <= float(opts.get("car_one_session_max_dkk", 5.0)))
+        info = {"used": ok, "extra_dkk": round(extra, 2), "sessions": len(sessions)}
+        return (pl2, cp2, info) if ok else (pl, cp, info)
+
     def _car_preview(self, horizon, now, opts, params, soc0, tv, fuse_amps, exp_min, car_soc, full, departure,
                      charge_lines=None):
         """What the plan would do with the car if it were plugged in now (nothing is written)."""
@@ -593,10 +624,11 @@ class Planner:
                                            full=full, departure=departure, extra=self._car_extra)
         if cp is None:
             return None
-        pl, cp, dropped = self._min_session(
-            lambda c: solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
-                            car=c, fuse_amps=fuse_amps, export_min_price=exp_min, charge_lines=charge_lines),
-            cp, opts, critical=car_soc is not None and car_soc < float(opts["car_critical_start_pct"]))
+        fn = (lambda c: solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
+                              car=c, fuse_amps=fuse_amps, export_min_price=exp_min, charge_lines=charge_lines))
+        crit = car_soc is not None and car_soc < float(opts["car_critical_start_pct"])
+        pl, cp, dropped = self._min_session(fn, cp, opts, critical=crit)
+        pl, cp, one = self._one_session(fn, pl, cp, opts, critical=crit)
         cap = float(opts["car_battery_kwh"])
         rows, windows, cur = [], [], None
         for i, start in enumerate(horizon.starts):
@@ -637,7 +669,7 @@ class Planner:
         else:
             reason = "cheap"
         out = {"soc_now": car_soc, "planned_kwh": round(planned, 2), "cost_dkk": round(cost, 2),
-               "small_dropped": dropped, "min_session_kwh": float(opts.get("car_min_session_kwh", 0) or 0),
+               "small_dropped": dropped, "one_session": one, "min_session_kwh": float(opts.get("car_min_session_kwh", 0) or 0),
                "soc_at_deadline": round(at_deadline, 1), "deadline": info["deadline"],
                "max_soc_pct": info.get("max_soc_pct"), "windows": windows, "reason": reason, "rows": rows,
                "min_soc_pct": float(opts["car_min_stop_pct"]), "value_dkk": float(opts["car_value_dkk_per_kwh"])}
@@ -963,10 +995,14 @@ class Planner:
         exp_min = float(opts["export_min_price"]) if opts.get("export_control") and opts.get("export_min_price") is not None else None
         charge_lines, curve_info = self._charge_lines(opts, horizon)
         crit = bool(car_params) and carmod.needs(car_soc, status == "charging", opts)["critical"]
-        plan, car_params, _ = self._min_session(
-            lambda c: solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
-                            car=c, fuse_amps=fuse_amps, export_min_price=exp_min, charge_lines=charge_lines),
-            car_params, opts, keep_first=bool(car_params) and status == "charging", critical=crit)
+        car_solve = (lambda c: solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
+                                     car=c, fuse_amps=fuse_amps, export_min_price=exp_min, charge_lines=charge_lines))
+        keep_first = bool(car_params) and status == "charging"
+        plan, car_params, _ = self._min_session(car_solve, car_params, opts, keep_first=keep_first, critical=crit)
+        plan, car_params, one_session = self._one_session(car_solve, plan, car_params, opts,
+                                                          keep_first=keep_first, critical=crit)
+        if one_session:
+            car_info["one_session"] = one_session
         solar_only = solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
                            allow_grid_charge=False, car=car_params, fuse_amps=fuse_amps, export_min_price=exp_min,
                            charge_lines=charge_lines)
@@ -1219,6 +1255,15 @@ class Planner:
         with self._lock:
             snap = self.latest
         row = carmod.plan_for_now(snap, now, self.tz)
+        if row is None and live["status"] in carmod.CONNECTED and live["car_soc"] is not None:
+            # The plan was made before the car (or its SoC) was there: plan again now and wait for it
+            # instead of falling back to charging at full power (and pausing minutes later).
+            if self._car_noplan_since is None:
+                self._car_noplan_since = now
+                self.replan_event.set()
+            live["plan_pending"] = now - self._car_noplan_since < CAR_PLAN_WAIT
+        else:
+            self._car_noplan_since = None
         # The plan may lift the daily limit (100 % at rock-bottom prices, or a trip).
         snap_car = (snap or {}).get("car") or {}
         opts = {**opts, "car_max_soc_pct": snap_car.get("max_soc_pct") or opts["car_max_soc_pct"]}

@@ -1370,7 +1370,10 @@
       tile('Styringen', h('span', { style: { fontSize: '20px' } }, action + (c && c.target_amps ? ` · ${c.target_amps} A` : '')), c ? (c.reason_da || translateReason(c.reason)) : 'venter på første cyklus'),
       carInfo && carInfo.connected
         ? tile('Planlagt', h('span', {}, fmt(carInfo.planned_kwh, 1), h('small', {}, ' kWh')),
-          `frem til ${carUntil(carInfo).label} · net-del ca. ${fmt(carInfo.planned_cost_dkk, 0)} kr` + (carInfo.shortfall_kwh > 0.05 ? ` · mangler ${fmt(carInfo.shortfall_kwh, 1)} kWh` : ''))
+          `frem til ${carUntil(carInfo).label} · net-del ca. ${fmt(carInfo.planned_cost_dkk, 0)} kr` + (carInfo.shortfall_kwh > 0.05 ? ` · mangler ${fmt(carInfo.shortfall_kwh, 1)} kWh` : '')
+          + (carInfo.one_session ? (carInfo.one_session.used
+            ? ` · samlet i én opladning (${carInfo.one_session.extra_dkk > 0.005 ? '+' + fmt(carInfo.one_session.extra_dkk, 2) + ' kr' : 'gratis'})`
+            : ` · ${carInfo.one_session.sessions || 2} opladninger med pause (${carInfo.one_session.why === 'no_window' ? 'kan ikke samles' : 'én samlet ville koste mere'})`) : ''))
         : p && p.car_preview
           ? tile('Hvis sat til nu', h('span', {}, fmt(p.car_preview.planned_kwh, 1), h('small', {}, ' kWh')),
             p.car_preview.planned_kwh > 0.1 ? `når ${fmt(p.car_preview.soc_at_deadline, 0)} % kl. ${p.car_preview.deadline.slice(11, 16)} · net-del ca. ${fmt(p.car_preview.cost_dkk, 0)} kr` : 'ville ikke lade før deadline')

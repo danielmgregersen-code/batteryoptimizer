@@ -1431,3 +1431,50 @@ def test_lifetime_combines_the_old_sensor_and_the_estimate_and_is_cached(tmp_pat
 def date_(y, m, d):
     from datetime import date
     return date(y, m, d)
+
+
+def test_one_session_merges_grid_charging_with_a_pause_when_it_costs_little():
+    import numpy as np
+    from optimizer import CarParams
+
+    class Pl:
+        def __init__(self, grid, cost, short=0.0):
+            n = len(grid)
+            self.grid_car, self.bat_car, self.pv_car = np.array(grid, float), np.zeros(n), np.zeros(n)
+            self.buy, self.dt = np.array([2.0, 1.0, 1.4, 1.1, 2.0]), np.ones(n)
+            self.net_cost, self.car_shortfall = cost, short
+    calls = []
+
+    def solve_fn(cp):               # restricted: the car charges 1–2 (as one block), 0.8 kr more
+        calls.append(list(cp.available))
+        return Pl([0, 5.5, 5.5, 0, 0], 10.8)
+    cp = CarParams(available=[True] * 5, max_kw=5.5, eta=0.92, soc0_kwh=50, max_kwh=99, value_dkk_per_kwh=1.0)
+    split = Pl([0, 5.5, 0, 5.5, 0], 10.0)                  # 01 and 03, a pause at 02
+    pl, cp2, info = Planner._one_session(solve_fn, split, cp, DEFAULTS)
+    assert info == {"used": True, "extra_dkk": 0.8, "sessions": 2}
+    assert calls == [[True, True, True, False, True]] and cp2.available == calls[0]
+    assert list(pl.grid_car) == [0, 5.5, 5.5, 0, 0]
+    pl, cp3, info = Planner._one_session(solve_fn, split, cp, {**DEFAULTS, "car_one_session_max_dkk": 0.5})
+    assert info["used"] is False and pl is split and cp3 is cp            # too dear: the pause stays
+    pl, _, info = Planner._one_session(solve_fn, split, cp, {**DEFAULTS, "car_one_session": False})
+    assert info is None and pl is split
+    _, _, info = Planner._one_session(solve_fn, split, cp, DEFAULTS, critical=True)
+    assert info is None
+    sunny = Pl([0, 5.5, 0, 5.5, 0], 10.0)
+    sunny.pv_car[2] = 2.0                                  # sun in between: no pause, left alone
+    assert Planner._one_session(solve_fn, sunny, cp, DEFAULTS)[2] is None
+
+
+def test_car_waits_for_a_plan_with_it_and_asks_for_one(tmp_path):
+    ha = car_ha()
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 35.0                      # below the minimum, above critical
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    now = datetime(2026, 11, 14, 19, 30, tzinfo=UTC)
+    d = p.car_cycle(now)                                                # no plan yet
+    assert d["action"] == "idle" and d["reason"] == "waiting for a plan with the car"
+    assert p.replan_event.is_set() and d["live"]["plan_pending"] is True
+    d = p.car_cycle(now + timedelta(minutes=11))                        # still none: the planner is failing
+    assert d["action"] == "charge" and d["reason"] == "no plan, below minimum SoC"
+    p.run_once(now + timedelta(minutes=12))
+    d = p.car_cycle(now + timedelta(minutes=12))
+    assert "plan_pending" not in d["live"] and p._car_noplan_since is None

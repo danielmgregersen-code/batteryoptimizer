@@ -161,6 +161,7 @@ _REASONS = [
     (r"^short gap, saves only (-?[\d.]+) DKK/kWh: keep charging at (\d+) A$",
      lambda m: f"Kort hul, sparer kun {num(float(m[1]), 2)} kr/kWh: fortsætter på {m[2]} A"),
     (r"^no plan, below minimum SoC$", lambda m: "Ingen plan – under minimum, lader fuldt"),
+    (r"^waiting for a plan with the car$", lambda m: "Venter på en plan med bilen"),
     (r"^plan: no car charging this hour$", lambda m: "Planen lader ikke bilen denne time"),
     (r"^no plan$", lambda m: "Ingen plan"),
 ]

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.29.0
+
+- **One charge instead of several with a pause between them** (`car_one_session`,
+  `car_one_session_max_dkk` 5 kr). Last night's trace: the pause at 05:51:06 made the car unlock the
+  connector, and the THOR ended the session 3:02 later (registered as an unplug). Monday it was 3:03
+  after the pause. The THOR only takes 6–32 A, so it cannot pause from the charger. Instead the plan
+  now merges the car's grid charging into the cheapest run of consecutive hours when that costs at
+  most 5 kr more and reaches the same targets. The only stop left is at the end of the night.
+- **No full-power start before the plan knows the car:** at 01:29 the plan had been made while the
+  car's SoC was unknown, so the controller fell back to "ingen plan – under minimum, lader fuldt" and
+  paused 2 minutes later. Now it plans again at once and waits ("Venter på en plan med bilen", at most
+  10 min, critical SoC excepted).
+
 ## 0.28.0
 
 - **The car charges at full power** (`car_full_power`): in an hour where the plan charges from the grid,

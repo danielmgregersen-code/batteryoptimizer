@@ -323,6 +323,52 @@ def small_sessions(car_kwh, min_kwh: float, gap_hours: float = 0, keep_first: bo
     return out
 
 
+def grid_sessions(grid_kwh, min_kwh: float = 0.1) -> list:
+    """Runs of consecutive steps with more than min_kwh to the car from the grid (or house battery)."""
+    out = []
+    for i, k in enumerate(grid_kwh):
+        if float(k) > min_kwh:
+            if out and out[-1][-1] == i - 1:
+                out[-1].append(i)
+            else:
+                out.append([i])
+    return out
+
+
+def consolidate_window(grid_kwh, buy, cap_kwh, available, keep_first: bool = False) -> list:
+    """The planned grid charging of the car in one block instead of several with pauses between them
+    (the THOR ends the session ~3 min after a pause). -> the steps between the first and the last
+    session to take out of the car's availability, so the cheapest run of consecutive steps that can
+    hold the same energy is left; [] when there is nothing to merge or no such run.
+    cap_kwh: per step, the most the car can take (max kW x step length). keep_first: charging now,
+    so the block starts in step 0."""
+    sessions = grid_sessions(grid_kwh)
+    if len(sessions) < 2:
+        return []
+    a0, b0 = sessions[0][0], sessions[-1][-1]
+    span = list(range(a0, b0 + 1))
+    if not all(available[i] for i in span):
+        return []                       # unplugged in between: the gap is not a pause
+    energy = sum(float(grid_kwh[i]) for i in span)
+    starts = [a0] if (keep_first and a0 == 0) else span
+    best = None
+    for a in starts:
+        got, cost, b = 0.0, 0.0, a
+        while b <= b0 and got < energy - 1e-6:
+            take = min(float(cap_kwh[b]), energy - got)
+            got += take
+            cost += take * float(buy[b])
+            b += 1
+        if got < energy - 1e-6:
+            continue
+        if best is None or cost < best[0] - 1e-9:
+            best = (cost, a, b - 1)
+    if best is None:
+        return []
+    _, a, b = best
+    return [i for i in span if not a <= i <= b]
+
+
 def session_kwh(plan_row, ahead, sun_is_cheap: bool = False, gap_hours: float = 0) -> float:
     """Energy for the car in the session that starts this hour: the planned car energy of this hour and
     the following ones (pauses of at most `gap_hours` included). When the sun is cheap, an hour's
@@ -418,6 +464,8 @@ def decide(live: dict, plan_row, opts, ahead=None) -> dict:
         want = True
         amps = int(min(max(int(surplus / wpa), amin), amax))
         reason, source = f"solar surplus {surplus:.0f} W", "solar"
+    elif plan_row is None and live.get("plan_pending"):
+        reason, source = "waiting for a plan with the car", "plan_pending"
     elif plan_row is None and need["minimum"]:
         # No current plan (planner failing): fall back to charging the minimum at full power.
         want, amps, reason, source = True, amax, "no plan, below minimum SoC", "fallback"

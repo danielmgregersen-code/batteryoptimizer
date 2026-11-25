@@ -35,6 +35,17 @@ Create two helpers (Settings → Devices & services → Helpers → Toggle):
   loss). The last hour of a session charges at full power from its start and stops when its energy is
   in; the first hour of a session that goes on starts as late as it can at full power and runs on into
   the next hour, so no extra pause is made.
+- **One charge, no pause in between** (`car_one_session`, on; `car_one_session_max_dkk` 5): the THOR
+  ends the session about 3 minutes after the car is paused following a longer charge (it registers an
+  unplug) and cannot restart it. When the plan splits the car's grid charging into several blocks with
+  a pause between them (no sun in the stretch), it is planned again with the car available only in
+  the cheapest run of consecutive hours that holds the same energy. That plan is used when it costs
+  at most `car_one_session_max_dkk` more and reaches the same targets; the Bil tab shows "samlet i én
+  opladning (+1,20 kr)". The only stop left is at the end, when the car is done for the night.
+- **Waiting for a plan with the car:** when the car is plugged in (or its SoC becomes known) and the
+  current plan has no row for it, the planner plans again at once and the controller waits for it
+  (up to 10 min) instead of the no-plan fallback that charged at full power and paused minutes later.
+  The critical SoC still charges at once.
 - **At least 2 kWh per charge** (`car_min_session_kwh` 2, 0 = off): a planned session (hours with
   car charging, pauses up to `car_pause_gap_hours` included) that brings the car less is taken out of
   the plan, the preview ("Sæt bilen til") and the controller never starts the charger for it (unless

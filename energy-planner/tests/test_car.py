@@ -439,3 +439,31 @@ def test_the_first_hour_of_a_longer_charge_starts_late_at_full_power_and_runs_on
     assert late["action"] == "charge" and late["target_amps"] == 16
     mid = carmod.decide(live(now="2026-11-24T02:20:00+01:00"), row, OPTS, ahead=ahead)   # already charging
     assert mid["action"] == "charge" and mid["target_amps"] == 16
+
+
+# ---- one block instead of several with pauses (0.29.0) -----------------------------------------
+
+def test_consolidate_window_keeps_the_cheapest_run_that_holds_the_energy():
+    grid = [0, 4.0, 0, 0, 5.0, 0]                  # 01–02 and 04–05: two sessions, 9 kWh
+    buy = [3.0, 1.0, 1.5, 2.5, 1.2, 3.0]
+    cap = [11.0] * 6
+    off = carmod.consolidate_window(grid, buy, cap, [True] * 6)
+    # 1 h holds 9 kWh: the cheapest single hour in the span 1..4 is step 1 (1.0 kr)
+    assert off == [2, 3, 4]
+    cap = [5.0] * 6                                # 2 h needed: 1–2 (1.0 + 1.5) beats 3–4 (2.5 + 1.2)
+    assert carmod.consolidate_window(grid, buy, cap, [True] * 6) == [3, 4]
+
+
+def test_consolidate_window_leaves_one_session_unplugged_gaps_and_charging_now():
+    assert carmod.consolidate_window([0, 4.0, 3.0, 0], [1] * 4, [11] * 4, [True] * 4) == []
+    assert carmod.consolidate_window([0, 4.0, 0, 3.0], [1] * 4, [11] * 4, [True, True, False, True]) == []
+    # charging now (step 0): the block starts at once even though step 3 is cheaper
+    off = carmod.consolidate_window([3.0, 0, 0, 3.0], [2.0, 2.0, 2.0, 1.0], [11] * 4, [True] * 4, keep_first=True)
+    assert off == [1, 2, 3]
+
+
+def test_waiting_for_a_plan_with_the_car_instead_of_the_fallback():
+    d = carmod.decide(live(status="suspended_evse", car_soc=35, amps=16, plan_pending=True), None, OPTS)
+    assert d["action"] == "idle" and d["reason"] == "waiting for a plan with the car" and not d["calls"]
+    d = carmod.decide(live(status="suspended_evse", car_soc=10, amps=16, plan_pending=True), None, OPTS)
+    assert d["action"] == "charge" and d["reason"] == "critical SoC"

@@ -39,7 +39,9 @@ def _loop():
         except Exception as e:  # never let the loop die
             planner.last_error = str(e)
             log.exception("planning failed: %s", e)
-        _stop.wait(seconds_to_next_cycle(datetime.now(planner.tz), int(load_options()["interval_minutes"])))
+        # A new plan at the interval, or at once when asked (the car was connected, see car_cycle).
+        planner.replan_event.wait(seconds_to_next_cycle(datetime.now(planner.tz), int(load_options()["interval_minutes"])))
+        planner.replan_event.clear()
 
 
 def seconds_to_next_cycle(now: datetime, interval_minutes: int) -> float:
