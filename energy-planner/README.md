@@ -29,6 +29,18 @@ Create two helpers (Settings → Devices & services → Helpers → Toggle):
   (`charger_power_entity`, sampled every 5 s) × `car_eta`. So the controller stops at the limit or
   target instead of up to ~3 % past it. A full charge (≥ 99 %) still only counts from the car's own
   report. Shown in the Bil tab; `soc_estimated`, `soc_kia`, `soc_kia_at` on the car sensor.
+- **Charging losses, measured** (`car_eta_learn`, on): each time the car reports its SoC, the charger
+  energy since an earlier report is compared with the SoC rise. Once it has risen at least 8 points
+  (the car reports in 0.5 % steps), that segment's efficiency (SoC rise x `car_battery_kwh` / kWh at
+  the plug) is kept in `/data/car_eta_segments.json`. With 4 plausible segments (70–99 %), their
+  energy-weighted efficiency replaces `car_eta` everywhere: in the plan (kWh at the plug for a
+  target), the 100 % decision, and the SoC estimate between the car's reports. The Bil tab shows
+  "ladetab 12 % (målt på 6 ladninger)". It measures all the losses between the plug and the battery
+  (charger, cable, the car's own consumption while charging) together with any error in
+  `car_battery_kwh`, which is what the plan needs.
+- **100 % only when the car says so:** the SoC estimate between reports stops at 99 % until the car
+  itself reports 99 % or more. So a charge to 100 % is not stopped early because the losses were higher
+  than assumed. Last night it stopped at 96 %.
 - **Full power** (`car_full_power`, on): in an hour where the plan charges the car from the grid, the
   car charges at the highest current the main fuse allows (`car_max_amps`, within `main_fuse_amps` -
   `fuse_margin_amps` on the worst phase) instead of a low current spread over the hour (less charging

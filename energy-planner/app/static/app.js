@@ -1373,7 +1373,11 @@
       tile('Bilens batteri', live.car_soc != null ? h('span', {}, fmt(live.car_soc, 0), h('small', {}, ' %')) : '–',
         (() => {
           const se = c && c.soc_estimate;
-          const base = `minimum 42 % kl. 06 · maks ${fmt((carInfo && carInfo.max_soc_pct) || 90, 0)} %`;
+          const ce = carInfo && carInfo.charge_eta;
+          const loss = ce ? (ce.learned
+            ? ` · ladetab ${fmt((1 - ce.eta) * 100, 0)} % (målt på ${ce.segments} ladninger${ce.source === 'measured' ? '' : ', bruges ikke'})`
+            : ` · ladetab ${fmt((1 - ce.configured) * 100, 0)} % (antaget, måler: ${ce.segments}/4)`) : '';
+          const base = `minimum 42 % kl. 06 · maks ${fmt((carInfo && carInfo.max_soc_pct) || 90, 0)} %` + loss;
           if (!se || !se.estimated) return base + (se && se.kia_at ? ` · Kia kl. ${new Date(se.kia_at).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' })}` : '');
           return `beregnet: Kia ${fmt(se.kia_soc, 1)} % kl. ${new Date(se.kia_at).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' })} + ${fmt(se.kwh_since, 1)} kWh` + (se.uncertain ? ' (usikker)' : '') + ' · ' + base;
         })(),

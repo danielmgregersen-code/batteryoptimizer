@@ -142,6 +142,9 @@ class Planner:
         self.battery_runs_path = os.path.join(os.path.dirname(log_path) or ".", "battery_runs.json")
         self._bat_runs = pvd.load_json(self.battery_runs_path, [])     # charge / discharge runs (batteryhealth)
         self._bat_health_at = None
+        self.car_eta_path = os.path.join(os.path.dirname(log_path) or ".", "car_eta_segments.json")
+        self._eta_segs = pvd.load_json(self.car_eta_path, [])        # measured charging segments (car.eta_segment)
+        self._eta_start = None                                         # (t, soc) of the car's report a segment starts at
         self._appl_learned_at = None
         self.price_fc_path = os.path.join(os.path.dirname(log_path) or ".", "price_forecast.json")
         self._price_fc = pvd.load_json(self.price_fc_path, {})          # {utc hour iso: forecast buy price}
@@ -159,7 +162,8 @@ class Planner:
         self._session_ended_at = None     # the charger ended the session on its own (not through HA)
         self._car_prod_prev = False
         self._fuse_rate_cap = None     # battery charge rate (%) capped live by the main fuse guard
-        self.options_fn = options_fn
+        self._raw_options_fn = options_fn
+        self.options_fn = lambda: self._with_learned(self._raw_options_fn())
         self._profile = None
         self._profile_at = None
         self._lock = threading.Lock()        # guards latest / last_error
@@ -369,6 +373,46 @@ class Planner:
             states = self.ha.all_states() if hasattr(self.ha, "all_states") else []
             self.trace.sample(states, cartrace.prefixes(opts), now, charging=status == "charging",
                               full=bool(opts.get("car_trace_full")))
+
+    def _with_learned(self, opts: dict) -> dict:
+        """The options with the measured charging efficiency in car_eta (when car_eta_learn is on and
+        enough has been measured); the configured value stays in car_eta_configured."""
+        info = carmod.learned_eta(getattr(self, "_eta_segs", []), float(opts.get("car_eta", 0.92)))
+        out = {**opts, "car_eta_configured": opts.get("car_eta")}
+        if opts.get("car_eta_learn", True) and info["learned"]:
+            out["car_eta"] = info["eta"]
+        return out
+
+    def car_eta_info(self, opts: dict) -> dict:
+        info = carmod.learned_eta(self._eta_segs, float(opts.get("car_eta_configured") or opts["car_eta"]))
+        info["used"] = float(opts["car_eta"])
+        info["source"] = "measured" if info["learned"] and opts.get("car_eta_learn", True) else "configured"
+        return info
+
+    def _track_car_eta(self, opts: dict, soc_est: dict):
+        """A new report from the car: with the charger's energy since the report a segment started, a
+        measured charging efficiency once the SoC has risen ETA_MIN_SWING points (see car.eta_segment)."""
+        soc, at = soc_est.get("kia_soc"), soc_est.get("kia_at")
+        if soc is None or not at:
+            return
+        t = datetime.fromisoformat(at).astimezone(UTC)
+        start = self._eta_start
+        if start is None or soc < start[1] - 0.5 or (self._charge_log and start[0] < self._charge_log[0][0]):
+            self._eta_start = (t, soc)                 # first report, driven, or older than the energy log
+            return
+        if t <= start[0]:
+            return
+        elog = list(self._charge_log)
+        if (not elog or carmod._cum_at(elog, t) - carmod._cum_at(elog, start[0]) < 0.05) and soc <= start[1] + 0.5:
+            self._eta_start = (t, soc)                 # nothing charged in between: move the start on
+            return
+        seg = carmod.eta_segment(start, (t, soc), elog, float(opts["car_battery_kwh"]))
+        if seg:
+            self._eta_segs = (self._eta_segs + [seg])[-100:]
+            pvd.save_json(self.car_eta_path, self._eta_segs)
+            log.info("car: charging efficiency %.1f %% (%.1f -> %.1f %%, %.1f kWh at the plug)",
+                     seg["eta"] * 100, seg["soc_from"], seg["soc_to"], seg["kwh"])
+            self._eta_start = (t, soc)
 
     def car_soc_now(self, opts: dict, now: datetime) -> dict:
         """The car's SoC: the last reported one plus what the charger delivered since (see
@@ -1017,7 +1061,8 @@ class Planner:
             car_params, info = carmod.build_car_params(horizon, now, self.tz, opts, status, car_soc,
                                                        full=full, departure=departure, extra=self._car_extra)
             car_info.update(info)
-            car_info.update(full_charge=full, departure=departure, soc_estimate=soc_est)
+            car_info.update(full_charge=full, departure=departure, soc_estimate=soc_est,
+                            charge_eta=self.car_eta_info(opts))
             if status not in carmod.CONNECTED and car_soc is not None:
                 preview_args = (car_soc, full, departure)
             if self._car_extra and "extra" not in car_info:   # ordered, but the car is not connected
@@ -1292,6 +1337,7 @@ class Planner:
             "now": now.astimezone(self.tz).isoformat(timespec="seconds"),
         }
         soc_est = self.car_soc_now(opts, now)
+        self._track_car_eta(opts, soc_est)
         live["car_soc"] = soc_est["soc"]
         live["car_soc_kia"] = soc_est["kia_soc"]
         with self._lock:

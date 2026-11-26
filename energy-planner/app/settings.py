@@ -91,6 +91,7 @@ DEFAULTS = {
     "car_min_amps": 6,
     "car_max_amps": 16,
     "car_eta": 0.92,                 # 10.2 kW into the car of 11.04 kW at the plug
+    "car_eta_learn": True,           # use the measured charging efficiency (car.learned_eta) instead of car_eta
     "car_critical_start_pct": 20,
     "car_critical_stop_pct": 22,
     "car_min_start_pct": 40,

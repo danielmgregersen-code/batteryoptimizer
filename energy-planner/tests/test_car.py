@@ -467,3 +467,29 @@ def test_waiting_for_a_plan_with_the_car_instead_of_the_fallback():
     assert d["action"] == "idle" and d["reason"] == "waiting for a plan with the car" and not d["calls"]
     d = carmod.decide(live(status="suspended_evse", car_soc=10, amps=16, plan_pending=True), None, OPTS)
     assert d["action"] == "charge" and d["reason"] == "critical SoC"
+
+
+# ---- charging losses, measured (0.32.0) ----------------------------------------------------------
+
+def test_the_estimate_stops_at_99_until_the_car_itself_reports_it():
+    t0 = datetime(2026, 11, 18, 4, 0, tzinfo=UTC)
+    log = charge_log(t0 - timedelta(minutes=5), 40, 11000.0)
+    assert carmod.estimate_soc(96.0, t0, log, t0 + timedelta(minutes=30), 0.92, 110.0)["soc"] == 99.0
+    assert carmod.estimate_soc(99.0, t0, log, t0 + timedelta(minutes=30), 0.92, 110.0)["soc"] == 100.0
+
+
+def test_eta_segment_from_two_reports_and_the_energy_between():
+    t0 = datetime(2026, 11, 18, 2, 0, tzinfo=UTC)
+    log = charge_log(t0, 70, 11000.0)                        # 12.8 kWh at the plug in 70 min
+    seg = carmod.eta_segment((t0, 40.0), (t0 + timedelta(minutes=60), 49.0), log, 110.0)
+    assert seg["kwh"] == pytest.approx(11.0, abs=0.05) and seg["eta"] == pytest.approx(9.9 / 11.0, abs=0.01)
+    assert carmod.eta_segment((t0, 40.0), (t0 + timedelta(minutes=20), 43.0), log, 110.0) is None   # under 8 points
+    assert carmod.eta_segment((t0 - timedelta(hours=1), 40.0), (t0 + timedelta(minutes=60), 49.0), log, 110.0) is None
+
+
+def test_learned_eta_needs_four_plausible_segments_weighted_by_energy():
+    seg = lambda eta, kwh=10.0: {"eta": eta, "kwh": kwh}    # noqa: E731
+    assert carmod.learned_eta([seg(0.88)] * 3, 0.92) == {"eta": 0.92, "configured": 0.92, "segments": 3,
+                                                       "learned": False, "measured": 0.88}
+    info = carmod.learned_eta([seg(0.86, 20.0), seg(0.90), seg(0.90), seg(0.90), seg(0.5)], 0.92)
+    assert info["learned"] and info["segments"] == 4 and info["eta"] == pytest.approx((0.86 * 20 + 0.9 * 30) / 50, abs=0.001)

@@ -1499,3 +1499,27 @@ def test_battery_capacity_uses_the_measured_one_within_limits_and_the_bms_first(
     ha.numbers["sensor.growatt_bms_soh"] = 90.0
     cap, info = p.battery_capacity({**opts, "battery_soh_entity": "sensor.growatt_bms_soh"})
     assert info["source"] == "bms" and abs(cap - 7.75 * 0.9) < 0.01
+
+
+def test_measured_charging_efficiency_is_learned_from_the_cars_reports_and_used(tmp_path):
+    import os
+
+    import car as carmod
+    ha = car_ha()
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    t0 = datetime(2026, 11, 18, 1, 0, tzinfo=UTC)
+    last = None
+    for i in range(0, 5 * 3600 + 1, 30):                     # 5 h at 11 kW at the plug
+        last = carmod.add_energy(p._charge_log, t0 + timedelta(seconds=i), 11000.0, last)
+    soc = 20.0
+    for k in range(0, 21):                                   # a report every 15 min, 0.88 into the car
+        t = t0 + timedelta(minutes=15 * k)
+        p._track_car_eta(DEFAULTS, {"kia_soc": round(soc * 2) / 2, "kia_at": t.isoformat()})
+        soc += 2.75 * 0.88 / 110 * 100
+    info = p.car_eta_info(p.options_fn())
+    assert info["learned"] and info["eta"] == pytest.approx(0.88, abs=0.02) and info["source"] == "measured"
+    assert p.options_fn()["car_eta"] == info["eta"] and p.options_fn()["car_eta_configured"] == 0.92
+    assert os.path.exists(p.car_eta_path)
+    p2 = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"),
+                 options_fn=lambda: {**DEFAULTS, "car_eta_learn": False})
+    assert p2.options_fn()["car_eta"] == 0.92                  # kept in /data, but switched off

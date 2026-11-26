@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.32.0
+
+- **Charging losses measured** (`car_eta_learn`): the car's SoC reports are compared with the charger
+  energy between them (segments of at least 8 points). With 4 segments the measured efficiency
+  replaces `car_eta` in the plan, the 100 % decision and the SoC estimate. The Bil tab shows the
+  loss and how many charges it was measured on.
+- **A charge to 100 % is no longer stopped early:** the SoC estimate stops at 99 % until the car
+  itself reports at least 99 %. Last night the estimate (with `car_eta` 0.92, probably too high)
+  reached 100 % while the car was at 96 %.
+
 ## 0.31.1
 
 - Removed the "Større batteri?" calculation from the Økonomi tab again (its API, `battery_module_kwh`

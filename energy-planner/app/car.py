@@ -569,6 +569,44 @@ def estimate_soc(soc, anchor_t, log, now, eta: float, cap_kwh: float) -> dict:
     kwh = max(0.0, _cum_at(log, now) - _cum_at(log, anchor_t))
     out["uncertain"] = anchor_t < log[0][0]
     if kwh > 0.01:
-        out.update(soc=round(min(100.0, soc + kwh * eta / cap_kwh * 100.0), 1), kwh_since=round(kwh, 2),
+        # Only the car's own report says 100 %: the estimate stops at 99 until then, so a charge to 100 %
+        # is not stopped early when the losses were a little higher than assumed.
+        top = 100.0 if soc >= 99.0 else 99.0
+        out.update(soc=round(min(top, soc + kwh * eta / cap_kwh * 100.0), 1), kwh_since=round(kwh, 2),
                    estimated=True)
+    return out
+
+
+# ---- charging losses, measured (0.32.0) --------------------------------------------------------
+ETA_MIN_SWING = 8.0          # SoC points per measured segment (the car reports in 0.5 % steps)
+ETA_MIN_SEGMENTS = 4
+ETA_LAST = 20
+ETA_RANGE = (0.70, 0.99)
+
+
+def eta_segment(start, end, log, cap_kwh: float):
+    """Two of the car's own SoC reports, start and end = (t, soc), and the charger's energy log between
+    them -> a segment {start, end, soc_from, soc_to, kwh, eta} or None (too small a step, energy not
+    covered by the log, or the SoC went down: driven)."""
+    (t0, s0), (t1, s1) = start, end
+    if not log or t0 < log[0][0] or t1 > log[-1][0] + timedelta(minutes=10) or s1 - s0 < ETA_MIN_SWING:
+        return None
+    kwh = _cum_at(log, t1) - _cum_at(log, t0)
+    if kwh < 1.0:
+        return None
+    eta = (s1 - s0) / 100.0 * cap_kwh / kwh
+    return {"start": t0.isoformat(), "end": t1.isoformat(), "soc_from": round(s0, 1), "soc_to": round(s1, 1),
+            "kwh": round(kwh, 2), "eta": round(eta, 3)}
+
+
+def learned_eta(segments: list, configured: float) -> dict:
+    """The charging efficiency (plug -> car battery) from the latest segments: their energy-weighted
+    ratio, -> {eta, configured, segments, learned}; learned needs ETA_MIN_SEGMENTS within ETA_RANGE."""
+    ok = [g for g in (segments or []) if ETA_RANGE[0] <= g["eta"] <= ETA_RANGE[1]][-ETA_LAST:]
+    out = {"eta": configured, "configured": configured, "segments": len(ok), "learned": False, "measured": None}
+    if ok:
+        stored = sum(g["eta"] * g["kwh"] for g in ok)
+        out["measured"] = round(stored / sum(g["kwh"] for g in ok), 3)
+    if len(ok) >= ETA_MIN_SEGMENTS:
+        out.update(eta=out["measured"], learned=True)
     return out
