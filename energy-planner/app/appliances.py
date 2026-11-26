@@ -263,7 +263,7 @@ def wash_programs(runs: list) -> list:
         template = [_median([m["slots"][j] if j < len(m["slots"]) else 0.0 for m in ms]) for j in range(length)]
         progs.append({"minutes": length * 5, "kwh": round(sum(template) / 12000.0, 3),
                       "spike_w": round(_median([m["spike_w"] for m in ms])), "runs": len(ms),
-                      "template": [round(x) for x in template]})
+                      "template": [round(x) for x in template], "starts": [m["start"] for m in ms]})
     progs = sorted(progs, key=lambda p: -p["runs"])[:MAX_PROGRAMS]
     # names from what they look like: the short one is the sport programme, the biggest spike the
     # 60 °C eco, the rest 20 °C
@@ -421,6 +421,27 @@ def program_from_template(p: dict) -> dict:
         prof[h] += w / 12000.0
     return {"minutes": int(p["minutes"]), "kwh": round(sum(prof), 2), "profile": [round(x, 3) for x in prof],
             "runs": p["runs"], "learned": True}
+
+
+def weighted_program(programs: list, washes: list = None) -> dict:
+    """One program for the washing machine: its learned programmes averaged, weighted by how often each
+    is used (the washes alone it was learned from, plus washes recognised as it under the dryer;
+    each wash counted once). -> a program for best_start plus "mix" [{name, share}]."""
+    weights = []
+    for p in programs:
+        starts = set(p.get("starts") or [])
+        starts |= {r["start"] for r in washes or [] if r.get("program") == p["name"]}
+        weights.append(max(len(starts), int(p.get("runs") or 0), 1))
+    total = float(sum(weights))
+    progs = [program_from_template(p) for p in programs]
+    hours = max(len(pr["profile"]) for pr in progs)
+    profile = [sum(wt * (pr["profile"][h] if h < len(pr["profile"]) else 0.0) for wt, pr in zip(weights, progs)) / total
+               for h in range(hours)]
+    minutes = sum(wt * pr["minutes"] for wt, pr in zip(weights, progs)) / total
+    return {"minutes": int(round(minutes)), "kwh": round(sum(profile), 2), "profile": [round(x, 3) for x in profile],
+            "runs": int(total), "learned": True,
+            "mix": [{"name": p["name"], "share": round(wt / total, 2), "runs": wt}
+                    for p, wt in sorted(zip(programs, weights), key=lambda x: -x[1])]}
 
 
 DRYER_FLOOR_W = 250.0    # automatic: the heat pump dryer's floor is at least this (a washer alone never holds it)

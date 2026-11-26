@@ -457,9 +457,11 @@ the dryer, otherwise the floor split above is kept. A recognised wash shows its 
 typical energy, so a single wash can be off by up to about a quarter while the sum over many is right;
 the 5-minute statistics also smooth a spike shorter than 5 minutes.
 
-**On the card** (0.36.0): each learned washer programme is its own row ("Vask · 20°", "Vask · 60° eco",
-"Vask · Sport") with its best start, price, price when started now and saving, from the programme's
-own curve; without learned programmes one "Vask" row. The dryer's row uses its own measured runs and
+**On the card** (0.36.1): the washing machine is one "Vask" row: its learned programmes averaged hour
+by hour, weighted by how often each is used (the washes alone it was learned from plus the washes
+recognised as it under the dryer, each counted once), with its best start, price, price when started
+now and saving; the mix is shown ("20° 60 % · 60° eco 25 % · Sport 15 %"). Without learned
+programmes the median of the washes. The dryer's row uses its own measured runs and
 counts as learned from its first run (its measured energy beats the 2 kWh default), shown with its
 level ("ca. 620 W"). The shared meter's runs are learned once more from scratch in 0.36.0 (with the old
 700 W limit the heat pump dryer was not found and its drying counted as washes).

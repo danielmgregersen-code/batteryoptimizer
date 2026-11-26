@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.36.1
+
+- **One row for the washing machine** on the Maskiner card, instead of one per programme: the
+  learned programmes averaged hour by hour, weighted by how often each is used. The mix is shown
+  on hover and under "Lærte vaskeprogrammer".
+
 ## 0.36.0
 
 - **The dryer is found and measured:** a heat pump dryer's steady floor is found automatically from

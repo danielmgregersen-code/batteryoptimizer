@@ -666,23 +666,20 @@ class Planner:
                 if shared and name == c["names"][0]:
                     extra = {"programs": [{k: p[k] for k in ("name", "minutes", "kwh", "spike_w", "runs")} for p in progs],
                              "wash_only_runs": len(self._appl_runs.get(f"_wash_only:{c['entity']}", []))}
-                # the washer's learned programmes each get their own row ("Vask · 20°"), else one row
-                variants = ([(name if p["name"] == "Vask" else f"{name} · {p['name']}", appl.program_from_template(p), p["name"])
-                             for p in progs]
-                            if shared and name == c["names"][0] and progs else
-                            [(name, appl.program(name, self._appl_runs.get(name, [])), None)])
-                for label, prog, pname in variants:
-                    best = appl.best_start(prog, rows, local)
-                    if not best:
-                        continue
-                    item = {"name": label, "appliance": name, **best, "minutes": prog["minutes"], "kwh": prog["kwh"],
-                            "learned": prog["learned"], "learned_runs": prog["runs"], "mean_w": prog.get("mean_w"),
-                            "recent": recent if pname is None else [r for r in recent if r.get("program") == pname] or recent,
-                            **extra}
-                    if pname:
-                        item["program"] = pname
-                    out.append(item)
-                    extra = {}
+                # the washing machine: its learned programmes averaged by how often each is used
+                if shared and name == c["names"][0] and progs:
+                    prog = appl.weighted_program(progs, self._appl_runs.get(name, []))
+                else:
+                    prog = appl.program(name, self._appl_runs.get(name, []))
+                best = appl.best_start(prog, rows, local)
+                if not best:
+                    continue
+                item = {"name": name, "appliance": name, **best, "minutes": prog["minutes"], "kwh": prog["kwh"],
+                        "learned": prog["learned"], "learned_runs": prog["runs"], "mean_w": prog.get("mean_w"),
+                        "recent": recent, **extra}
+                if prog.get("mix"):
+                    item["mix"] = prog["mix"]
+                out.append(item)
         state, attrs = appliance_advice(out, local)
         self.ha.set_state("sensor.energy_planner_appliances", state, {
             "friendly_name": "Energy Planner maskiner", "icon": "mdi:dishwasher", **attrs,

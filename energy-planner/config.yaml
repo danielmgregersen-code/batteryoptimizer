@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning and control of a Growatt hybrid inverter, home battery and EV charging."
-version: "0.36.0"
+version: "0.36.1"
 slug: "energy_planner"
 init: false
 arch:

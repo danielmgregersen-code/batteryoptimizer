@@ -227,3 +227,14 @@ def test_a_dryer_is_learned_from_its_first_run_and_a_programme_becomes_a_program
     p = {"name": "60° eco", "minutes": 170, "kwh": 0.8, "runs": 2, "template": eco60()}
     pr = appl.program_from_template(p)
     assert pr["minutes"] == 170 and len(pr["profile"]) == 3 and sum(pr["profile"]) == pytest.approx(kwh(eco60()), abs=0.01)
+
+
+def test_weighted_program_averages_the_programmes_by_use():
+    p20 = {"name": "20°", "minutes": 80, "runs": 3, "starts": ["a", "b", "c"], "template": w20()}
+    p60 = {"name": "60° eco", "minutes": 170, "runs": 1, "starts": ["d"], "template": eco60()}
+    under = [{"start": "x", "program": "60° eco"}, {"start": "d", "program": "60° eco"}]   # one new, one already counted
+    prog = appl.weighted_program([p20, p60], under)
+    assert [(m["name"], m["runs"]) for m in prog["mix"]] == [("20°", 3), ("60° eco", 2)]
+    assert prog["kwh"] == pytest.approx((3 * kwh(w20()) + 2 * kwh(eco60())) / 5, abs=0.01)
+    assert prog["minutes"] == round((3 * 80 + 2 * 170) / 5)
+    assert sum(prog["profile"]) == pytest.approx(prog["kwh"], abs=0.01)
