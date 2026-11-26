@@ -1585,3 +1585,20 @@ def test_shared_meter_runs_are_relearned_once_and_single_meters_kept(tmp_path):
     p._appl_learned_at = None
     p.run_once(datetime(2026, 11, 14, 13, 30, tzinfo=UTC))
     assert p._appl_runs["Vask"]                                         # not wiped a second time
+
+
+def test_wash_programmes_are_learned_and_shown_on_the_card(tmp_path):
+    meter = "sensor.bryggers_shelly_vask_og_torre_effekt"
+    rows = []
+    for d in range(4):                                       # four 20 °C washes alone
+        t = datetime(2026, 11, 8 + d, 9, 0, tzinfo=UTC)
+        for i, w in enumerate([600] + [180, 0, 220, 160, 0, 240, 200, 0, 190, 230, 170, 0, 210] + [520, 520]):
+            rows.append({"start": (t + timedelta(minutes=5 * i)).timestamp() * 1000, "mean": w})
+    p = Planner(make_ha(stats={meter: rows}), tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    snap = p.run_once(datetime(2026, 11, 14, 11, 30, tzinfo=UTC))
+    vask = next(a for a in snap["appliances"] if a["name"] == "Vask")
+    assert vask["wash_only_runs"] == 4 and [x["name"] for x in vask["programs"]] == ["Vask"]
+    assert len(p._appl_runs[f"_wash_only:{meter}"]) == 4
+    p._appl_learned_at = None
+    p.run_once(datetime(2026, 11, 14, 13, 30, tzinfo=UTC))
+    assert len(p._appl_runs[f"_wash_only:{meter}"]) == 4             # no duplicates

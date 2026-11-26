@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.35.0
+
+- **The washer's programmes are learned as fingerprints:** washes that ran without the dryer are
+  grouped by length and start spike into programmes (Sport ~45 min, 20°, 60° eco), each with its
+  median curve. Under the dryer, a programme that starts with its spike and fits the washer's part is
+  placed there, and everything else is the dryer. Unknown programmes fall back to the 0.34.0 split.
+  The Maskiner card shows the learned programmes and which programme each recent wash was.
+
 ## 0.34.0
 
 - **Washer and heat pump dryer on one meter are split slot by slot,** also when the laundry goes

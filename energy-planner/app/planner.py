@@ -140,6 +140,7 @@ class Planner:
         self._hp_power = {}               # its meter's hourly mean power (W)
         self.appliance_runs_path = os.path.join(os.path.dirname(log_path) or ".", "appliance_runs.json")
         self._appl_runs = pvd.load_json(self.appliance_runs_path, {})   # {appliance name: [runs]}
+        self._appl_programs = {}          # {shared meter: the washer's learned programmes}
         self.battery_runs_path = os.path.join(os.path.dirname(log_path) or ".", "battery_runs.json")
         self._bat_runs = pvd.load_json(self.battery_runs_path, [])     # charge / discharge runs (batteryhealth)
         self._bat_health_at = None
@@ -613,7 +614,17 @@ class Planner:
             self._appl_runs["_split_v2"] = True
         for c in cfg:
             if len(c["names"]) > 1:
-                pairs = appl.split_shared(stats.get(c["entity"]), lo_w, hi_w)
+                # washes that ran alone teach the washer's programmes; they are then recognised under
+                # the dryer and everything else there is the dryer (0.35.0)
+                key = f"_wash_only:{c['entity']}"
+                done = [r for r in appl.wash_only(stats.get(c["entity"]), lo_w, hi_w)
+                        if datetime.fromisoformat(r["start"]) + timedelta(minutes=r["minutes"] + GAP_DONE_MIN) <= now]
+                have = {r["start"]: r for r in self._appl_runs.get(key, [])}
+                have.update({r["start"]: r for r in done})
+                self._appl_runs[key] = sorted(have.values(), key=lambda r: r["start"])[-appl.WASH_ONLY_KEEP:]
+                programs = appl.wash_programs(self._appl_runs[key])
+                self._appl_programs[c["entity"]] = programs
+                pairs = appl.split_shared(stats.get(c["entity"]), lo_w, hi_w, programs=programs)
             else:
                 pairs = [(0, r) for r in appl.split_runs(stats.get(c["entity"]))]
             groups = [[], []]
@@ -638,10 +649,17 @@ class Planner:
                 prog = appl.program(name, self._appl_runs.get(name, []))
                 best = appl.best_start(prog, rows, local)
                 if best:
-                    recent = [{k: r[k] for k in ("start", "minutes", "kwh", "mean_w")}
+                    recent = [{k: r.get(k) for k in ("start", "minutes", "kwh", "mean_w", "program")}
                               for r in self._appl_runs.get(name, [])[-3:]][::-1]
-                    out.append({"name": name, **best, "minutes": prog["minutes"], "kwh": prog["kwh"],
-                                "learned": prog["learned"], "learned_runs": prog["runs"], "recent": recent})
+                    item = {"name": name, **best, "minutes": prog["minutes"], "kwh": prog["kwh"],
+                            "learned": prog["learned"], "learned_runs": prog["runs"], "recent": recent}
+                    if len(c["names"]) > 1 and name == c["names"][0]:
+                        progs = self._appl_programs.get(c["entity"])
+                        if progs is None:
+                            progs = appl.wash_programs(self._appl_runs.get(f"_wash_only:{c['entity']}", []))
+                        item["programs"] = [{k: p[k] for k in ("name", "minutes", "kwh", "spike_w", "runs")} for p in progs]
+                        item["wash_only_runs"] = len(self._appl_runs.get(f"_wash_only:{c['entity']}", []))
+                    out.append(item)
         state, attrs = appliance_advice(out, local)
         self.ha.set_state("sensor.energy_planner_appliances", state, {
             "friendly_name": "Energy Planner maskiner", "icon": "mdi:dishwasher", **attrs,

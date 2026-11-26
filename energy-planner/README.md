@@ -442,6 +442,20 @@ While both run the dryer's level is an estimate; the Maskiner card lists the lat
 kørsler") so the split can be checked. Runs kept before 0.34.0 for a shared meter (classified as a
 whole by mean power) are dropped once and learned again.
 
+**The washer's programmes as fingerprints** (0.35.0): runs in which the dryer did not run are washes
+on their own and are kept (`_wash_only:<meter>` in `/data/appliance_runs.json`, the latest 30, with
+their 5-minute powers). They are grouped by length and start spike (the highest 5-minute mean in the
+first 30 minutes; same programme within 20 min / 20 % and 300 W / 30 %); a group seen at least twice
+is a programme with its median curve. Names from what they look like: the shortest under an hour
+"Sport", a start spike from 1200 W "60° eco", others "20°". In a run with the dryer, the programmes
+are searched for in the washer's rest: one that starts with its spike and fits (squared error at
+most 50 % of its own, at least half its energy) is placed there, up to 3 per run; if they explain
+at least 75 % of the washer's rest, the programmes are the washer and everything else in the run is
+the dryer, otherwise the floor split above is kept. A recognised wash shows its programme under
+"Seneste kørsler", and the card lists the learned programmes. A recognised wash gets the programme's
+typical energy, so a single wash can be off by up to about a quarter while the sum over many is right;
+the 5-minute statistics also smooth a spike shorter than 5 minutes.
+
 Runs are found in the meters' 5-minute statistics once an hour (power above 15 W, pauses up to 15 min
 inside a run, at least 0.1 kWh) and kept in `/data/appliance_runs.json` (the latest 20 each). From 3
 runs the program is learned: median length and energy, and the share of the energy per hour from the
