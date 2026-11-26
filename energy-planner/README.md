@@ -432,7 +432,8 @@ days against their goal (‹ › to page back), a results table per day for a ch
 `appliances` lists the meters: `Opvask=sensor.shelly_opvaskemaskine_power,Vask+Tørretumbler=sensor.bryggers_shelly_vask_og_torre_effekt`.
 A meter with two names serves a washing machine (first) and a heat pump dryer (second), and is split
 every 5 minutes, also while both run at once (`appliances.split_series`). The heat pump dryer is a
-steady floor of `appliance_dryer_min_w`–`appliance_dryer_max_w` (400–1300 W) for hours; the washing
+steady floor of at least 250 W (automatic; `appliance_dryer_min_w` 0, or the old default 700 which
+meant something else, read as automatic) up to `appliance_dryer_max_w` (1500 W) for hours; the washing
 machine (20 °C, 60 °C eco) uses little and comes and goes (drum on and off, short spins, pauses). So
 the minimum over ±25 minutes is the dryer on its own: where it stays in the band for at least 40
 minutes the dryer runs, at the median of that floor (min(W, level)), and the washer is the rest; a
@@ -455,6 +456,13 @@ the dryer, otherwise the floor split above is kept. A recognised wash shows its 
 "Seneste kørsler", and the card lists the learned programmes. A recognised wash gets the programme's
 typical energy, so a single wash can be off by up to about a quarter while the sum over many is right;
 the 5-minute statistics also smooth a spike shorter than 5 minutes.
+
+**On the card** (0.36.0): each learned washer programme is its own row ("Vask · 20°", "Vask · 60° eco",
+"Vask · Sport") with its best start, price, price when started now and saving, from the programme's
+own curve; without learned programmes one "Vask" row. The dryer's row uses its own measured runs and
+counts as learned from its first run (its measured energy beats the 2 kWh default), shown with its
+level ("ca. 620 W"). The shared meter's runs are learned once more from scratch in 0.36.0 (with the old
+700 W limit the heat pump dryer was not found and its drying counted as washes).
 
 Runs are found in the meters' 5-minute statistics once an hour (power above 15 W, pauses up to 15 min
 inside a run, at least 0.1 kWh) and kept in `/data/appliance_runs.json` (the latest 20 each). From 3

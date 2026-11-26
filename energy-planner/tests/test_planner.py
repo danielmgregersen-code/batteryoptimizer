@@ -1596,9 +1596,34 @@ def test_wash_programmes_are_learned_and_shown_on_the_card(tmp_path):
             rows.append({"start": (t + timedelta(minutes=5 * i)).timestamp() * 1000, "mean": w})
     p = Planner(make_ha(stats={meter: rows}), tz=TZ, log_path=str(tmp_path / "d.jsonl"))
     snap = p.run_once(datetime(2026, 11, 14, 11, 30, tzinfo=UTC))
-    vask = next(a for a in snap["appliances"] if a["name"] == "Vask")
+    vask = next(a for a in snap["appliances"] if a["appliance"] == "Vask")
+    assert vask["name"] == "Vask" and vask["program"] == "Vask" and vask["learned"]
     assert vask["wash_only_runs"] == 4 and [x["name"] for x in vask["programs"]] == ["Vask"]
     assert len(p._appl_runs[f"_wash_only:{meter}"]) == 4
     p._appl_learned_at = None
     p.run_once(datetime(2026, 11, 14, 13, 30, tzinfo=UTC))
     assert len(p._appl_runs[f"_wash_only:{meter}"]) == 4             # no duplicates
+
+
+def test_the_card_has_a_row_per_wash_programme_and_the_measured_dryer(tmp_path):
+    meter = "sensor.bryggers_shelly_vask_og_torre_effekt"
+    drum = [180, 0, 220, 160, 0, 240, 200, 0, 190, 230, 170, 0, 210, 180, 150, 200, 0, 220, 190, 160]
+    w20 = [600] + drum[:13] + [520, 520]
+    eco = [1800, 1500] + (drum * 2)[:30] + [520, 520]
+    dry = [550, 570, 530, 560, 540, 520] * 4 + [120] * 3
+    rows = []
+    for d, ws in enumerate([w20, eco, w20, eco, dry, dry]):
+        t = datetime(2026, 11, 8 + d, 9, 0, tzinfo=UTC)
+        rows += [{"start": (t + timedelta(minutes=5 * i)).timestamp() * 1000, "mean": w} for i, w in enumerate(ws)]
+    ha = make_ha(stats={meter: rows})
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"),
+                options_fn=lambda: {**DEFAULTS, "appliance_dryer_min_w": 700})          # the old value in HA
+    snap = p.run_once(datetime(2026, 11, 14, 11, 30, tzinfo=UTC))
+    names = [a["name"] for a in snap["appliances"]]
+    assert "Vask · 20°" in names and "Vask · 60° eco" in names and "Tørretumbler" in names
+    tumble = next(a for a in snap["appliances"] if a["name"] == "Tørretumbler")
+    assert tumble["learned"] and tumble["learned_runs"] == 2
+    assert tumble["kwh"] == pytest.approx(sum(dry) / 12000, rel=0.1) and tumble["mean_w"] < 700
+    eco_row = next(a for a in snap["appliances"] if a["name"] == "Vask · 60° eco")
+    assert eco_row["kwh"] == pytest.approx(sum(eco) / 12000, rel=0.05) and "saving_dkk" in eco_row
+    assert p._appl_runs["_split_v3"]

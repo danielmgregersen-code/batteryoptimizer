@@ -387,9 +387,12 @@ def _median(vals):
     return (v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.0) if n else None
 
 
-def program(name: str, runs: list) -> dict:
-    """The learned program (or the default) -> {minutes, kwh, profile, runs, learned}."""
-    if len(runs or []) >= MIN_RUNS:
+def program(name: str, runs: list, min_runs: int = None) -> dict:
+    """The learned program (or the default) -> {minutes, kwh, profile, runs, learned}. A dryer counts
+    as learned from its first run (its measured energy beats the default)."""
+    if min_runs is None:
+        min_runs = 1 if kind_of(name) == "dryer" else MIN_RUNS
+    if len(runs or []) >= min_runs:
         minutes = _median([r["minutes"] for r in runs])
         kwh = _median([r["kwh"] for r in runs])
         hours = max(1, math.ceil(minutes / 60.0))
@@ -400,10 +403,36 @@ def program(name: str, runs: list) -> dict:
                 prof[i] += x / tot
         s = sum(prof) or 1.0
         return {"minutes": int(minutes), "kwh": round(kwh, 2), "profile": [round(kwh * x / s, 3) for x in prof],
-                "runs": len(runs), "learned": True}
+                "runs": len(runs), "learned": True,
+                "mean_w": round(_median([r["mean_w"] for r in runs if r.get("mean_w")] or [0]))}
     minutes, kwh, share = DEFAULTS[kind_of(name)]
     return {"minutes": minutes, "kwh": kwh, "profile": [round(kwh * x, 3) for x in share],
             "runs": len(runs or []), "learned": False}
+
+
+def program_from_template(p: dict) -> dict:
+    """A learned washer programme (wash_programs) as a program for best_start: kWh per hour from the
+    start out of its 5-minute curve."""
+    prof = []
+    for j, w in enumerate(p["template"]):
+        h = j // 12
+        while len(prof) <= h:
+            prof.append(0.0)
+        prof[h] += w / 12000.0
+    return {"minutes": int(p["minutes"]), "kwh": round(sum(prof), 2), "profile": [round(x, 3) for x in prof],
+            "runs": p["runs"], "learned": True}
+
+
+DRYER_FLOOR_W = 250.0    # automatic: the heat pump dryer's floor is at least this (a washer alone never holds it)
+OLD_DEFAULT_MIN_W = 700  # appliance_dryer_min_w's default before 0.34.0 (a whole run's mean): read as automatic
+
+
+def dryer_band(opts: dict) -> tuple:
+    """(lo, hi) W of the dryer's steady floor from the options; 0 / empty / the old 700 = automatic."""
+    lo = float(opts.get("appliance_dryer_min_w") or 0)
+    if lo <= 0 or lo == OLD_DEFAULT_MIN_W:
+        lo = DRYER_FLOOR_W
+    return lo, float(opts.get("appliance_dryer_max_w") or 1500)
 
 
 def _hour_cost(kwh: float, row: dict) -> float:

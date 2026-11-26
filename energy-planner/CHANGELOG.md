@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.36.0
+
+- **The dryer is found and measured:** a heat pump dryer's steady floor is found automatically from
+  250 W (`appliance_dryer_min_w` 0). A stored 700, the old default that meant a whole run's mean,
+  is read as automatic. With 700 the dryer (often under 700 W) was never found and its drying
+  counted as washes. The shared meter is learned again once.
+- **The Maskiner card uses the learned values:** a row per wash programme (Vask · 20° / 60° eco /
+  Sport) with best start, price, price now and the new "Sparer" column. The dryer's row uses its
+  measured runs from the first one, shown with its power.
+
 ## 0.35.0
 
 - **The washer's programmes are learned as fingerprints:** washes that ran without the dryer are

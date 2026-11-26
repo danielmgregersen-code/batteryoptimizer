@@ -602,8 +602,16 @@ class Planner:
         except Exception as e:  # best effort: the runs kept in /data and the defaults stay
             log.info("appliance runs: 5-minute statistics unavailable: %s", e)
             return
-        lo_w = float(opts.get("appliance_dryer_min_w", 400))
-        hi_w = float(opts.get("appliance_dryer_max_w", 1300))
+        lo_w, hi_w = appl.dryer_band(opts)
+        if not self._appl_runs.get("_split_v3"):
+            # 0.36.0: the dryer is found with an automatic floor; runs learned with the old 700 W limit
+            # may have counted the drying as washes (also among the washes "alone"): learned again.
+            for c in cfg:
+                if len(c["names"]) > 1:
+                    for name in c["names"]:
+                        self._appl_runs.pop(name, None)
+                    self._appl_runs.pop(f"_wash_only:{c['entity']}", None)
+            self._appl_runs["_split_v3"] = self._appl_runs["_split_v2"] = True
         if not self._appl_runs.get("_split_v2"):
             # 0.34.0: a shared meter is split slot by slot; its runs kept before were classified as a
             # whole (a washer followed by the dryer counted as one): learned again from scratch.
@@ -645,21 +653,36 @@ class Planner:
         local = now.astimezone(self.tz)
         out = []
         for c in cfg:
+            shared = len(c["names"]) > 1
+            progs = None
+            if shared:
+                progs = self._appl_programs.get(c["entity"])
+                if progs is None:
+                    progs = appl.wash_programs(self._appl_runs.get(f"_wash_only:{c['entity']}", []))
             for name in c["names"]:
-                prog = appl.program(name, self._appl_runs.get(name, []))
-                best = appl.best_start(prog, rows, local)
-                if best:
-                    recent = [{k: r.get(k) for k in ("start", "minutes", "kwh", "mean_w", "program")}
-                              for r in self._appl_runs.get(name, [])[-3:]][::-1]
-                    item = {"name": name, **best, "minutes": prog["minutes"], "kwh": prog["kwh"],
-                            "learned": prog["learned"], "learned_runs": prog["runs"], "recent": recent}
-                    if len(c["names"]) > 1 and name == c["names"][0]:
-                        progs = self._appl_programs.get(c["entity"])
-                        if progs is None:
-                            progs = appl.wash_programs(self._appl_runs.get(f"_wash_only:{c['entity']}", []))
-                        item["programs"] = [{k: p[k] for k in ("name", "minutes", "kwh", "spike_w", "runs")} for p in progs]
-                        item["wash_only_runs"] = len(self._appl_runs.get(f"_wash_only:{c['entity']}", []))
+                recent = [{k: r.get(k) for k in ("start", "minutes", "kwh", "mean_w", "program")}
+                          for r in self._appl_runs.get(name, [])[-3:]][::-1]
+                extra = {}
+                if shared and name == c["names"][0]:
+                    extra = {"programs": [{k: p[k] for k in ("name", "minutes", "kwh", "spike_w", "runs")} for p in progs],
+                             "wash_only_runs": len(self._appl_runs.get(f"_wash_only:{c['entity']}", []))}
+                # the washer's learned programmes each get their own row ("Vask · 20°"), else one row
+                variants = ([(name if p["name"] == "Vask" else f"{name} · {p['name']}", appl.program_from_template(p), p["name"])
+                             for p in progs]
+                            if shared and name == c["names"][0] and progs else
+                            [(name, appl.program(name, self._appl_runs.get(name, [])), None)])
+                for label, prog, pname in variants:
+                    best = appl.best_start(prog, rows, local)
+                    if not best:
+                        continue
+                    item = {"name": label, "appliance": name, **best, "minutes": prog["minutes"], "kwh": prog["kwh"],
+                            "learned": prog["learned"], "learned_runs": prog["runs"], "mean_w": prog.get("mean_w"),
+                            "recent": recent if pname is None else [r for r in recent if r.get("program") == pname] or recent,
+                            **extra}
+                    if pname:
+                        item["program"] = pname
                     out.append(item)
+                    extra = {}
         state, attrs = appliance_advice(out, local)
         self.ha.set_state("sensor.energy_planner_appliances", state, {
             "friendly_name": "Energy Planner maskiner", "icon": "mdi:dishwasher", **attrs,

@@ -204,3 +204,26 @@ def test_an_unknown_programme_falls_back_to_the_floor():
     with_p = appl.split_shared(rows_of(total, start=t), 400, 1300, programs=progs)
     without = appl.split_shared(rows_of(total, start=t), 400, 1300)
     assert [(k, r["kwh"]) for k, r in with_p] == [(k, r["kwh"]) for k, r in without]
+
+
+# ---- the dryer found automatically, learned from one run (0.36.0) -------------------------------
+
+def test_a_550_w_heat_pump_dryer_is_found_with_the_automatic_floor_and_700_reads_as_automatic():
+    lo, hi = appl.dryer_band({"appliance_dryer_min_w": 700})
+    assert lo == appl.DRYER_FLOOR_W and appl.dryer_band({})[0] == appl.DRYER_FLOOR_W
+    assert appl.dryer_band({"appliance_dryer_min_w": 450})[0] == 450
+    dry = [550, 570, 530, 560, 540, 520] * 4 + [120] * 3
+    out = appl.split_shared(rows_of(dry), lo, hi)
+    assert [k for k, _ in out] == [1] and out[0][1]["kwh"] == pytest.approx(kwh(dry), rel=0.05)
+    for f in (sport, w20, eco60):                                                 # a washer alone: no dryer
+        assert [k for k, _ in appl.split_shared(rows_of(f()), lo, hi)] == [0]
+
+
+def test_a_dryer_is_learned_from_its_first_run_and_a_programme_becomes_a_program():
+    run = {"start": "2026-11-20T10:00:00+00:00", "minutes": 135, "kwh": 1.4, "mean_w": 620, "profile": [0.6, 0.6, 0.2]}
+    prog = appl.program("Tørretumbler", [run])
+    assert prog["learned"] and prog["kwh"] == 1.4 and prog["mean_w"] == 620
+    assert not appl.program("Vask", [run])["learned"]
+    p = {"name": "60° eco", "minutes": 170, "kwh": 0.8, "runs": 2, "template": eco60()}
+    pr = appl.program_from_template(p)
+    assert pr["minutes"] == 170 and len(pr["profile"]) == 3 and sum(pr["profile"]) == pytest.approx(kwh(eco60()), abs=0.01)

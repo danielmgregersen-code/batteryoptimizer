@@ -149,8 +149,8 @@ DEFAULTS = {
     "heat_pump_off_percentile": 90,
     "heat_pump_off_min_temp": 10,
     "appliances": "Opvask=sensor.shelly_opvaskemaskine_power,Vask+Tørretumbler=sensor.bryggers_shelly_vask_og_torre_effekt",
-    "appliance_dryer_min_w": 400,          # a heat pump dryer's steady floor: from ...
-    "appliance_dryer_max_w": 1300,         # ... to (see appliances.split_series)
+    "appliance_dryer_min_w": 0,            # the dryer's steady floor from (0 = automatic, 250 W) ...
+    "appliance_dryer_max_w": 1500,         # ... to (see appliances.split_series / dryer_band)
     "lifetime_value_entity": "sensor.power_sum_vaerdi_af_anlaeg_kr",
     "installation_date": "2023-07-01",
     "installation_cost_dkk": 120000,
