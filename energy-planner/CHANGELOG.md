@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.34.0
+
+- **Washer and heat pump dryer on one meter are split slot by slot,** also when the laundry goes
+  straight from the washer to the dryer, and when both run at once. The dryer is the steady floor
+  (the minimum over ±25 min) in `appliance_dryer_min_w`–`appliance_dryer_max_w` (now 400–1300 W) for
+  40 min or more. The washer is the rest. Before, a whole run was classified by its mean power
+  (≥ 700 W = dryer), so a heat pump dryer (often under 700 W on average) and a wash followed by drying
+  were counted as the washer, and the dryer's energy was underestimated. The shared meter's old runs
+  are dropped once and learned again. The Maskiner card lists the latest runs per machine.
+
 ## 0.33.0
 
 - **Charging losses by power:** each measured segment keeps its charging time and mean power. With 6

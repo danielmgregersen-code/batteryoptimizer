@@ -62,9 +62,8 @@ def _ts(v) -> datetime:
     return datetime.fromisoformat(str(v).replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
-def split_runs(rows, on_w: float = ON_W, gap_min: int = GAP_MIN, min_kwh: float = MIN_KWH) -> list:
-    """5-minute statistics rows ({start, mean W}) -> runs [{start, minutes, kwh, mean_w, profile}],
-    profile = kWh per hour from the start."""
+def _points(rows) -> list:
+    """5-minute statistics rows ({start, mean W}) -> sorted [(t, W)]."""
     pts = []
     for r in rows or []:
         try:
@@ -72,35 +71,133 @@ def split_runs(rows, on_w: float = ON_W, gap_min: int = GAP_MIN, min_kwh: float 
         except (KeyError, TypeError, ValueError):
             continue
     pts.sort()
+    return pts
+
+
+def _run_slots(pts, on_w: float = ON_W, gap_min: int = GAP_MIN) -> list:
+    """[(t, W)] -> runs as lists of the slots at or above on_w, pauses up to gap_min inside a run."""
     runs, cur, last_on = [], None, None
-
-    def close():
-        if cur and cur["kwh"] >= min_kwh:
-            on = cur.pop("on_slots")
-            first = cur.pop("first")
-            cur["minutes"] = int((cur.pop("last") - first).total_seconds() / 60) + 5
-            cur["mean_w"] = round(cur["kwh"] / (on * 5 / 60.0) * 1000.0)
-            cur["kwh"] = round(cur["kwh"], 3)
-            cur["profile"] = [round(x, 3) for x in cur["profile"]]
-            cur["start"] = first.isoformat()
-            runs.append(cur)
-
     for t, w in pts:
         if w >= on_w:
             if cur is None or (t - last_on) > timedelta(minutes=gap_min + 5):
-                close()
-                cur = {"first": t, "kwh": 0.0, "on_slots": 0, "profile": []}
-            kwh = w / 1000.0 / 12.0
-            h = int((t - cur["first"]).total_seconds() // 3600)
-            while len(cur["profile"]) <= h:
-                cur["profile"].append(0.0)
-            cur["profile"][h] += kwh
-            cur["kwh"] += kwh
-            cur["on_slots"] += 1
-            cur["last"] = t
+                cur = []
+                runs.append(cur)
+            cur.append((t, w))
             last_on = t
-    close()
     return runs
+
+
+def _run_from_slots(slots) -> dict:
+    """A run's slots -> {start, minutes, kwh, mean_w, profile (kWh per hour from the start)}."""
+    first = slots[0][0]
+    profile, kwh = [], 0.0
+    for t, w in slots:
+        k = w / 1000.0 / 12.0
+        h = int((t - first).total_seconds() // 3600)
+        while len(profile) <= h:
+            profile.append(0.0)
+        profile[h] += k
+        kwh += k
+    return {"start": first.isoformat(), "minutes": int((slots[-1][0] - first).total_seconds() / 60) + 5,
+            "kwh": round(kwh, 3), "mean_w": round(kwh / (len(slots) * 5 / 60.0) * 1000.0),
+            "profile": [round(x, 3) for x in profile]}
+
+
+def _runs(pts, on_w, gap_min, min_kwh) -> list:
+    out = []
+    for slots in _run_slots(pts, on_w, gap_min):
+        if sum(w for _, w in slots) / 12000.0 >= min_kwh:
+            out.append(_run_from_slots(slots))
+    return out
+
+
+def split_runs(rows, on_w: float = ON_W, gap_min: int = GAP_MIN, min_kwh: float = MIN_KWH) -> list:
+    """5-minute statistics rows ({start, mean W}) -> runs [{start, minutes, kwh, mean_w, profile}],
+    profile = kWh per hour from the start."""
+    return _runs(_points(rows), on_w, gap_min, min_kwh)
+
+
+# ---- one meter, a washing machine and a heat pump dryer (0.34.0) ------------------------------
+BASE_HALF = 2            # the floor is the minimum over ±2 slots (25 minutes)
+DRYER_MIN_SLOTS = 8      # the dryer runs when the floor stays in its band for 40 minutes
+RESID_MIN_W = 80.0       # a rest under this inside a dryer stretch is the dryer's own variation
+TAIL_SLOTS = 3           # the dryer's cool-down after its stretch (low power, no washer)
+
+
+def _stretches(flags, min_len: int, max_gap: int = 1) -> list:
+    """[(a, b)] index ranges where flags are true, gaps of at most max_gap false slots inside."""
+    out, a, last = [], None, None
+    for i, f in enumerate(flags):
+        if f:
+            if a is None or i - last - 1 > max_gap:
+                if a is not None and last - a + 1 >= min_len:
+                    out.append((a, last))
+                a = i
+            last = i
+    if a is not None and last - a + 1 >= min_len:
+        out.append((a, last))
+    return out
+
+
+def split_series(pts, lo_w: float, hi_w: float):
+    """One meter for a washing machine and a heat pump dryer -> (washer [(t, W)], dryer [(t, W)]),
+    every 5 minutes split so the two add up to the measurement, also while both run.
+
+    The heat pump dryer is a steady floor of lo_w..hi_w for hours; the washing machine (20 °C or a
+    60 °C eco programme) uses little and comes and goes (drum on and off, short spins, pauses). So
+    the minimum over ±BASE_HALF slots is the dryer on its own; where it stays in the band for at
+    least DRYER_MIN_SLOTS the dryer runs at the median of that floor, min(W, L), and the washer is the
+    rest."""
+    if not pts:
+        return [], []
+    t0, step = pts[0][0], timedelta(minutes=5)
+    n = int((pts[-1][0] - t0) / step) + 1
+    times = [t0 + i * step for i in range(n)]
+    w = [0.0] * n
+    for t, v in pts:
+        i = int(round((t - t0) / step))
+        if 0 <= i < n:
+            w[i] = v
+    base = [min(w[max(0, i - BASE_HALF):i + BASE_HALF + 1]) for i in range(n)]
+    stretches = _stretches([lo_w <= b <= hi_w for b in base], DRYER_MIN_SLOTS)
+    dryer = [0.0] * n
+    for a, b in stretches:
+        level = sorted(base[a:b + 1])[(b - a) // 2]
+        # the window's edges pull the floor down at the stretch's ends: those slots too, if high enough
+        near = max(lo_w, 0.8 * level)              # close to the dryer's level (not a washer's spin)
+        for _ in range(BASE_HALF):
+            if a > 0 and near <= w[a - 1] <= hi_w + RESID_MIN_W and dryer[a - 1] == 0:
+                a -= 1
+            else:
+                break
+        end = b
+        for _ in range(BASE_HALF):
+            if end + 1 < n and w[end + 1] >= near:
+                end += 1
+            else:
+                break
+        for i in range(a, end + 1):
+            d = min(w[i], level)
+            if w[i] - d < RESID_MIN_W:
+                d = w[i]
+            dryer[i] = d
+        if w[end] - dryer[end] < 1e-9:              # no washer at the end: the dryer's cool-down
+            for i in range(end + 1, min(n, end + 1 + TAIL_SLOTS)):
+                if 0 < w[i] < lo_w:
+                    dryer[i] = w[i]
+                else:
+                    break
+    washer = [(times[i], w[i] - dryer[i]) for i in range(n)]
+    return washer, [(times[i], dryer[i]) for i in range(n)]
+
+
+def split_shared(rows, lo_w: float, hi_w: float, on_w: float = ON_W, gap_min: int = GAP_MIN,
+                 min_kwh: float = MIN_KWH) -> list:
+    """5-minute rows of a meter shared by a washing machine (0) and a heat pump dryer (1) ->
+    [(0 | 1, run)] sorted by start."""
+    washer, dryer = split_series(_points(rows), lo_w, hi_w)
+    out = [(0, r) for r in _runs(washer, on_w, gap_min, min_kwh)] + [(1, r) for r in _runs(dryer, on_w, gap_min, min_kwh)]
+    return sorted(out, key=lambda x: x[1]["start"])
 
 
 def classify(run: dict, dryer_min_w: float) -> int:

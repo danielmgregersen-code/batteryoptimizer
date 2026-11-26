@@ -430,8 +430,17 @@ days against their goal (‹ › to page back), a results table per day for a ch
 ## Appliances
 
 `appliances` lists the meters: `Opvask=sensor.shelly_opvaskemaskine_power,Vask+Tørretumbler=sensor.bryggers_shelly_vask_og_torre_effekt`.
-A meter with two names serves two appliances: a run whose mean power while running is at least
-`appliance_dryer_min_w` (700 W) is the second (the dryer), otherwise the first.
+A meter with two names serves a washing machine (first) and a heat pump dryer (second), and is split
+every 5 minutes, also while both run at once (`appliances.split_series`). The heat pump dryer is a
+steady floor of `appliance_dryer_min_w`–`appliance_dryer_max_w` (400–1300 W) for hours; the washing
+machine (20 °C, 60 °C eco) uses little and comes and goes (drum on and off, short spins, pauses). So
+the minimum over ±25 minutes is the dryer on its own: where it stays in the band for at least 40
+minutes the dryer runs, at the median of that floor (min(W, level)), and the washer is the rest; a
+rest under 80 W counts as the dryer's own variation, and up to 15 minutes of low power right after
+are its cool-down. Each part is then split into runs as below; the two always add up to the meter.
+While both run the dryer's level is an estimate; the Maskiner card lists the latest runs ("Seneste
+kørsler") so the split can be checked. Runs kept before 0.34.0 for a shared meter (classified as a
+whole by mean power) are dropped once and learned again.
 
 Runs are found in the meters' 5-minute statistics once an hour (power above 15 W, pauses up to 15 min
 inside a run, at least 0.1 kWh) and kept in `/data/appliance_runs.json` (the latest 20 each). From 3

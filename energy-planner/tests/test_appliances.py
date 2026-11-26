@@ -81,3 +81,53 @@ def test_card_texts():
     assert a["lines"][0] == "Opvask: i nat kl. 03 · 0,9 kr, sparer 1,6 kr mod nu"
     assert a["lines"][1] == "Tørretumbler: i morgen kl. 13 · 0,4 kr på sol, sparer 4,1 kr mod nu"
     assert a["lines"][2].startswith("Vask: start nu (ingen billigere tid")
+
+
+# ---- one meter, washer and heat pump dryer, split slot by slot (0.34.0) ---------------------------
+WASH20 = [180, 0, 220, 160, 0, 240, 200, 0, 190, 230, 170, 0, 210, 180, 500, 500]   # 80 min, drum and pauses, a spin
+
+
+def rows_of(watts, start=T0):
+    return [{"start": (start + timedelta(minutes=5 * i)).timestamp() * 1000, "mean": w} for i, w in enumerate(watts)]
+
+
+def kwh(watts):
+    return sum(watts) / 12000.0
+
+
+def test_a_wash_straight_followed_by_the_dryer_is_two_runs():
+    dry = [750, 780, 720, 760, 740, 770] * 4 + [150, 150, 150]
+    out = appl.split_shared(rows_of(WASH20 + dry), 400, 1300)
+    assert [k for k, _ in out] == [0, 1]
+    assert out[0][1]["kwh"] == pytest.approx(kwh(WASH20), rel=0.1)
+    assert out[1][1]["kwh"] == pytest.approx(kwh(dry), rel=0.1)
+
+
+def test_a_heat_pump_dryer_under_700_w_on_average_is_the_dryer():
+    dry = [650] * 24 + [120] * 6                                                  # mean well under 700 W
+    out = appl.split_shared(rows_of(dry), 400, 1300)
+    assert [k for k, _ in out] == [1] and out[0][1]["mean_w"] < 700
+
+
+def test_a_60_eco_wash_with_a_short_heating_is_the_washer():
+    out = appl.split_shared(rows_of([200, 1800, 1800, 1800] + WASH20[:-2] + [500, 500]), 400, 1300)
+    assert [k for k, _ in out] == [0]
+
+
+def test_both_running_at_once_are_told_apart():
+    dry = [750, 780, 720, 760, 740, 770] * 5 + [150, 150, 150]                   # 150 min + cool-down
+    total = list(dry)
+    for i, x in enumerate(WASH20):                                                # the washer starts 30 min in
+        total[6 + i] += x
+    out = appl.split_shared(rows_of(total), 400, 1300)
+    by = {k: r for k, r in out}
+    assert set(by) == {0, 1}
+    assert by[1]["kwh"] == pytest.approx(kwh(dry), rel=0.1)
+    assert by[0]["kwh"] == pytest.approx(kwh(WASH20), rel=0.15)
+    assert sum(r["kwh"] for _, r in out) == pytest.approx(kwh(total), abs=0.01)
+
+
+def test_one_dip_inside_the_drying_does_not_split_it():
+    dry = [750] * 12 + [300] + [750] * 12 + [150, 150]
+    out = appl.split_shared(rows_of(dry), 400, 1300)
+    assert [k for k, _ in out] == [1]

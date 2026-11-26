@@ -1570,3 +1570,18 @@ def test_a_missed_extra_charge_is_charged_on(tmp_path):
     snap = p.run_once(until + timedelta(minutes=5))                    # passed, still at 60 %
     assert p._car_extra is None and snap["car"]["overdue"]["target_pct"] == 80
     assert "ekstra ladning" in snap["car"]["overdue"]["label"]
+
+
+def test_shared_meter_runs_are_relearned_once_and_single_meters_kept(tmp_path):
+    import json
+    (tmp_path / "appliance_runs.json").write_text(json.dumps({
+        "Vask": [{"start": "2026-10-01T10:00:00+00:00", "minutes": 200, "kwh": 2.0, "mean_w": 600, "profile": [1, 1]}],
+        "Opvask": [{"start": "2026-10-01T10:00:00+00:00", "minutes": 120, "kwh": 1.0, "mean_w": 500, "profile": [1]}]}))
+    p = Planner(make_ha(stats={}), tz=TZ, log_path=str(tmp_path / "d.jsonl"))
+    snap = p.run_once(datetime(2026, 11, 14, 11, 30, tzinfo=UTC))
+    assert not p._appl_runs.get("Vask") and p._appl_runs["Opvask"] and p._appl_runs["_split_v2"]
+    assert next(a for a in snap["appliances"] if a["name"] == "Opvask")["recent"][0]["kwh"] == 1.0
+    p._appl_runs["Vask"] = [{"start": "2026-11-13T10:00:00+00:00", "minutes": 80, "kwh": 0.3, "mean_w": 200, "profile": [0.3]}]
+    p._appl_learned_at = None
+    p.run_once(datetime(2026, 11, 14, 13, 30, tzinfo=UTC))
+    assert p._appl_runs["Vask"]                                         # not wiped a second time

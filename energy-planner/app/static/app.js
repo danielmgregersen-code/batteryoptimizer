@@ -789,7 +789,12 @@
           h('td', {}, a.now_cost_dkk != null ? `${fmt(a.now_cost_dkk, 2)} kr` : '–'),
           h('td', { title: a.learned ? `lært af ${a.learned_runs} kørsler` : `standard (${a.learned_runs} af 3 kørsler set)` },
             `${fmt(a.minutes / 60, 1)} t · ${fmt(a.kwh, 1)} kWh` + (a.learned ? '' : ' (standard)'))))))),
-      h('div', { class: 'hint', style: { marginTop: '6px' } }, 'Pris = programmets forbrug time for time til planens priser: sol, planen ellers ville sælge, koster salgsprisen; resten købsprisen.'));
+      h('div', { class: 'hint', style: { marginTop: '6px' } }, 'Pris = programmets forbrug time for time til planens priser: sol, planen ellers ville sælge, koster salgsprisen; resten købsprisen.'),
+      items.some((a) => a.recent && a.recent.length) ? h('details', { style: { marginTop: '8px' } },
+        h('summary', { class: 'hint' }, 'Seneste kørsler (sådan er målingen delt op)'),
+        h('ul', { class: 'diag' }, items.filter((a) => a.recent && a.recent.length).map((a) => h('li', {},
+          h('strong', {}, a.name + ': '),
+          a.recent.map((r) => `${dayName(dayKey(r.start), { weekday: 'short' })} ${hhmm(r.start)} · ${fmt(r.minutes / 60, 1)} t · ${fmt(r.kwh, 2)} kWh · ${fmt(r.mean_w, 0)} W`).join('  |  '))))) : null);
   }
 
   // Garage heat pump: the setpoint now and for the next 24 hours.

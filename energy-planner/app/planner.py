@@ -601,14 +601,26 @@ class Planner:
         except Exception as e:  # best effort: the runs kept in /data and the defaults stay
             log.info("appliance runs: 5-minute statistics unavailable: %s", e)
             return
-        dryer_w = float(opts.get("appliance_dryer_min_w", 700))
+        lo_w = float(opts.get("appliance_dryer_min_w", 400))
+        hi_w = float(opts.get("appliance_dryer_max_w", 1300))
+        if not self._appl_runs.get("_split_v2"):
+            # 0.34.0: a shared meter is split slot by slot; its runs kept before were classified as a
+            # whole (a washer followed by the dryer counted as one): learned again from scratch.
+            for c in cfg:
+                if len(c["names"]) > 1:
+                    for name in c["names"]:
+                        self._appl_runs.pop(name, None)
+            self._appl_runs["_split_v2"] = True
         for c in cfg:
-            runs = appl.split_runs(stats.get(c["entity"]))
+            if len(c["names"]) > 1:
+                pairs = appl.split_shared(stats.get(c["entity"]), lo_w, hi_w)
+            else:
+                pairs = [(0, r) for r in appl.split_runs(stats.get(c["entity"]))]
             groups = [[], []]
-            for r in runs:
+            for k, r in pairs:
                 if datetime.fromisoformat(r["start"]) + timedelta(minutes=r["minutes"] + GAP_DONE_MIN) > now:
                     continue                  # still running (or just paused): not complete yet
-                groups[appl.classify(r, dryer_w) if len(c["names"]) > 1 else 0].append(r)
+                groups[k].append(r)
             for name, rs in zip(c["names"], groups):
                 appl.remember(self._appl_runs, name, rs)
         pvd.save_json(self.appliance_runs_path, self._appl_runs)
@@ -626,8 +638,10 @@ class Planner:
                 prog = appl.program(name, self._appl_runs.get(name, []))
                 best = appl.best_start(prog, rows, local)
                 if best:
+                    recent = [{k: r[k] for k in ("start", "minutes", "kwh", "mean_w")}
+                              for r in self._appl_runs.get(name, [])[-3:]][::-1]
                     out.append({"name": name, **best, "minutes": prog["minutes"], "kwh": prog["kwh"],
-                                "learned": prog["learned"], "learned_runs": prog["runs"]})
+                                "learned": prog["learned"], "learned_runs": prog["runs"], "recent": recent})
         state, attrs = appliance_advice(out, local)
         self.ha.set_state("sensor.energy_planner_appliances", state, {
             "friendly_name": "Energy Planner maskiner", "icon": "mdi:dishwasher", **attrs,
