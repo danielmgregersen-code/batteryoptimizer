@@ -37,7 +37,8 @@ KIA_BACKOFF_MIN = (2, 4, 8, 15)      # minutes between retries after failed Kia 
 KIA_BLOCK = timedelta(hours=6)       # after a PIN / access error: no Kia calls for this long
 KIA_STOP_IGNORED = timedelta(minutes=10)   # a successful stop the car has not followed after this
 THOR_STOP_AFTER = timedelta(minutes=5)     # the pause must have been wanted this long before an emergency stop
-CAR_PLAN_WAIT = timedelta(minutes=10)       # car connected, no plan row for it: wait this long before the fallback
+CAR_PLAN_WAIT = timedelta(minutes=10)
+OVERDUE_MAX = timedelta(hours=12)          # a missed departure / extra charge is caught up for at most this       # car connected, no plan row for it: wait this long before the fallback
 NON_RETRYABLE = ("pin", "unauthorized", "unauthorised", "locked", "token", "forbidden", "401", "403")
 MAX_LOG_LINES = 12000      # with a cycle every 5 min, 9000 lines are about 31 days
 KEEP_LOG_LINES = 9000
@@ -144,6 +145,8 @@ class Planner:
         self._bat_health_at = None
         self.car_eta_path = os.path.join(os.path.dirname(log_path) or ".", "car_eta_segments.json")
         self._eta_segs = pvd.load_json(self.car_eta_path, [])        # measured charging segments (car.eta_segment)
+        self._overdue = None              # a missed departure / extra charge being caught up (see _overdue_target)
+        self._overdue_done = set()        # their keys once reached, so a small dip does not restart them
         self._eta_start = None                                         # (t, soc) of the car's report a segment starts at
         self._appl_learned_at = None
         self.price_fc_path = os.path.join(os.path.dirname(log_path) or ".", "price_forecast.json")
@@ -374,20 +377,59 @@ class Planner:
             self.trace.sample(states, cartrace.prefixes(opts), now, charging=status == "charging",
                               full=bool(opts.get("car_trace_full")))
 
+    @staticmethod
+    def _reached(target: float, soc_est: dict) -> bool:
+        """A SoC target is reached: 100 % only on the car's own report (>= 99), else within 1 point."""
+        if float(target) >= 99.5:
+            return (soc_est.get("kia_soc") or 0.0) >= 99.0
+        return (soc_est.get("soc") if soc_est.get("soc") is not None else 0.0) >= float(target) - 1.0
+
+    def _miss(self, key: str, target, label: str, since: str, status: str, soc_est: dict):
+        """A departure or extra charge whose time has passed: caught up if the car is still connected
+        and short of it (once per key)."""
+        if (target is None or key in self._overdue_done or status not in carmod.CONNECTED
+                or (self._overdue and self._overdue["key"] == key)):
+            return
+        if self._reached(float(target), soc_est):
+            self._overdue_done.add(key)
+            return
+        self._overdue = {"key": key, "target_pct": float(target), "label": label, "since": since,
+                         "soc_at_miss": soc_est.get("soc")}
+        log.info("car: %s was missed (%.0f %% of %.0f %%): charging on until it is reached",
+                 label, soc_est.get("soc") or 0.0, float(target))
+
+    def _overdue_target(self, now: datetime, status: str, soc_est: dict):
+        """The missed target being caught up, or None once reached, unplugged or after OVERDUE_MAX."""
+        o = self._overdue
+        if not o:
+            return None
+        expired = now - datetime.fromisoformat(o["since"]) > OVERDUE_MAX
+        if status not in carmod.CONNECTED or expired or self._reached(o["target_pct"], soc_est):
+            self._overdue_done.add(o["key"])
+            self._overdue = None
+            return None
+        return o
+
     def _with_learned(self, opts: dict) -> dict:
         """The options with the measured charging efficiency in car_eta (when car_eta_learn is on and
         enough has been measured); the configured value stays in car_eta_configured."""
-        info = carmod.learned_eta(getattr(self, "_eta_segs", []), float(opts.get("car_eta", 0.92)))
+        model = carmod.eta_model(getattr(self, "_eta_segs", []), float(opts.get("car_eta", 0.92)))
         out = {**opts, "car_eta_configured": opts.get("car_eta")}
-        if opts.get("car_eta_learn", True) and info["learned"]:
-            out["car_eta"] = info["eta"]
+        if opts.get("car_eta_learn", True) and model["kind"] != "configured" and opts.get("car_max_amps"):
+            # the plan charges from the grid at full power (car_full_power): its losses at that power
+            out["car_eta"] = carmod.eta_at(model, carmod.car_max_kw(opts))
+            out["car_eta_model"] = model
         return out
 
     def car_eta_info(self, opts: dict) -> dict:
-        info = carmod.learned_eta(self._eta_segs, float(opts.get("car_eta_configured") or opts["car_eta"]))
-        info["used"] = float(opts["car_eta"])
-        info["source"] = "measured" if info["learned"] and opts.get("car_eta_learn", True) else "configured"
-        return info
+        """For the panel: the model, the efficiency used by the plan and at a low (6 A) power."""
+        model = carmod.eta_model(self._eta_segs, float(opts.get("car_eta_configured") or opts["car_eta"]))
+        used = opts.get("car_eta_model")
+        low_kw = int(opts["car_min_amps"]) * carmod.watt_per_amp(opts) / 1000.0
+        return {**model, "learned": model["kind"] != "configured",
+                "source": "measured" if used else "configured", "eta": float(opts["car_eta"]),
+                "full_kw": round(carmod.car_max_kw(opts), 1), "low_kw": round(low_kw, 1),
+                "eta_low": carmod.eta_at(used, low_kw) if used else float(opts["car_eta"])}
 
     def _track_car_eta(self, opts: dict, soc_est: dict):
         """A new report from the car: with the charger's energy since the report a segment started, a
@@ -435,8 +477,10 @@ class Planner:
                 anchor = None
         if anchor is not None and anchor.tzinfo is None:
             anchor = anchor.replace(tzinfo=UTC)
+        model = opts.get("car_eta_model")
         return carmod.estimate_soc(soc, anchor, list(self._charge_log), now.astimezone(UTC),
-                                   float(opts["car_eta"]), float(opts["car_battery_kwh"]))
+                                   float(opts["car_eta"]), float(opts["car_battery_kwh"]),
+                                   eta_fn=(lambda kw: carmod.eta_at(model, kw)) if model else None)
 
     def _heat_pump_forecast(self, opts, profile, buy, sell, pv, h_now, now):
         """{utc hour: kWh to add to the base load} for the next 24 hours: what the heat pump uses at the
@@ -1057,9 +1101,19 @@ class Planner:
                                                self._price_history)
             departure = carmod.departure_info(self._departure(opts), self._departure_soc(opts), horizon, now)
             if self._car_extra and carmod.extra_info(self._car_extra, horizon, now).get("status") == "passed":
+                self._miss(f"extra:{self._car_extra.get('until')}", self._car_extra.get("target_pct"),
+                           f"den ekstra ladning til {float(self._car_extra.get('target_pct') or 0):.0f} %",
+                           self._car_extra.get("until"), status, soc_est)
                 self.clear_car_extra()             # the order expires with its deadline
+            if departure.get("status") == "passed" and departure.get("soc") is not None:
+                at = datetime.fromisoformat(departure["at"])
+                if now - at <= OVERDUE_MAX:
+                    self._miss(f"dep:{departure['at']}", departure["soc"],
+                               f"afgangen kl. {at.astimezone(self.tz):%H:%M}", departure["at"], status, soc_est)
+            overdue = self._overdue_target(now, status, soc_est)
             car_params, info = carmod.build_car_params(horizon, now, self.tz, opts, status, car_soc,
-                                                       full=full, departure=departure, extra=self._car_extra)
+                                                       full=full, departure=departure, extra=self._car_extra,
+                                                       overdue=overdue)
             car_info.update(info)
             car_info.update(full_charge=full, departure=departure, soc_estimate=soc_est,
                             charge_eta=self.car_eta_info(opts))
@@ -1077,7 +1131,8 @@ class Planner:
                      if opts.get("main_fuse_amps") else None)
         exp_min = float(opts["export_min_price"]) if opts.get("export_control") and opts.get("export_min_price") is not None else None
         charge_lines, curve_info = self._charge_lines(opts, horizon)
-        crit = bool(car_params) and carmod.needs(car_soc, status == "charging", opts)["critical"]
+        crit = bool(car_params) and (carmod.needs(car_soc, status == "charging", opts)["critical"]
+                                     or bool(car_info.get("overdue")))
         car_solve = (lambda c: solve(horizon.buy, horizon.sell, horizon.pv, horizon.load, horizon.dt, soc0, params, tv,
                                      car=c, fuse_amps=fuse_amps, export_min_price=exp_min, charge_lines=charge_lines))
         keep_first = bool(car_params) and status == "charging"
@@ -1430,6 +1485,8 @@ class Planner:
             "departure": (car_info.get("departure") or {}).get("at"),
             "departure_soc": (car_info.get("departure") or {}).get("soc"),
             "departure_ok": car_info.get("departure_ok"),
+            "overdue": (f"{car_info['overdue']['label']} blev ikke nået – lader videre til "
+                        f"{car_info['overdue']['target_pct']:.0f} %") if car_info.get("overdue") else None,
             "soc_estimated": soc_est["soc"] if soc_est["estimated"] else None,
             "soc_kia": soc_est["kia_soc"], "soc_kia_at": soc_est["kia_at"],
             "preview_kwh": ((snap or {}).get("car_preview") or {}).get("planned_kwh"),

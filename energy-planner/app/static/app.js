@@ -1374,9 +1374,12 @@
         (() => {
           const se = c && c.soc_estimate;
           const ce = carInfo && carInfo.charge_eta;
-          const loss = ce ? (ce.learned
-            ? ` · ladetab ${fmt((1 - ce.eta) * 100, 0)} % (målt på ${ce.segments} ladninger${ce.source === 'measured' ? '' : ', bruges ikke'})`
-            : ` · ladetab ${fmt((1 - ce.configured) * 100, 0)} % (antaget, måler: ${ce.segments}/4)`) : '';
+          const loss = !ce ? '' : !ce.learned
+            ? ` · ladetab ${fmt((1 - ce.configured) * 100, 0)} % (antaget, måler: ${ce.segments}/4)`
+            : ce.source !== 'measured' ? ` · ladetab målt på ${ce.segments} ladninger (bruges ikke)`
+            : ce.kind === 'power'
+              ? ` · ladetab ${fmt((1 - ce.eta) * 100, 0)} % ved ${fmt(ce.full_kw, 0)} kW · ${fmt((1 - ce.eta_low) * 100, 0)} % ved ${fmt(ce.low_kw, 0)} kW (målt på ${ce.segments} ladninger)`
+              : ` · ladetab ${fmt((1 - ce.eta) * 100, 0)} % (målt på ${ce.segments} ladninger${ce.kw_max != null && ce.kw_max - ce.kw_min < 1.5 ? ', samme effekt – tabet ved lav effekt kommer, når der er målt ved forskellige effekter' : ''})`;
           const base = `minimum 42 % kl. 06 · maks ${fmt((carInfo && carInfo.max_soc_pct) || 90, 0)} %` + loss;
           if (!se || !se.estimated) return base + (se && se.kia_at ? ` · Kia kl. ${new Date(se.kia_at).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' })}` : '');
           return `beregnet: Kia ${fmt(se.kia_soc, 1)} % kl. ${new Date(se.kia_at).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' })} + ${fmt(se.kwh_since, 1)} kWh` + (se.uncertain ? ' (usikker)' : '') + ' · ' + base;
@@ -1387,7 +1390,8 @@
       tile('Styringen', h('span', { style: { fontSize: '20px' } }, action + (c && c.target_amps ? ` · ${c.target_amps} A` : '')), c ? (c.reason_da || translateReason(c.reason)) : 'venter på første cyklus'),
       carInfo && carInfo.connected
         ? tile('Planlagt', h('span', {}, fmt(carInfo.planned_kwh, 1), h('small', {}, ' kWh')),
-          `frem til ${carUntil(carInfo).label} · net-del ca. ${fmt(carInfo.planned_cost_dkk, 0)} kr` + (carInfo.shortfall_kwh > 0.05 ? ` · mangler ${fmt(carInfo.shortfall_kwh, 1)} kWh` : '')
+          (carInfo.overdue ? `${carInfo.overdue.label[0].toUpperCase()}${carInfo.overdue.label.slice(1)} blev ikke nået (${fmt(carInfo.overdue.soc_at_miss, 0)} % af ${fmt(carInfo.overdue.target_pct, 0)} %) – lader videre til ${fmt(carInfo.overdue.target_pct, 0)} % · ` : '')
+          + `frem til ${carUntil(carInfo).label} · net-del ca. ${fmt(carInfo.planned_cost_dkk, 0)} kr` + (carInfo.shortfall_kwh > 0.05 ? ` · mangler ${fmt(carInfo.shortfall_kwh, 1)} kWh` : '')
           + (carInfo.one_session ? (carInfo.one_session.used
             ? ` · samlet i én opladning (${carInfo.one_session.extra_dkk > 0.005 ? '+' + fmt(carInfo.one_session.extra_dkk, 2) + ' kr' : 'gratis'})`
             : ` · ${carInfo.one_session.sessions || 2} opladninger med pause (${carInfo.one_session.why === 'no_window' ? 'kan ikke samles' : 'én samlet ville koste mere'})`) : ''))

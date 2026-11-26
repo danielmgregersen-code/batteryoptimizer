@@ -38,6 +38,18 @@ Create two helpers (Settings → Devices & services → Helpers → Toggle):
   "ladetab 12 % (målt på 6 ladninger)". It measures all the losses between the plug and the battery
   (charger, cable, the car's own consumption while charging) together with any error in
   `car_battery_kwh`, which is what the plan needs.
+  **By power:** the loss is larger at a low power (the car's own consumption while it charges is a
+  bigger share), so each segment also keeps its charging time and mean power, and once 6 segments span
+  at least 1.5 kW the model is stored = η0 x kWh − P0 x hours, i.e. efficiency(P) = η0 − P0 / P
+  (least squares). The plan uses the efficiency at full power (it charges from the grid at full power),
+  the SoC estimate the one at the power it actually charged with (solar charging at 6 A). The Bil tab
+  shows "ladetab 8 % ved 11 kW · 14 % ved 4 kW".
+- **A missed departure or extra charge is caught up:** when the departure time (or an extra charge's
+  "until") passes while the car is still connected and short of its SoC, the car charges on at once,
+  whatever the price, until the car reports the target (100 % on its own report of ≥ 99 %), the cable
+  is pulled, or 12 hours have passed. Shown as "Afgangen kl. 07:00 blev ikke nået (96 % af 100 %) –
+  lader videre til 100 %". The automatic 100 % charge at rock-bottom prices is never forced and is
+  not caught up.
 - **100 % only when the car says so:** the SoC estimate between reports stops at 99 % until the car
   itself reports 99 % or more. So a charge to 100 % is not stopped early because the losses were higher
   than assumed. Last night it stopped at 96 %.

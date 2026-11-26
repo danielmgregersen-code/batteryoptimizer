@@ -493,3 +493,46 @@ def test_learned_eta_needs_four_plausible_segments_weighted_by_energy():
                                                        "learned": False, "measured": 0.88}
     info = carmod.learned_eta([seg(0.86, 20.0), seg(0.90), seg(0.90), seg(0.90), seg(0.5)], 0.92)
     assert info["learned"] and info["segments"] == 4 and info["eta"] == pytest.approx((0.86 * 20 + 0.9 * 30) / 50, abs=0.001)
+
+
+# ---- losses by power, missed targets (0.33.0) ------------------------------------------------------
+
+def _seg(kw, hours, eta0=0.95, p0=0.4):
+    kwh = kw * hours
+    return {"kwh": kwh, "hours": hours, "kw": kw, "eta": (eta0 * kwh - p0 * hours) / kwh}
+
+
+def test_eta_model_fits_the_losses_by_power():
+    segs = [_seg(11.0, 1.0), _seg(10.5, 0.8), _seg(11.0, 1.2), _seg(4.1, 1.5), _seg(4.5, 2.0), _seg(6.0, 1.0)]
+    m = carmod.eta_model(segs, 0.92)
+    assert m["kind"] == "power" and m["eta0"] == pytest.approx(0.95, abs=0.005) and m["p0_kw"] == pytest.approx(0.4, abs=0.02)
+    assert carmod.eta_at(m, 11.0) == pytest.approx(0.95 - 0.4 / 11, abs=0.003)
+    assert carmod.eta_at(m, 4.0) == pytest.approx(0.85, abs=0.005)
+
+
+def test_eta_model_without_spread_is_one_value_and_without_data_the_configured():
+    same = [_seg(11.0, 1.0)] * 6
+    m = carmod.eta_model(same, 0.92)
+    assert m["kind"] == "constant" and carmod.eta_at(m, 4.0) == m["eta0"]
+    assert carmod.eta_model(same[:3], 0.92)["kind"] == "configured"
+
+
+def test_estimate_soc_uses_the_losses_at_the_power_it_charged_with():
+    t0 = datetime(2026, 11, 18, 11, 0, tzinfo=UTC)
+    m = {"eta0": 0.95, "p0_kw": 0.4}
+    fast = charge_log(t0 - timedelta(minutes=5), 60, 11000.0)
+    slow = charge_log(t0 - timedelta(minutes=5), 60, 4000.0)
+    f = carmod.estimate_soc(40.0, t0, fast, t0 + timedelta(minutes=30), 0.92, 110.0, eta_fn=lambda kw: carmod.eta_at(m, kw))
+    s = carmod.estimate_soc(40.0, t0, slow, t0 + timedelta(minutes=30), 0.92, 110.0, eta_fn=lambda kw: carmod.eta_at(m, kw))
+    assert f["soc"] == pytest.approx(40 + 5.5 * (0.95 - 0.4 / 11) / 110 * 100, abs=0.1)
+    assert s["soc"] == pytest.approx(40 + 2.0 * 0.85 / 110 * 100, abs=0.1)
+
+
+def test_a_missed_target_is_charged_from_now_whatever_the_price():
+    hz = horizon(datetime(2026, 11, 15, 7, tzinfo=TZ), [3.0, 3.0, 3.0, 1.0, 1.0, 1.0])
+    over = {"key": "dep:x", "target_pct": 100.0, "label": "afgangen kl. 07:00", "since": hz.starts[0].isoformat()}
+    cp, info = carmod.build_car_params(hz, hz.starts[0], TZ, OPTS, "suspended_ev", 96.0, overdue=over)
+    assert info["max_soc_pct"] == 100 and info["overdue"] is over
+    assert 0 in cp.targets and cp.available[0]
+    p = solve(hz.buy, hz.sell, hz.pv, hz.load, hz.dt, CAP * 0.5, P, min(hz.buy) * 0.95, car=cp)
+    assert float(p.grid_car[0] + p.bat_car[0] + p.pv_car[0]) > 4.0          # at once, though 3 kr now and 1 kr later

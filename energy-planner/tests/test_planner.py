@@ -1523,3 +1523,50 @@ def test_measured_charging_efficiency_is_learned_from_the_cars_reports_and_used(
     p2 = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"),
                  options_fn=lambda: {**DEFAULTS, "car_eta_learn": False})
     assert p2.options_fn()["car_eta"] == 0.92                  # kept in /data, but switched off
+
+
+def test_a_missed_departure_is_charged_on_until_the_car_reports_it(tmp_path):
+    ha = car_ha()
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 96.0
+    ha.texts[DEFAULTS["charger_status_entity"]] = "suspended_ev"
+    ha.texts[DEFAULTS["car_departure_entity"]] = "2026-11-15 07:00:00"
+    ha.state = lambda e: ({"state": ha.texts[e], "attributes": {"has_date": True, "has_time": True},
+                           "last_changed": "2026-11-14T10:00:00+00:00"} if e in ha.texts else None)
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    now = datetime(2026, 11, 15, 6, 10, tzinfo=UTC)                     # 07:10 local, 10 min after the departure
+    snap = p.run_once(now)
+    car = snap["car"]
+    assert car["overdue"]["target_pct"] == 100 and car["max_soc_pct"] == 100
+    assert snap["plan"][0]["car_grid"] + snap["plan"][0]["car_bat"] > 0.5
+    d = p.car_cycle(now)
+    assert d["action"] == "charge"
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 99.0                      # the car reports it
+    assert not p.run_once(now + timedelta(minutes=30))["car"].get("overdue")
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 97.0                      # a small dip does not restart it
+    assert not p.run_once(now + timedelta(minutes=40))["car"].get("overdue")
+
+
+def test_a_missed_departure_is_dropped_when_unplugged(tmp_path):
+    ha = car_ha()
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 90.0
+    ha.texts[DEFAULTS["car_departure_entity"]] = "2026-11-15 07:00:00"
+    ha.state = lambda e: ({"state": ha.texts[e], "attributes": {"has_date": True, "has_time": True},
+                           "last_changed": "2026-11-14T10:00:00+00:00"} if e in ha.texts else None)
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    now = datetime(2026, 11, 15, 6, 10, tzinfo=UTC)
+    assert p.run_once(now)["car"]["overdue"]
+    ha.texts[DEFAULTS["charger_status_entity"]] = "available"
+    p.run_once(now + timedelta(minutes=5))
+    assert p._overdue is None
+
+
+def test_a_missed_extra_charge_is_charged_on(tmp_path):
+    ha = car_ha()
+    ha.numbers[DEFAULTS["car_soc_entity"]] = 60.0
+    p = Planner(ha, tz=TZ, log_path=str(tmp_path / "d.jsonl"), car_log_path=str(tmp_path / "c.jsonl"))
+    now = datetime(2026, 11, 14, 19, 30, tzinfo=UTC)
+    p.set_car_extra("target", 80, now)
+    until = datetime.fromisoformat(p._car_extra["until"])
+    snap = p.run_once(until + timedelta(minutes=5))                    # passed, still at 60 %
+    assert p._car_extra is None and snap["car"]["overdue"]["target_pct"] == 80
+    assert "ekstra ladning" in snap["car"]["overdue"]["label"]

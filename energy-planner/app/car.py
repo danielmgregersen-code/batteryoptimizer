@@ -159,7 +159,7 @@ def extra_info(extra, horizon, now_utc: datetime) -> dict:
 
 
 def build_car_params(horizon, now_utc: datetime, tz, opts, status: str, soc_pct: float,
-                     full: dict = None, departure: dict = None, extra: dict = None):
+                     full: dict = None, departure: dict = None, extra: dict = None, overdue: dict = None):
     """CarParams for the LP, or None when the car is not connected / unknown.
 
     full: full_charge_decision(); departure: departure_info(); extra: an "extra charge" ordered in the
@@ -180,6 +180,10 @@ def build_car_params(horizon, now_utc: datetime, tz, opts, status: str, soc_pct:
     ext = extra_info(extra, horizon, now_utc)
     if ext.get("status") == "planned":
         until = max(until, datetime.fromisoformat(ext["until"]))
+    if overdue:
+        # A departure / extra charge that was missed: on at once until its SoC, whatever the price.
+        need_h = max(0.0, float(overdue["target_pct"]) - soc_pct) / 100.0 * cap / (max_kw * eta)
+        until = max(until, now_utc + timedelta(hours=math.ceil(need_h) + 1))
     available = [s < until for s in horizon.starts]
     soc0 = cap * soc_pct / 100.0
     max_pct = float(opts["car_max_soc_pct"])
@@ -189,6 +193,8 @@ def build_car_params(horizon, now_utc: datetime, tz, opts, status: str, soc_pct:
         max_pct = max(max_pct, float(departure["soc"]))
     if ext.get("status") == "planned":
         max_pct = max(max_pct, float(ext["target_pct"]))
+    if overdue:
+        max_pct = max(max_pct, float(overdue["target_pct"]))
     max_pct = min(max_pct, 100.0)
     max_kwh = cap * max_pct / 100.0
     need = needs(soc_pct, status == "charging", opts)
@@ -220,11 +226,21 @@ def build_car_params(horizon, now_utc: datetime, tz, opts, status: str, soc_pct:
             reach = min(crit_kwh, reach + max_kw * dt * eta)
             targets[i] = max(targets.get(i, 0.0), reach)
 
+    if overdue:
+        goal = min(cap * float(overdue["target_pct"]) / 100.0, max_kwh)
+        reach = soc0
+        for i, dt in enumerate(horizon.dt):
+            if not available[i] or reach >= goal:
+                break
+            reach = min(goal, reach + max_kw * dt * eta)
+            targets[i] = max(targets.get(i, 0.0), reach)
+
     params = CarParams(available=available, max_kw=max_kw, eta=eta, soc0_kwh=soc0, max_kwh=max_kwh,
                        value_dkk_per_kwh=float(opts["car_value_dkk_per_kwh"]), targets=targets,
                        allow_battery=bool(opts.get("car_from_house_battery", False)))
     info = {"connected": True, "status": status, "soc_pct": soc_pct, "deadline": deadline.isoformat(),
-            "need_critical": need["critical"], "need_minimum": need["minimum"], "max_soc_pct": max_pct, "extra": ext}
+            "need_critical": need["critical"], "need_minimum": need["minimum"], "max_soc_pct": max_pct, "extra": ext,
+            "overdue": overdue}
     return params, info
 
 
@@ -559,7 +575,7 @@ def _cum_at(log, t):
     return c0 + (c1 - c0) * ((t - t0).total_seconds() / span if span else 0.0)
 
 
-def estimate_soc(soc, anchor_t, log, now, eta: float, cap_kwh: float) -> dict:
+def estimate_soc(soc, anchor_t, log, now, eta: float, cap_kwh: float, eta_fn=None) -> dict:
     """The car's SoC now from its last reported SoC (at anchor_t) plus what the charger delivered
     since. -> {"soc", "kia_soc", "kia_at", "kwh_since", "estimated", "uncertain"}."""
     out = {"soc": soc, "kia_soc": soc, "kia_at": anchor_t.isoformat() if anchor_t else None,
@@ -568,6 +584,10 @@ def estimate_soc(soc, anchor_t, log, now, eta: float, cap_kwh: float) -> dict:
         return out
     kwh = max(0.0, _cum_at(log, now) - _cum_at(log, anchor_t))
     out["uncertain"] = anchor_t < log[0][0]
+    if kwh > 0.01 and eta_fn is not None:
+        hours = _charging_hours(log, anchor_t, now)
+        if hours > 0:
+            eta = eta_fn(kwh / hours)                 # the losses at the power it actually charged with
     if kwh > 0.01:
         # Only the car's own report says 100 %: the estimate stops at 99 until then, so a charge to 100 %
         # is not stopped early when the losses were a little higher than assumed.
@@ -595,8 +615,63 @@ def eta_segment(start, end, log, cap_kwh: float):
     if kwh < 1.0:
         return None
     eta = (s1 - s0) / 100.0 * cap_kwh / kwh
+    hours = _charging_hours(log, t0, t1)
     return {"start": t0.isoformat(), "end": t1.isoformat(), "soc_from": round(s0, 1), "soc_to": round(s1, 1),
-            "kwh": round(kwh, 2), "eta": round(eta, 3)}
+            "kwh": round(kwh, 2), "eta": round(eta, 3), "hours": round(hours, 3),
+            "kw": round(kwh / hours, 2) if hours > 0 else None}
+
+
+def _charging_hours(log, t0, t1) -> float:
+    """Hours between t0 and t1 in which the charger delivered energy (the log's cumulative kWh rose)."""
+    h = 0.0
+    for (ta, ca), (tb, cb) in zip(log, log[1:]):
+        if tb <= t0 or ta >= t1 or cb - ca <= 1e-6:
+            continue
+        h += (min(tb, t1) - max(ta, t0)).total_seconds() / 3600.0
+    return h
+
+
+ETA_POWER_MIN_SEGMENTS = 6
+ETA_POWER_MIN_SPREAD_KW = 1.5
+
+
+def eta_model(segments: list, configured: float) -> dict:
+    """The charging efficiency as a function of the power at the plug: stored = η0 x E - P0 x hours
+    (P0: what the car itself uses while it charges), so eta(P) = η0 - P0 / P. Fitted by least squares
+    on the latest segments when they span enough power; otherwise one energy-weighted value (at least
+    ETA_MIN_SEGMENTS), otherwise the configured car_eta.
+    -> {kind: power|constant|configured, eta0, p0_kw, segments, kw_min, kw_max, configured}."""
+    ok = [g for g in (segments or []) if ETA_RANGE[0] <= g["eta"] <= ETA_RANGE[1]][-ETA_LAST:]
+    out = {"kind": "configured", "eta0": float(configured), "p0_kw": 0.0, "segments": len(ok),
+           "kw_min": None, "kw_max": None, "configured": float(configured)}
+    timed = [g for g in ok if g.get("hours") and g.get("kw")]
+    if timed:
+        out.update(kw_min=min(g["kw"] for g in timed), kw_max=max(g["kw"] for g in timed))
+    if len(timed) >= ETA_POWER_MIN_SEGMENTS and out["kw_max"] - out["kw_min"] >= ETA_POWER_MIN_SPREAD_KW:
+        # normal equations for stored = a*E - b*H
+        see = sum(g["kwh"] ** 2 for g in timed)
+        seh = sum(g["kwh"] * g["hours"] for g in timed)
+        shh = sum(g["hours"] ** 2 for g in timed)
+        sse = sum(g["eta"] * g["kwh"] * g["kwh"] for g in timed)
+        ssh = sum(g["eta"] * g["kwh"] * g["hours"] for g in timed)
+        det = see * shh - seh * seh
+        if abs(det) > 1e-9:
+            a = (sse * shh - ssh * seh) / det
+            b = (sse * seh - ssh * see) / det
+            if 0.80 <= a <= 1.0 and 0.0 <= b <= 1.5:
+                out.update(kind="power", eta0=round(a, 4), p0_kw=round(b, 3))
+                return out
+    if len(ok) >= ETA_MIN_SEGMENTS:
+        out.update(kind="constant", eta0=round(sum(g["eta"] * g["kwh"] for g in ok) / sum(g["kwh"] for g in ok), 4))
+    return out
+
+
+def eta_at(model: dict, kw: float) -> float:
+    """The model's efficiency at `kw` at the plug."""
+    if not model:
+        return 0.92
+    e = float(model["eta0"]) - (float(model.get("p0_kw") or 0.0) / kw if kw and kw > 0 else 0.0)
+    return round(min(0.99, max(0.5, e)), 4)
 
 
 def learned_eta(segments: list, configured: float) -> dict:

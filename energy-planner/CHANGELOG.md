@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.33.0
+
+- **Charging losses by power:** each measured segment keeps its charging time and mean power. With 6
+  segments spanning 1.5 kW the efficiency is modelled as η0 − P0 / P (P0: what the car uses itself
+  while charging). The plan uses it at full power, the SoC estimate at the power actually used. The
+  Bil tab shows the loss at full power and at 6 A.
+- **A missed departure or extra charge is caught up:** this morning the departure passed at 96 % of
+  100 % and the charge stopped. Now the car charges on at once until the car reports the target, the
+  cable is pulled, or 12 h have passed (not for the automatic 100 % at rock-bottom prices).
+
 ## 0.32.0
 
 - **Charging losses measured** (`car_eta_learn`): the car's SoC reports are compared with the charger
