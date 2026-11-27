@@ -11,7 +11,7 @@ MODE_LABEL = {
     "discharge": "Aflader til huset",
     "hold": "Holder batteriet",
 }
-CAR_ACTION_LABEL = {"charge": "Lader", "pause": "Pause", "idle": "Venter", "none": "Ikke tilsluttet"}
+CAR_ACTION_LABEL = {"charge": "Lader", "pause": "Pause", "idle": "Venter", "none": "Ikke tilsluttet", "test": "Test"}
 WEEKDAY = ["man.", "tirs.", "ons.", "tors.", "fre.", "lør.", "søn."]
 MAX_ITEMS = 9
 
@@ -162,6 +162,11 @@ _REASONS = [
      lambda m: f"Kort hul, sparer kun {num(float(m[1]), 2)} kr/kWh: fortsætter på {m[2]} A"),
     (r"^no plan, below minimum SoC$", lambda m: "Ingen plan – under minimum, lader fuldt"),
     (r"^waiting for a plan with the car$", lambda m: "Venter på en plan med bilen"),
+    (r"^test: short charge after the pause \(restart in (\d+) s\)$",
+     lambda m: f"Test: kort opladning efter pausen (genstarter om {m[1]} s)"),
+    (r"^test: short charge after the pause \(starting\)$", lambda m: "Test: kort opladning efter pausen (starter)"),
+    (r"^test: short charge after the pause \(charging, pause in (\d+) s\)$",
+     lambda m: f"Test: kort opladning efter pausen (lader, pause om {m[1]} s)"),
     (r"^plan: no car charging this hour$", lambda m: "Planen lader ikke bilen denne time"),
     (r"^no plan$", lambda m: "Ingen plan"),
 ]

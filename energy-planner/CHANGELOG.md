@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.38.0
+
+- **Test: a short restart after a pause** (`car_refresh_test`, on): after a pause that follows a
+  charge of at least 10 minutes, the car is restarted after 90 s, charges 60 s and is paused again.
+  Then the add-on watches whether the THOR keeps the session open for 10 minutes. The idea comes
+  from the data: a pause after a 2–5 minute charge kept the session, a pause after 20 minutes or
+  more ended it after 3:00. Results are shown in the Bil tab and the diagnosis trace.
+
 ## 0.37.0
 
 - **Washer and dryer recognised from the real meter:** the meter's history (17–27 Nov) showed a heat

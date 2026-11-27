@@ -1629,3 +1629,76 @@ def test_the_card_has_one_weighted_wash_row_and_the_measured_dryer(tmp_path):
     assert {m["name"]: m["share"] for m in vask["mix"]} == {"20°": 0.5, "60° eco": 0.5}
     assert vask["kwh"] == pytest.approx((sum(w20) + sum(eco)) / 2 / 12000, rel=0.05) and "saving_dkk" in vask
     assert p._appl_runs["_split_v4"]
+
+
+def _refresh_ha():
+    ha = kia_failing_ha(soc=45.0, message=None)
+    status = DEFAULTS["charger_status_entity"]
+
+    def ws(domain, service, data=None):
+        ha.kia.append(service)
+        ha.texts[status] = "suspended_ev" if service == "stop_charge" else "charging"
+    ha.call_service_ws = ws
+    return ha
+
+
+def test_short_restart_after_a_pause_that_followed_a_long_charge(tmp_path):
+    ha = _refresh_ha()                                        # charging since 10:00, the plan wants a pause
+    p = planner_for(ha, tmp_path)
+    p.run_once(NIGHT)
+    d = p.car_cycle(NIGHT)
+    assert ha.kia == ["stop_charge"] and p._refresh["phase"] == "wait" and p.car_fast()
+    d = p.car_cycle(NIGHT + timedelta(seconds=60))
+    assert d["action"] == "test" and ha.kia == ["stop_charge"] and "genstarter" in d["reason_da"]
+    p.car_cycle(NIGHT + timedelta(seconds=95))                # restart, past the 10-minute repeat guard
+    assert ha.kia == ["stop_charge", "start_charge"] and p._refresh["restart_after_s"] == 95
+    p.car_cycle(NIGHT + timedelta(seconds=105))
+    assert p._refresh["phase"] == "charging"
+    p.car_cycle(NIGHT + timedelta(seconds=135))
+    assert ha.kia == ["stop_charge", "start_charge"]          # still charging (60 s)
+    p.car_cycle(NIGHT + timedelta(seconds=170))
+    assert ha.kia == ["stop_charge", "start_charge", "stop_charge"] and p._refresh["phase"] == "watch"
+    assert not p.car_fast()
+    p.car_cycle(NIGHT + timedelta(minutes=8))
+    assert p._refresh is not None
+    p.car_cycle(NIGHT + timedelta(minutes=13))                # 10 min after the second pause, still open
+    assert p._refresh is None and p._refresh_tests[-1]["outcome"].startswith("holdt")
+    assert p._refresh_tests[-1]["charged_again_s"] == 65
+    assert ha.kia.count("start_charge") == 1                  # the second pause did not start another test
+
+
+def test_short_restart_records_a_session_the_charger_ended(tmp_path):
+    ha = _refresh_ha()
+    p = planner_for(ha, tmp_path)
+    p.run_once(NIGHT)
+    p.car_cycle(NIGHT)
+    for s in (95, 105, 170):
+        p.car_cycle(NIGHT + timedelta(seconds=s))
+    ha.texts[DEFAULTS["charger_status_entity"]] = "idle"      # the THOR ends it anyway
+    p.car_cycle(NIGHT + timedelta(seconds=170 + 180))
+    assert p._refresh_tests[-1]["outcome"] == "afsluttet 3:00 efter den korte opladning"
+
+
+def test_no_short_restart_after_a_short_charge_or_when_switched_off(tmp_path):
+    ha = _refresh_ha()
+    ha.last_changed = (NIGHT - timedelta(minutes=25)).isoformat()  # charged 25 min, under the 60-min threshold
+    p = planner_for(ha, tmp_path, car_refresh_min_charge_s=3600)
+    p.run_once(NIGHT)
+    p.car_cycle(NIGHT)
+    assert ha.kia == ["stop_charge"] and p._refresh is None
+    ha2 = _refresh_ha()
+    p2 = planner_for(ha2, tmp_path, car_refresh_test=False)
+    p2.run_once(NIGHT)
+    p2.car_cycle(NIGHT)
+    assert p2._refresh is None
+
+
+def test_short_restart_ends_early_when_the_charger_already_ended(tmp_path):
+    ha = _refresh_ha()
+    p = planner_for(ha, tmp_path)
+    p.run_once(NIGHT)
+    p.car_cycle(NIGHT)
+    ha.texts[DEFAULTS["charger_status_entity"]] = "idle"
+    p.car_cycle(NIGHT + timedelta(seconds=60))
+    assert p._refresh is None and p._refresh_tests[-1]["outcome"].startswith("afsluttet før genstart")
+    assert ha.kia == ["stop_charge"]

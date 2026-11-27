@@ -86,7 +86,8 @@ def _car_loop():
                 log.debug("car: %s %s (%s)", d["action"], d["target_amps"], d["reason"])
         except Exception as e:  # never let the loop die
             log.exception("car control failed: %s", e)
-        _stop.wait(max(30, int(opts.get("car_interval_seconds", 120))))
+        # every few seconds while the short-restart test runs (its steps are seconds apart)
+        _stop.wait(10 if planner.car_fast() else max(30, int(opts.get("car_interval_seconds", 120))))
 
 
 @asynccontextmanager
@@ -228,6 +229,12 @@ async def _replan():
         return {"car": snap.get("car"), "upcoming": snap.get("upcoming")}
     except PlannerError as e:
         return {"error": str(e)}
+
+
+@app.get("/api/car/refresh_tests")
+def get_car_refresh_tests():
+    """Results of the short-restart test after a pause (0.38.0)."""
+    return {"active": planner._refresh is not None and planner._refresh.get("phase"), "tests": planner._refresh_tests}
 
 
 @app.get("/api/car/traces")

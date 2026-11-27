@@ -78,6 +78,15 @@ Create two helpers (Settings → Devices & services → Helpers → Toggle):
   plan wants a one-hour pause while charging from the grid, the next planned charge is within the gap
   and waiting saves less than 0.20 kr/kWh, the car keeps charging at `car_min_amps` instead (a pause
   through Kia has been followed by the charger ending the session 3 minutes later). 0 = off.
+- **Test: a short restart after a pause** (`car_refresh_test`, on for now): the THOR ends the session
+  about 3:00 after the car is paused following a long charge (≥ 20 min), while a pause after a 2–5
+  minute charge keeps it for hours. So after the add-on paused the car following a charge of at least
+  `car_refresh_min_charge_s` (600 s), and the charger really left "charging", it restarts the car
+  after `car_refresh_delay_s` (90 s: the Kia start takes up to ~35 s and must land before the 3:00),
+  lets it charge `car_refresh_charge_s` (60 s) and pauses it again. The controller's own calls wait
+  meanwhile and the car loop runs every 10 s. Then it watches the session for 10 minutes: "holdt" or
+  "afsluttet m:ss efter". Results in `/data/car_refresh_tests.json`, the Bil tab ("Test: kort
+  genstart efter pause"), `GET api/car/refresh_tests`, and each step in the diagnosis trace.
 - **Diagnosis** (Bil tab): from the start of a charge to 10 minutes after it last stopped (a pause
   that resumes within 10 minutes stays in the same trace; at most 24 h; or by hand: "Start diagnose
   nu"), every 5 s the add-on records what changes on the charger's and the car's entities (by

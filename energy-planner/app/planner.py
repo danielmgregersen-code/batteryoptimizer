@@ -148,6 +148,9 @@ class Planner:
         self._eta_segs = pvd.load_json(self.car_eta_path, [])        # measured charging segments (car.eta_segment)
         self._overdue = None              # a missed departure / extra charge being caught up (see _overdue_target)
         self._overdue_done = set()        # their keys once reached, so a small dip does not restart them
+        self._refresh = None              # the short-restart test after a pause (see _refresh_step)
+        self.refresh_tests_path = os.path.join(os.path.dirname(log_path) or ".", "car_refresh_tests.json")
+        self._refresh_tests = pvd.load_json(self.refresh_tests_path, [])
         self._eta_start = None                                         # (t, soc) of the car's report a segment starts at
         self._appl_learned_at = None
         self.price_fc_path = os.path.join(os.path.dirname(log_path) or ".", "price_forecast.json")
@@ -1509,8 +1512,18 @@ class Planner:
                              + f" · {reason_da(d['reason'])}" + ("" if car_production else " (manuel styring: intet sendes)"),
                              {"soc": live.get("car_soc"), "surplus_w": d.get("surplus_w"), "status": status,
                               "plan_row": {k: (row or {}).get(k) for k in ("car_grid", "car_pv", "car_bat", "buy")}})
-        if car_production:
+        if car_production and self._refresh and self._refresh["phase"] != "watch":
+            d["executed"] = self._refresh_step(d, opts, status, now)
+            d["warning"] = None
+        elif car_production:
+            charged_s = live.get("secs_since_status", 0) if status == "charging" else 0
             d["executed"], d["warning"] = self._car_production_step(d, opts, live, snap, now)
+            if self._refresh:                        # watching: the controller acts as usual meanwhile
+                self._refresh_watch(status, now)
+            else:
+                self._maybe_start_refresh(d, opts, charged_s, now)
+        else:
+            self._refresh = None
         extra_warn = []
         if self._session_ended_at:
             extra_warn.append(f"Laderen afsluttede sessionen selv kl. {self._session_ended_at.astimezone(self.tz):%H:%M}, "
@@ -1567,6 +1580,97 @@ class Planner:
                                                                 "reason_da", "calls", "executed", "warning",
                                                                 "production", "live")})
         return d
+
+    # ---- test: a short charge right after a pause, so the THOR keeps the session (0.38.0) -----------
+    def car_fast(self) -> bool:
+        """The car loop runs every few seconds while the short-restart test runs (not while watching)."""
+        return self._refresh is not None and self._refresh["phase"] != "watch"
+
+    def _refresh_event(self, now: datetime, text: str):
+        self.trace.event(now.astimezone(self.tz), "test", text)
+        log.info("car refresh test: %s", text)
+
+    def _maybe_start_refresh(self, d: dict, opts: dict, charged_s: float, now: datetime):
+        """After the add-on paused the car following a charge of car_refresh_min_charge_s or more:
+        start the test (restart after car_refresh_delay_s, charge car_refresh_charge_s, pause again)."""
+        if not opts.get("car_refresh_test") or self._refresh:
+            return
+        stop = next((x for x in d.get("executed") or [] if x["service"] == "kia_uvo.stop_charge"), None)
+        if not stop or stop.get("status") not in ("ok", "unknown") and not stop.get("paused"):
+            return
+        if charged_s < float(opts.get("car_refresh_min_charge_s", 600)):
+            return
+        fresh = self.ha.text(opts["charger_status_entity"]) if opts.get("charger_status_entity") else None
+        if not stop.get("paused") and fresh not in carmod.SUSPENDED:
+            return                                   # the car did not pause: the usual fallbacks handle it
+        self._refresh = {"phase": "wait", "paused_at": now, "charged_s": int(charged_s), "phase_at": now}
+        self._refresh_event(now, f"pause efter {int(charged_s // 60)} min opladning: genstarter om "
+                                 f"{int(opts.get('car_refresh_delay_s', 90))} s, lader "
+                                 f"{int(opts.get('car_refresh_charge_s', 60))} s og pauser igen")
+
+    def _refresh_done(self, now: datetime, outcome: str, **extra):
+        r = self._refresh or {}
+        rec = {"at": r.get("paused_at", now).astimezone(self.tz).isoformat(timespec="seconds"),
+               "charged_s": r.get("charged_s"), "outcome": outcome,
+               "restart_after_s": r.get("restart_after_s"), "charged_again_s": r.get("charged_again_s"), **extra}
+        self._refresh_tests = (self._refresh_tests + [rec])[-30:]
+        pvd.save_json(self.refresh_tests_path, self._refresh_tests)
+        self._refresh_event(now, f"resultat: {outcome}")
+        self._refresh = None
+
+    def _refresh_step(self, d: dict, opts: dict, status: str, now: datetime) -> list:
+        """One step of the short-restart test; the controller's own calls wait meanwhile."""
+        r = self._refresh
+        delay = float(opts.get("car_refresh_delay_s", 90))
+        charge = float(opts.get("car_refresh_charge_s", 60))
+        since = (now - r["phase_at"]).total_seconds()
+        executed = []
+        ended = status in ("idle", "finishing", "available") or status not in carmod.CONNECTED
+        if r["phase"] == "wait":
+            d.update(action="test", calls=[], reason=f"test: short charge after the pause (restart in {max(0, int(delay - since))} s)")
+            if status == "charging":
+                self._refresh_done(now, "afbrudt: bilen lader stadig (pausen virkede ikke)")
+            elif ended:
+                self._refresh_done(now, f"afsluttet før genstart ({int((now - r['paused_at']).total_seconds())} s efter pausen)",
+                                   ended_after_s=int((now - r["paused_at"]).total_seconds()))
+            elif since >= delay:
+                executed = self._execute_car_calls([{"service": "kia_uvo.start_charge", "force": True}], opts, status, now)
+                r.update(phase="starting", phase_at=now, restart_after_s=int((now - r["paused_at"]).total_seconds()))
+                self._refresh_event(now, f"genstart {r['restart_after_s']} s efter pausen")
+        elif r["phase"] == "starting":
+            d.update(action="test", calls=[], reason="test: short charge after the pause (starting)")
+            if status == "charging":
+                r.update(phase="charging", phase_at=now)
+                self._refresh_event(now, "lader igen")
+            elif ended:
+                self._refresh_done(now, "afsluttet under genstarten",
+                                   ended_after_s=int((now - r["paused_at"]).total_seconds()))
+            elif since > 90:
+                self._refresh_done(now, "opgivet: bilen begyndte ikke at lade inden for 90 s")
+        elif r["phase"] == "charging":
+            d.update(action="test", calls=[], reason=f"test: short charge after the pause (charging, pause in {max(0, int(charge - since))} s)")
+            if status != "charging":
+                r["charged_again_s"] = int(since)
+                r.update(phase="watch", phase_at=now, stopped_at=now)
+                self._refresh_event(now, f"bilen stoppede selv efter {int(since)} s ({status})")
+            elif since >= charge:
+                executed = self._execute_car_calls([{"service": "kia_uvo.stop_charge", "force": True}], opts, status, now)
+                r.update(phase="watch", phase_at=now, stopped_at=now, charged_again_s=int(since))
+                self._refresh_event(now, f"pause igen efter {int(since)} s")
+        return executed
+
+    def _refresh_watch(self, status: str, now: datetime):
+        """After the short charge: does the session stay open for 10 minutes?"""
+        r = self._refresh
+        since = (now - r["stopped_at"]).total_seconds()
+        if status in ("idle", "finishing", "available") or status not in carmod.CONNECTED:
+            after = int(since)
+            self._refresh_done(now, f"afsluttet {after // 60}:{after % 60:02d} efter den korte opladning",
+                               ended_after_s=after)
+        elif status == "charging" and since > 30:
+            self._refresh_done(now, "afbrudt: bilen lader igen (planen)")
+        elif since >= 600:
+            self._refresh_done(now, "holdt (sessionen var stadig åben 10 min efter)")
 
     def _car_production_step(self, d: dict, opts: dict, live: dict, snap: dict, now: datetime):
         """Carry out the decision's calls, and when the car cannot be paused: 6 A, and as a last
@@ -1694,7 +1798,8 @@ class Planner:
                             done.append(res)
                             continue
                         last = self._last_kia
-                        if last and last[0] == svc and last[1] == status and (now - last[2]).total_seconds() < KIA_REPEAT_S:
+                        if (not c.get("force") and last and last[0] == svc and last[1] == status
+                                and (now - last[2]).total_seconds() < KIA_REPEAT_S):
                             res.update(status="skipped", error="repeated within 10 min (Kia cloud quota)")
                             done.append(res)
                             continue

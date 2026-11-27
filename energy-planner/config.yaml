@@ -1,6 +1,6 @@
 name: "Energy Planner"
 description: "Hour-by-hour planning and control of a Growatt hybrid inverter, home battery and EV charging."
-version: "0.37.0"
+version: "0.38.0"
 slug: "energy_planner"
 init: false
 arch:
@@ -78,6 +78,10 @@ options:
   car_max_amps: 16
   car_eta: 0.92
   car_eta_learn: true
+  car_refresh_test: true
+  car_refresh_delay_s: 90
+  car_refresh_charge_s: 60
+  car_refresh_min_charge_s: 600
   car_critical_start_pct: 20
   car_critical_stop_pct: 22
   car_min_start_pct: 40
@@ -211,6 +215,10 @@ schema:
   car_max_amps: int(6,32)
   car_eta: float(0.7,1)
   car_eta_learn: bool
+  car_refresh_test: bool
+  car_refresh_delay_s: int(30,170)
+  car_refresh_charge_s: int(20,600)
+  car_refresh_min_charge_s: int(0,7200)
   car_critical_start_pct: int(0,100)
   car_critical_stop_pct: int(0,100)
   car_min_start_pct: int(0,100)

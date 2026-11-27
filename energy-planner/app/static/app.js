@@ -96,7 +96,7 @@
     hold: { label: 'Holder batteriet', color: C.hold },
   };
   const CAR_ACTIONS = {
-    charge: 'Lader', pause: 'Pause', idle: 'Venter', none: 'Ikke tilsluttet',
+    charge: 'Lader', pause: 'Pause', idle: 'Venter', none: 'Ikke tilsluttet', test: 'Test',
   };
   const CHARGER_STATUS = {
     available: 'Ledig (intet stik)', idle: 'Afsluttet: stikket skal ud og i igen', preparing: 'Klar (venter på start)', charging: 'Lader', suspended_ev: 'Pause (bil)',
@@ -1291,6 +1291,22 @@
     return h('div', { class: 'hint', style: { marginTop: '6px' } }, text);
   }
 
+  // Test: a short charge right after a pause, so the THOR keeps the session (0.38.0).
+  function refreshCard() {
+    const R = state.refreshTests;
+    if (!R || (!R.active && !(R.tests || []).length)) return null;
+    const mmss = (s) => s == null ? '–' : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    const rows = (R.tests || []).slice().reverse().map((t) => h('li', {},
+      `${new Date(t.at).toLocaleDateString('da-DK', { weekday: 'short' })} ${new Date(t.at).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' })} · ladet ${Math.round((t.charged_s || 0) / 60)} min`
+      + (t.restart_after_s != null ? ` → genstart efter ${mmss(t.restart_after_s)}` : '')
+      + (t.charged_again_s != null ? `, ladet ${mmss(t.charged_again_s)}` : '') + ` → ${t.outcome}`));
+    return h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', {}, 'Test: kort genstart efter pause'),
+        h('span', { class: 'hint' }, R.active ? `kører nu (${{ wait: 'venter', starting: 'starter', charging: 'lader', watch: 'holder øje' }[R.active] || R.active})` : 'car_refresh_test')),
+      h('div', { class: 'hint', style: { marginBottom: '8px' } }, 'Efter en pause, der følger en lang opladning, genstarter add-on’en bilen kort og pauser igen – for at se, om THOR så lader sessionen være åben.'),
+      rows.length ? h('ul', { class: 'diag' }, rows) : h('div', { class: 'hint' }, 'Ingen tests endnu.'));
+  }
+
   function traceCard() {
     const traces = state.traces || [];
     const onlyKey = !!state.traceOnlyKey;
@@ -1463,7 +1479,7 @@
         : h('div', { class: 'empty' }, 'Ingen hændelser endnu.'));
 
     const carWarn = c && c.warning ? h('div', { class: 'banner error' }, icon.error(), h('div', {}, c.warning)) : null;
-    root.replaceChildren(h('div', { class: 'stack' }, carWarn, tiles, extraCard(carInfo, live.car_soc), h('div', { class: 'grid-2' }, chartCard, callsCard), traceCard(), logCard));
+    root.replaceChildren(h('div', { class: 'stack' }, carWarn, tiles, extraCard(carInfo, live.car_soc), h('div', { class: 'grid-2' }, chartCard, callsCard), refreshCard(), traceCard(), logCard));
 
     if (showChart) {
       let crow, startSoc, maxSoc;
@@ -1880,6 +1896,7 @@
   async function loadCar() {
     try { state.car = await getJSON('api/car'); } catch (e) { /* keep the last */ }
     try { state.traces = await getJSON('api/car/traces'); } catch (e) { /* keep the last */ }
+    try { state.refreshTests = await getJSON('api/car/refresh_tests'); } catch (e) { /* keep the last */ }
     if (state.tab === 'bil') renderCar();
   }
   async function loadEval(dim) {
