@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.38.2
+
+- The panel shows the car's minimum as 40 % (the middle of 38 and 42 %), not 42 %. It still charges
+  to 42 %, and the top 2 % is a buffer.
+
 ## 0.38.1
 
 - **The car's minimum with more room:** charged when under 38 % (`car_min_start_pct`, was 40) up to

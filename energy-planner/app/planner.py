@@ -831,7 +831,8 @@ class Planner:
                "small_dropped": dropped, "one_session": one, "min_session_kwh": float(opts.get("car_min_session_kwh", 0) or 0),
                "soc_at_deadline": round(at_deadline, 1), "deadline": info["deadline"],
                "max_soc_pct": info.get("max_soc_pct"), "windows": windows, "reason": reason, "rows": rows,
-               "min_soc_pct": float(opts["car_min_stop_pct"]), "value_dkk": float(opts["car_value_dkk_per_kwh"])}
+               "min_soc_pct": (float(opts["car_min_start_pct"]) + float(opts["car_min_stop_pct"])) / 2.0,  # as meant (40)
+               "value_dkk": float(opts["car_value_dkk_per_kwh"])}
         out["text"] = _preview_text(out, self.tz, now)
         return out
 

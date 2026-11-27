@@ -171,7 +171,8 @@ Replaces the HA automation *"Solcelle- & Prisstyret ladning: IONIQ 9"* in two la
   (42 %) by the deadline: the cheapest hours before 06:00 are used, the night's prices estimated if
   they are not out yet. Below `car_critical_start_pct` (18 %) it charges straight to
   `car_critical_stop_pct` (22 %). The gap between start and stop keeps it from small top-ups: a car
-  at 39 % may stand, one at 37 % is charged to 42 %.
+  at 39 % may stand, one at 37 % is charged to 42 %. The panel shows the minimum as meant, the middle
+  of start and stop (40 % / 20 %); the top 2 % is a buffer for the cold and the 12 V battery.
 - Beyond that it is charged up to `car_max_soc_pct` (90 %) only from energy that costs less than
   `car_value_dkk_per_kwh` (1.25) at the plug: sun that sells for less, or grid hours that cost less.
   This one number replaces the automation's three price rules (sun if sale ≤ 0.50, full power if

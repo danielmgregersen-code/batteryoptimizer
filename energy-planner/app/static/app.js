@@ -43,12 +43,11 @@
   const fmtSigned = (v, d = 2) => (v == null ? '–' : (v > 0 ? '+' : v < 0 ? '−' : '') + fmt(Math.abs(v), d));
   const pct = (v, d = 0) => (v == null ? '–' : fmt(v, d) + ' %');
   const hhmm = (t) => t.slice(11, 16);
-  // The car's minimum: charge when under car_min_start_pct, up to car_min_stop_pct (no small top-ups).
-  const carMin = (ci) => ((ci && ci.limits) || {}).car_min_stop_pct ?? 42;
-  const carMinText = (ci) => {
-    const L = (ci && ci.limits) || {};
-    return L.car_min_start_pct != null ? `${fmt(L.car_min_stop_pct, 0)} % (lader under ${fmt(L.car_min_start_pct, 0)} %)` : '42 %';
-  };
+  // The car's minimum as the owner means it: the middle of start and stop (38/42 -> 40 %). It charges
+  // when under car_min_start_pct and on to car_min_stop_pct; the top is a buffer (cold, the 12 V battery).
+  const carMin = (ci) => { const L = (ci && ci.limits) || {};
+    return L.car_min_start_pct != null ? (L.car_min_start_pct + L.car_min_stop_pct) / 2 : 40; };
+  const carMinText = (ci) => `${fmt(carMin(ci), 0)} %`;
   const dayKey = (t) => t.slice(0, 10);
   const dayName = (key, opts = { weekday: 'short', day: 'numeric', month: 'short' }) =>
     new Date(key + 'T12:00:00').toLocaleDateString('da-DK', opts);
