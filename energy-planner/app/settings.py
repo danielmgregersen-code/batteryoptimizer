@@ -96,9 +96,9 @@ DEFAULTS = {
     "car_refresh_delay_s": 90,       # ... restart this long after the pause (the THOR ends the session ~3:00 after it)
     "car_refresh_charge_s": 60,      # ... charge this long, then pause again
     "car_refresh_min_charge_s": 600, # ... only after a charge of at least this           # use the measured charging efficiency (car.learned_eta) instead of car_eta
-    "car_critical_start_pct": 20,
+    "car_critical_start_pct": 18,
     "car_critical_stop_pct": 22,
-    "car_min_start_pct": 40,
+    "car_min_start_pct": 38,
     "car_min_stop_pct": 42,
     "car_max_soc_pct": 90,
     "car_deadline_hour": 6,

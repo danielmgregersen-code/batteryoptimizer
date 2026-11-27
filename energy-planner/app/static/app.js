@@ -43,6 +43,12 @@
   const fmtSigned = (v, d = 2) => (v == null ? '–' : (v > 0 ? '+' : v < 0 ? '−' : '') + fmt(Math.abs(v), d));
   const pct = (v, d = 0) => (v == null ? '–' : fmt(v, d) + ' %');
   const hhmm = (t) => t.slice(11, 16);
+  // The car's minimum: charge when under car_min_start_pct, up to car_min_stop_pct (no small top-ups).
+  const carMin = (ci) => ((ci && ci.limits) || {}).car_min_stop_pct ?? 42;
+  const carMinText = (ci) => {
+    const L = (ci && ci.limits) || {};
+    return L.car_min_start_pct != null ? `${fmt(L.car_min_stop_pct, 0)} % (lader under ${fmt(L.car_min_start_pct, 0)} %)` : '42 %';
+  };
   const dayKey = (t) => t.slice(0, 10);
   const dayName = (key, opts = { weekday: 'short', day: 'numeric', month: 'short' }) =>
     new Date(key + 'T12:00:00').toLocaleDateString('da-DK', opts);
@@ -641,7 +647,7 @@
         `sparet over ${p.horizon_hours} timer ved at lade fra nettet når det betaler sig`),
       p.car && p.car.enabled ? tile('Bil', p.car.connected ? h('span', {}, fmt(p.car.soc_pct, 0), h('small', {}, ' %')) : h('span', { class: 'ink2', style: { fontSize: '18px' } }, 'Ikke tilsluttet'),
         p.car.connected ? `planlagt ${fmt(p.car.planned_kwh, 1)} kWh frem til kl. ${p.car.deadline.slice(11, 16)}` : 'planen tager bilen med, når den sættes til',
-        p.car.connected ? meter(p.car.soc_pct, [{ v: 42, title: 'Minimum' }, { v: 90, ghost: true, title: 'Maks' }], 'car') : null) : null);
+        p.car.connected ? meter(p.car.soc_pct, [{ v: carMin(p.car), title: 'Minimum' }, { v: 90, ghost: true, title: 'Maks' }], 'car') : null) : null);
 
     const hasCar = rows.some((r) => carIn(r) > 0.005);
     const chartBox = h('div', { class: 'chart' });
@@ -1409,11 +1415,11 @@
             : ce.kind === 'power'
               ? ` · ladetab ${fmt((1 - ce.eta) * 100, 0)} % ved ${fmt(ce.full_kw, 0)} kW · ${fmt((1 - ce.eta_low) * 100, 0)} % ved ${fmt(ce.low_kw, 0)} kW (målt på ${ce.segments} ladninger)`
               : ` · ladetab ${fmt((1 - ce.eta) * 100, 0)} % (målt på ${ce.segments} ladninger${ce.kw_max != null && ce.kw_max - ce.kw_min < 1.5 ? ', samme effekt – tabet ved lav effekt kommer, når der er målt ved forskellige effekter' : ''})`;
-          const base = `minimum 42 % kl. 06 · maks ${fmt((carInfo && carInfo.max_soc_pct) || 90, 0)} %` + loss;
+          const base = `minimum ${carMinText(carInfo)} kl. 06 · maks ${fmt((carInfo && carInfo.max_soc_pct) || 90, 0)} %` + loss;
           if (!se || !se.estimated) return base + (se && se.kia_at ? ` · Kia kl. ${new Date(se.kia_at).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' })}` : '');
           return `beregnet: Kia ${fmt(se.kia_soc, 1)} % kl. ${new Date(se.kia_at).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' })} + ${fmt(se.kwh_since, 1)} kWh` + (se.uncertain ? ' (usikker)' : '') + ' · ' + base;
         })(),
-        meter(live.car_soc, [{ v: 42, title: 'Minimum' }, { v: (carInfo && carInfo.max_soc_pct) || 90, ghost: true, title: 'Maks' }], 'car')),
+        meter(live.car_soc, [{ v: carMin(carInfo), title: 'Minimum' }, { v: (carInfo && carInfo.max_soc_pct) || 90, ghost: true, title: 'Maks' }], 'car')),
       tile('Lader', h('span', { style: { fontSize: '20px' } }, CHARGER_STATUS[status] || status || '–'),
         live.charger_w != null ? `${fmt((live.charger_w || 0) / 1000, 1)} kW · ${live.amps != null ? fmt(live.amps, 0) + ' A sat' : ''}` : ''),
       tile('Styringen', h('span', { style: { fontSize: '20px' } }, action + (c && c.target_amps ? ` · ${c.target_amps} A` : '')), c ? (c.reason_da || translateReason(c.reason)) : 'venter på første cyklus'),
@@ -1511,7 +1517,7 @@
             up: [{ label: 'Husbatteri → bil', color: C.batt, get: (r) => perH(r, r.car_bat) }, { label: 'Sol → bil', color: C.sun, get: (r) => perH(r, r.car_pv) }, { label: 'Net → bil', color: C.car, get: (r) => perH(r, r.car_grid) }],
             down: [] },
           { kind: 'soc', title: 'Bilens batteri (%)', height: 100,
-            refs: [{ v: 42, label: 'minimum 42 %', color: C.muted }, { v: maxSoc, label: `maks ${fmt(maxSoc, 0)} %`, color: C.muted }],
+            refs: [{ v: carMin(carInfo), label: `minimum ${fmt(carMin(carInfo), 0)} %`, color: C.muted }, { v: maxSoc, label: `maks ${fmt(maxSoc, 0)} %`, color: C.muted }],
             lines: [{ label: 'Bil', short: 'Bil', color: C.car, start: startSoc, get: (r) => r.car_soc }] },
         ],
       });

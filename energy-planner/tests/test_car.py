@@ -536,3 +536,14 @@ def test_a_missed_target_is_charged_from_now_whatever_the_price():
     assert 0 in cp.targets and cp.available[0]
     p = solve(hz.buy, hz.sell, hz.pv, hz.load, hz.dt, CAP * 0.5, P, min(hz.buy) * 0.95, car=cp)
     assert float(p.grid_car[0] + p.bat_car[0] + p.pv_car[0]) > 4.0          # at once, though 3 kr now and 1 kr later
+
+
+def test_minimum_hysteresis_starts_under_38_and_charges_to_42():
+    o = {**OPTS}
+    assert (o["car_critical_start_pct"], o["car_critical_stop_pct"], o["car_min_start_pct"], o["car_min_stop_pct"]) == (18, 22, 38, 42)
+    assert not carmod.needs(39.0, False, o)["minimum"]          # 39 %: may stand
+    assert carmod.needs(37.5, False, o)["minimum"]              # under 38 %: charge
+    assert carmod.needs(40.0, True, o)["minimum"]               # charging: on to 42 %
+    assert not carmod.needs(42.0, True, o)["minimum"]
+    assert not carmod.needs(19.0, False, o)["critical"] and carmod.needs(17.5, False, o)["critical"]
+    assert carmod.needs(20.0, True, o)["critical"] and not carmod.needs(22.0, True, o)["critical"]

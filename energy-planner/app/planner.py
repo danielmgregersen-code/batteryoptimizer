@@ -1156,6 +1156,9 @@ class Planner:
         tv = terminal_value_for(horizon.buy, params)
 
         car_params, car_info = None, {"enabled": bool(opts.get("car_enabled"))}
+        if opts.get("car_enabled"):
+            car_info["limits"] = {k: float(opts[k]) for k in ("car_critical_start_pct", "car_critical_stop_pct",
+                                                              "car_min_start_pct", "car_min_stop_pct")}
         preview_args = None
         if opts.get("car_enabled"):
             status = self.ha.text(opts["charger_status_entity"])

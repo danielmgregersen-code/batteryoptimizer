@@ -167,9 +167,11 @@ Replaces the HA automation *"Solcelle- & Prisstyret ladning: IONIQ 9"* in two la
 `suspended_ev`, `suspended_evse` or `finishing`:
 
 - The car is assumed connected until the next `car_deadline_hour` (06:00).
-- Below `car_min_start_pct` (40 %; 42 % while charging) it must reach `car_min_stop_pct` (42 %)
-  by the deadline: the cheapest hours before 06:00 are used, the night's prices estimated if
-  they are not out yet. Below `car_critical_start_pct` (20 %) it charges straight to 22 %.
+- Below `car_min_start_pct` (38 %; while charging until 42 %) it must reach `car_min_stop_pct`
+  (42 %) by the deadline: the cheapest hours before 06:00 are used, the night's prices estimated if
+  they are not out yet. Below `car_critical_start_pct` (18 %) it charges straight to
+  `car_critical_stop_pct` (22 %). The gap between start and stop keeps it from small top-ups: a car
+  at 39 % may stand, one at 37 % is charged to 42 %.
 - Beyond that it is charged up to `car_max_soc_pct` (90 %) only from energy that costs less than
   `car_value_dkk_per_kwh` (1.25) at the plug: sun that sells for less, or grid hours that cost less.
   This one number replaces the automation's three price rules (sun if sale ≤ 0.50, full power if

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.38.1
+
+- **The car's minimum with more room:** charged when under 38 % (`car_min_start_pct`, was 40) up to
+  42 %, and when critical under 18 % (`car_critical_start_pct`, was 20) up to 22 %, so it does not
+  top up small amounts. The panel shows the set limits ("minimum 42 % (lader under 38 %)") instead
+  of a fixed 42 %.
+
 ## 0.38.0
 
 - **Test: a short restart after a pause** (`car_refresh_test`, on): after a pause that follows a
