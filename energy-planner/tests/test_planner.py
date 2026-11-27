@@ -1607,10 +1607,11 @@ def test_wash_programmes_are_learned_and_shown_on_the_card(tmp_path):
 
 def test_the_card_has_one_weighted_wash_row_and_the_measured_dryer(tmp_path):
     meter = "sensor.bryggers_shelly_vask_og_torre_effekt"
-    drum = [180, 0, 220, 160, 0, 240, 200, 0, 190, 230, 170, 0, 210, 180, 150, 200, 0, 220, 190, 160]
-    w20 = [600] + drum[:13] + [520, 520]
-    eco = [1800, 1500] + (drum * 2)[:30] + [520, 520]
-    dry = [550, 570, 530, 560, 540, 520] * 4 + [120] * 3
+    low = [75, 74, 79, 77, 72, 73, 73, 75, 68, 67, 73, 72, 68, 76, 72, 72, 67, 71, 71, 67, 64, 72, 68, 50, 39, 69]
+    w20 = [24, 40, 820, 290] + low + [105, 123, 106, 80, 190, 218, 370, 185]
+    eco = [24, 32, 574, 1953, 1940, 1933, 1764] + low + low[:8] + [95, 241, 456, 289]
+    dry = [430, 610, 670, 712, 761, 380, 640, 500, 375, 551, 571, 365, 400, 525, 538, 371, 370, 501, 509, 450,
+           354, 374, 489, 490, 447, 351, 394, 500, 493, 360, 552, 351, 354, 472, 549]
     rows = []
     for d, ws in enumerate([w20, eco, w20, eco, dry, dry]):
         t = datetime(2026, 11, 8 + d, 9, 0, tzinfo=UTC)
@@ -1627,4 +1628,4 @@ def test_the_card_has_one_weighted_wash_row_and_the_measured_dryer(tmp_path):
     vask = next(a for a in snap["appliances"] if a["name"] == "Vask")
     assert {m["name"]: m["share"] for m in vask["mix"]} == {"20°": 0.5, "60° eco": 0.5}
     assert vask["kwh"] == pytest.approx((sum(w20) + sum(eco)) / 2 / 12000, rel=0.05) and "saving_dkk" in vask
-    assert p._appl_runs["_split_v3"]
+    assert p._appl_runs["_split_v4"]

@@ -118,10 +118,15 @@ def split_runs(rows, on_w: float = ON_W, gap_min: int = GAP_MIN, min_kwh: float 
 
 
 # ---- one meter, a washing machine and a heat pump dryer (0.34.0) ------------------------------
-BASE_HALF = 2            # the floor is the minimum over ±2 slots (25 minutes)
-DRYER_MIN_SLOTS = 8      # the dryer runs when the floor stays in its band for 40 minutes
-RESID_MIN_W = 80.0       # a rest under this inside a dryer stretch is the dryer's own variation
-TAIL_SLOTS = 3           # the dryer's cool-down after its stretch (low power, no washer)
+# The heat pump dryer (measured on the shared meter, Nov 2026): 350–850 W, swinging 350 <-> 550 W
+# every 5–10 minutes, rising over its first 30 minutes, hardly ever under 200 W, for 1–4.5 hours.
+# The washing machine: a heating spike of 1–2 kW for 5–20 minutes, then a very steady 45–90 W for
+# 2–3 hours and a spin of 200–450 W at the end.
+DRYER_ON_W = 200.0       # the dryer's 15-minute median is at least this ...
+DRYER_MIN_SLOTS = 6      # ... for at least 30 minutes (the washer is never above it for that long)
+DRYER_MAX_GAP = 3        # slots outside the band allowed inside a drying (a washer's spike on top)
+SPIKE_OVER_W = 600.0     # a washer's heating: this much above the dryer's own level
+WASH_BASE_W = 70.0       # the washer's steady low phase
 
 
 def _stretches(flags, min_len: int, max_gap: int = 1) -> list:
@@ -152,41 +157,30 @@ def _grid(pts):
     return times, w
 
 
-def _floor_split(w, lo_w: float, hi_w: float):
-    """The dryer as the steady floor (0.34.0) -> (dryer per slot, [(a, b)] dryer stretches)."""
+def _dryer_spans(w, hi_w: float) -> list:
+    """[(a, b)] slots in which the heat pump dryer runs: its 15-minute median in DRYER_ON_W..hi_w
+    for at least DRYER_MIN_SLOTS (gaps of DRYER_MAX_GAP inside), widened at its end by slots in band
+    (not at its start: that may be a wash's spin just before)."""
     n = len(w)
-    base = [min(w[max(0, i - BASE_HALF):i + BASE_HALF + 1]) for i in range(n)]
-    stretches = _stretches([lo_w <= b <= hi_w for b in base], DRYER_MIN_SLOTS)
-    dryer, spans = [0.0] * n, []
-    for a, b in stretches:
-        level = sorted(base[a:b + 1])[(b - a) // 2]
-        # the window's edges pull the floor down at the stretch's ends: those slots too, if high enough
-        near = max(lo_w, 0.8 * level)              # close to the dryer's level (not a washer's spin)
-        for _ in range(BASE_HALF):
-            if a > 0 and near <= w[a - 1] <= hi_w + RESID_MIN_W and dryer[a - 1] == 0:
-                a -= 1
-            else:
-                break
-        end = b
-        for _ in range(BASE_HALF):
-            if end + 1 < n and w[end + 1] >= near:
-                end += 1
-            else:
-                break
-        for i in range(a, end + 1):
-            d = min(w[i], level)
-            if w[i] - d < RESID_MIN_W:
-                d = w[i]
-            dryer[i] = d
-        if w[end] - dryer[end] < 1e-9:              # no washer at the end: the dryer's cool-down
-            for i in range(end + 1, min(n, end + 1 + TAIL_SLOTS)):
-                if 0 < w[i] < lo_w:
-                    dryer[i] = w[i]
-                    end = i
-                else:
-                    break
-        spans.append((a, end))
-    return dryer, spans
+    med = [sorted(w[max(0, i - 1):i + 2])[len(w[max(0, i - 1):i + 2]) // 2] for i in range(n)]
+    spans = []
+    # at least DRYER_ON_W (a washer's heating on top of the drying goes above the band), with at least
+    # DRYER_MIN_SLOTS inside the band (a washer's heating alone is above it)
+    for a, b in _stretches([m >= DRYER_ON_W for m in med], DRYER_MIN_SLOTS, DRYER_MAX_GAP):
+        if sum(1 for m in med[a:b + 1] if DRYER_ON_W <= m <= hi_w) < DRYER_MIN_SLOTS:
+            continue
+        while a + 2 <= b and not all(x >= DRYER_ON_W for x in w[a:a + 3]):
+            a += 1                                    # starts where it holds (not on a wash's spin)
+        while b + 1 < n and DRYER_ON_W <= w[b + 1] <= hi_w:
+            b += 1
+        spans.append((a, b))
+    return spans
+
+
+def _local_level(w, a, b, i, hi_w, half: int = 3) -> float:
+    """The dryer's own level around slot i: the median of the slots in band within ±half."""
+    vals = [w[k] for k in range(max(a, i - half), min(b, i + half) + 1) if w[k] <= hi_w]
+    return sorted(vals)[len(vals) // 2] if vals else 0.0
 
 
 def _segments(w, on_w: float = ON_W, gap_min: int = GAP_MIN) -> list:
@@ -210,10 +204,9 @@ SPIKE_SLOTS = 6          # the start spike: the highest 5-minute mean in the fir
 PROGRAM_MIN_RUNS = 2
 MAX_PROGRAMS = 4
 WASH_ONLY_KEEP = 30
-MATCH_MAX_ERR = 0.5      # a programme matches when the squared error is at most this share of its own
 MAX_WASHES = 3           # washes looked for under one drying
-HOT_SPIKE_W = 1200       # a start spike from this is the heating of a hot (60 °C) programme
-MAX_LEFT = 0.25          # the matches must explain at least 75 % of the washer's rest in the run
+HOT_SPIKE_W = 1200       # (kept) a start spike from this used to name a hot programme
+HOT_HEAT_KWH = 0.4       # heating at the start from this is a hot (60 °C) programme (measured: 0.68 vs 0.1–0.2)
 
 
 def wash_only(rows, lo_w: float, hi_w: float, on_w: float = ON_W, gap_min: int = GAP_MIN,
@@ -223,7 +216,7 @@ def wash_only(rows, lo_w: float, hi_w: float, on_w: float = ON_W, gap_min: int =
     if not pts:
         return []
     times, w = _grid(pts)
-    _, spans = _floor_split(w, lo_w, hi_w)
+    spans = _dryer_spans(w, hi_w)
     out = []
     for a, b in _segments(w, on_w, gap_min):
         if any(not (sb < a or sa > b) for sa, sb in spans):
@@ -233,8 +226,14 @@ def wash_only(rows, lo_w: float, hi_w: float, on_w: float = ON_W, gap_min: int =
         if kwh < min_kwh:
             continue
         out.append({"start": times[a].isoformat(), "minutes": (b - a + 1) * 5, "kwh": round(kwh, 3),
-                    "spike_w": max(slots[:SPIKE_SLOTS]), "slots": slots})
+                    "spike_w": max(slots[:SPIKE_SLOTS]), "heat_kwh": _heat_kwh(slots), "slots": slots})
     return out
+
+
+def _heat_kwh(slots) -> float:
+    """The heating at a wash's start: kWh above 150 W in its first 30 minutes (steadier than the highest
+    5-minute mean, which depends on how the heating falls across the slots)."""
+    return round(sum(max(0.0, x - 150.0) for x in slots[:SPIKE_SLOTS]) / 12000.0, 3)
 
 
 def _close(x, y, abs_tol, rel_tol):
@@ -245,15 +244,16 @@ def wash_programs(runs: list) -> list:
     """Washes that ran alone, grouped by length and start spike -> programmes
     [{name, minutes, kwh, spike_w, runs, template}] (template: median W per 5 minutes from the start)."""
     groups = []
+    heat = lambda r: r.get("heat_kwh") if r.get("heat_kwh") is not None else _heat_kwh(r["slots"])  # noqa: E731
     for r in sorted(runs or [], key=lambda r: r["start"]):
         for g in groups:
-            if _close(r["minutes"], g["minutes"], 20, 0.2) and _close(r["spike_w"], g["spike_w"], 300, 0.3):
+            if _close(r["minutes"], g["minutes"], 30, 0.2) and _close(heat(r), g["heat"], 0.1, 0.4):
                 g["members"].append(r)
                 g["minutes"] = _median([m["minutes"] for m in g["members"]])
-                g["spike_w"] = _median([m["spike_w"] for m in g["members"]])
+                g["heat"] = _median([heat(m) for m in g["members"]])
                 break
         else:
-            groups.append({"minutes": r["minutes"], "spike_w": r["spike_w"], "members": [r]})
+            groups.append({"minutes": r["minutes"], "heat": heat(r), "members": [r]})
     progs = []
     for g in groups:
         ms = g["members"]
@@ -261,8 +261,14 @@ def wash_programs(runs: list) -> list:
             continue
         length = int(_median([len(m["slots"]) for m in ms]))
         template = [_median([m["slots"][j] if j < len(m["slots"]) else 0.0 for m in ms]) for j in range(length)]
+        # the heating does not fall in the same slot every time, so the median per slot cuts it: the
+        # curve is scaled to the washes' median energy
+        want = _median([m["kwh"] for m in ms]) * 12000.0
+        if sum(template) > 0:
+            template = [x * want / sum(template) for x in template]
         progs.append({"minutes": length * 5, "kwh": round(sum(template) / 12000.0, 3),
                       "spike_w": round(_median([m["spike_w"] for m in ms])), "runs": len(ms),
+                      "heat_kwh": round(_median([heat(m) for m in ms]), 3),
                       "template": [round(x) for x in template], "starts": [m["start"] for m in ms]})
     progs = sorted(progs, key=lambda p: -p["runs"])[:MAX_PROGRAMS]
     # names from what they look like: the short one is the sport programme, the biggest spike the
@@ -273,11 +279,12 @@ def wash_programs(runs: list) -> list:
     if short:
         min(short, key=lambda p: p["minutes"])["name"] = "Sport"
     rest = [p for p in progs if p["name"] != "Sport"]
-    if len(rest) == 1 and not short and rest[0]["spike_w"] < HOT_SPIKE_W:
+    hot = lambda p: p["heat_kwh"] >= HOT_HEAT_KWH  # noqa: E731
+    if len(rest) == 1 and not short and not hot(rest[0]):
         rest[0]["name"] = "Vask"
     else:
         for p in rest:
-            p["name"] = "60° eco" if p["spike_w"] >= HOT_SPIKE_W else "20°"
+            p["name"] = "60° eco" if hot(p) else "20°"
     seen = {}
     for p in sorted(progs, key=lambda p: p["minutes"]):         # two alike: "20°", "20° (2)"
         seen[p["name"]] = seen.get(p["name"], 0) + 1
@@ -286,69 +293,83 @@ def wash_programs(runs: list) -> list:
     return sorted(progs, key=lambda p: p["minutes"])
 
 
-def _match(r, programs, a, b):
-    """The best (error share, start, programme) for a programme placed in r[a..b] (at most 2 slots past b)."""
+def _pick_programme(programs, spike_excess, minutes_seen):
+    """The learned programme whose start spike (and length, when its end is seen) fits best."""
     best = None
     for p in programs:
-        t = p["template"]
-        ref = sum(x * x for x in t) or 1.0
-        need = 0.5 * sum(t)
-        for s in range(a, b + 3 - len(t) + 1):
-            if s < a:
-                continue
-            seg = [r[s + j] if s + j <= b else 0.0 for j in range(len(t))]
-            if sum(seg) < need or not _close(max(seg[:SPIKE_SLOTS]), p["spike_w"], 150, 0.3):
-                continue                              # too little energy, or not this programme's start spike
-            err = sum((x - y) ** 2 for x, y in zip(seg, t)) / ref
-            if best is None or err < best[0]:
-                best = (err, s, p)
-    return best
+        d = abs(spike_excess - p["spike_w"]) / max(300.0, 0.3 * p["spike_w"])
+        if minutes_seen:
+            d += abs(minutes_seen - p["minutes"]) / max(20.0, 0.2 * p["minutes"])
+        if best is None or d < best[0]:
+            best = (d, p)
+    return best[1] if best and best[0] <= 2.0 else None
 
 
 def split_series(pts, lo_w: float, hi_w: float, programs: list = None, labels: list = None):
     """One meter for a washing machine and a heat pump dryer -> (washer [(t, W)], dryer [(t, W)]),
     every 5 minutes split so the two add up to the measurement, also while both run.
 
-    The heat pump dryer is a steady floor of lo_w..hi_w for hours; the washing machine (20 °C or a
-    60 °C eco programme) uses little and comes and goes (drum on and off, short spins, pauses). So
-    the minimum over ±BASE_HALF slots is the dryer on its own; where it stays in the band for at
-    least DRYER_MIN_SLOTS the dryer runs at the median of that floor, min(W, L), and the washer is the
-    rest. With learned washer programmes (wash_programs), a run with the dryer in it is searched for
-    them: a programme that fits the washer's rest is placed there (washer = min(W, programme)) and
-    everything else in that run is the dryer. labels: a list that receives (start time, programme)."""
+    The dryer runs where the 15-minute median stays in DRYER_ON_W..hi_w for 30 minutes or more
+    (_dryer_spans); outside, everything is the washer. Inside a drying, a washer is there when it
+    starts with its heating spike (SPIKE_OVER_W above the dryer's own level) or was already running
+    just before; its share is its learned programme's curve placed at the spike (the spike itself
+    is what stands above the dryer), or without programmes the spike plus WASH_BASE_W until the
+    wash ends (its tail after the drying) or the drying does. The dryer is the rest. lo_w is not
+    used (kept for the callers). labels receives (start time, programme) for recognised washes."""
     if not pts:
         return [], []
     times, w = _grid(pts)
     n = len(w)
-    dryer, spans = _floor_split(w, lo_w, hi_w)
-    if programs:
-        for a, b in _segments(w):
-            if not any(not (sb < a or sa > b) for sa, sb in spans):
-                continue                              # no dryer in this run: all washer
-            r = [w[i] - dryer[i] for i in range(n)]
-            rest0 = sum(r[a:b + 1])
-            washer = [0.0] * n
-            found, run_labels = 0, []
-            while found < MAX_WASHES:
-                m = _match(r, programs, a, b)
-                if not m or m[0] > MATCH_MAX_ERR:
-                    break
-                _, s, p = m
-                for j, x in enumerate(p["template"]):
-                    if s + j <= b:
-                        washer[s + j] = min(w[s + j], x)
-                        r[s + j] = 0.0
-                found += 1
-                run_labels.append((times[s], p["name"]))
-            if found and sum(r[a:b + 1]) > MAX_LEFT * rest0:
-                found = 0                             # a washer's rest the programmes do not explain: floor split
-            if found:                                 # the programmes are the washer, the rest the dryer
-                if labels is not None:
-                    labels.extend(run_labels)
-                for i in range(a, b + 1):
-                    dryer[i] = w[i] - washer[i]
-    washer = [(times[i], w[i] - dryer[i]) for i in range(n)]
-    return washer, [(times[i], dryer[i]) for i in range(n)]
+    washer = list(w)                                  # outside a drying: all washer
+    for a, b in _dryer_spans(w, hi_w):
+        seg = next(((sa, sb) for sa, sb in _segments(w) if sa <= a <= sb), (a, b))
+        level = [_local_level(w, a, b, i, hi_w) for i in range(n)]
+        spikes = [i for i in range(a, b + 1) if w[i] > level[i] + SPIKE_OVER_W]
+        pre = w[seg[0]:a]
+        # a wash started before the drying goes on into it, unless it already spun (it ended)
+        before = (seg[0] < a and sum(pre) / 12000.0 >= 0.02
+                  and not (len(pre) >= 6 and any(150 <= x <= 600 for x in pre[-4:])))
+        pre_spike = None
+        if before and not spikes and pre and max(pre) > SPIKE_OVER_W:
+            pre_spike = seg[0] + max(range(len(pre)), key=lambda k: pre[k])
+        tail_end = seg[1] if seg[1] > b else None                      # the wash goes on after the drying
+        for i in range(a, b + 1):
+            washer[i] = 0.0
+        if not spikes and not before:
+            continue                                  # only the dryer
+        s0 = spikes[0] if spikes else a
+        while s0 - 1 >= a and w[s0 - 1] - level[s0 - 1] > 100 and (s0 - 1) not in spikes:
+            s0 -= 1                                   # the heating's ramp
+        start = seg[0] if before else s0
+        prog = None
+        if programs and (spikes or pre_spike is not None):
+            excess = max(w[i] - level[i] for i in spikes) if spikes else w[pre_spike]
+            seen = (tail_end - start + 1) * 5 if tail_end is not None else None
+            prog = _pick_programme(programs, excess, seen)
+        if prog:
+            t = prog["template"]
+            js = max(range(min(SPIKE_SLOTS, len(t))), key=lambda k: t[k])
+            off = (spikes[0] if spikes else pre_spike) - js
+            end = min(b, off + len(t) - 1) if tail_end is None else b
+            for i in range(max(a, start), end + 1):
+                j = i - off
+                if i in spikes:
+                    washer[i] = max(0.0, w[i] - level[i])
+                elif 0 <= j < len(t):
+                    # the curve's own heating, where no spike is seen here, counts as its low phase
+                    washer[i] = min(w[i], WASH_BASE_W if t[j] > hi_w else float(t[j]))
+                else:
+                    washer[i] = min(w[i], WASH_BASE_W)
+            if labels is not None:
+                labels.append((times[max(a, start) if not before else seg[0]], prog["name"]))
+        else:
+            end = b
+            if tail_end is None and not before and spikes:
+                end = b                               # the wash's end is not seen: until the drying ends
+            for i in range(max(a, start), end + 1):
+                washer[i] = max(0.0, w[i] - level[i]) if i in spikes else min(w[i], WASH_BASE_W)
+    washer = [min(washer[i], w[i]) for i in range(n)]
+    return [(times[i], washer[i]) for i in range(n)], [(times[i], w[i] - washer[i]) for i in range(n)]
 
 
 def split_shared(rows, lo_w: float, hi_w: float, on_w: float = ON_W, gap_min: int = GAP_MIN,
@@ -396,11 +417,12 @@ def program(name: str, runs: list, min_runs: int = None) -> dict:
         minutes = _median([r["minutes"] for r in runs])
         kwh = _median([r["kwh"] for r in runs])
         hours = max(1, math.ceil(minutes / 60.0))
-        prof = [0.0] * hours
-        for r in runs:
-            tot = sum(r["profile"]) or 1.0
-            for i, x in enumerate(r["profile"][:hours]):
-                prof[i] += x / tot
+        # per hour from the start: the mean energy of the runs still running in that hour (a short run
+        # does not pile its whole energy into the first hour), scaled to the median energy
+        prof = []
+        for i in range(hours):
+            vals = [r["profile"][i] for r in runs if len(r["profile"]) > i]
+            prof.append(sum(vals) / len(vals) if vals else 0.0)
         s = sum(prof) or 1.0
         return {"minutes": int(minutes), "kwh": round(kwh, 2), "profile": [round(kwh * x / s, 3) for x in prof],
                 "runs": len(runs), "learned": True,
@@ -449,11 +471,9 @@ OLD_DEFAULT_MIN_W = 700  # appliance_dryer_min_w's default before 0.34.0 (a whol
 
 
 def dryer_band(opts: dict) -> tuple:
-    """(lo, hi) W of the dryer's steady floor from the options; 0 / empty / the old 700 = automatic."""
-    lo = float(opts.get("appliance_dryer_min_w") or 0)
-    if lo <= 0 or lo == OLD_DEFAULT_MIN_W:
-        lo = DRYER_FLOOR_W
-    return lo, float(opts.get("appliance_dryer_max_w") or 1500)
+    """(lo, hi) W for the dryer. lo is fixed (DRYER_ON_W, measured): appliance_dryer_min_w is no
+    longer used (a value set for the earlier "steady floor" made the dryer invisible)."""
+    return DRYER_ON_W, float(opts.get("appliance_dryer_max_w") or 1500)
 
 
 def _hour_cost(kwh: float, row: dict) -> float:

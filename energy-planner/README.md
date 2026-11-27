@@ -430,41 +430,36 @@ days against their goal (‹ › to page back), a results table per day for a ch
 ## Appliances
 
 `appliances` lists the meters: `Opvask=sensor.shelly_opvaskemaskine_power,Vask+Tørretumbler=sensor.bryggers_shelly_vask_og_torre_effekt`.
-A meter with two names serves a washing machine (first) and a heat pump dryer (second), and is split
-every 5 minutes, also while both run at once (`appliances.split_series`). The heat pump dryer is a
-steady floor of at least 250 W (automatic; `appliance_dryer_min_w` 0, or the old default 700 which
-meant something else, read as automatic) up to `appliance_dryer_max_w` (1500 W) for hours; the washing
-machine (20 °C, 60 °C eco) uses little and comes and goes (drum on and off, short spins, pauses). So
-the minimum over ±25 minutes is the dryer on its own: where it stays in the band for at least 40
-minutes the dryer runs, at the median of that floor (min(W, level)), and the washer is the rest; a
-rest under 80 W counts as the dryer's own variation, and up to 15 minutes of low power right after
-are its cool-down. Each part is then split into runs as below; the two always add up to the meter.
-While both run the dryer's level is an estimate; the Maskiner card lists the latest runs ("Seneste
-kørsler") so the split can be checked. Runs kept before 0.34.0 for a shared meter (classified as a
-whole by mean power) are dropped once and learned again.
+A meter with two names serves a washing machine (first) and a heat pump dryer (second), split every
+5 minutes so the two always add up to the meter, also while both run (`appliances.split_series`).
+The model follows the measured meter (17–27 Nov 2026, `tests/fixtures/laundry_5min.json`):
 
-**The washer's programmes as fingerprints** (0.35.0): runs in which the dryer did not run are washes
-on their own and are kept (`_wash_only:<meter>` in `/data/appliance_runs.json`, the latest 30, with
-their 5-minute powers). They are grouped by length and start spike (the highest 5-minute mean in the
-first 30 minutes; same programme within 20 min / 20 % and 300 W / 30 %); a group seen at least twice
-is a programme with its median curve. Names from what they look like: the shortest under an hour
-"Sport", a start spike from 1200 W "60° eco", others "20°". In a run with the dryer, the programmes
-are searched for in the washer's rest: one that starts with its spike and fits (squared error at
-most 50 % of its own, at least half its energy) is placed there, up to 3 per run; if they explain
-at least 75 % of the washer's rest, the programmes are the washer and everything else in the run is
-the dryer, otherwise the floor split above is kept. A recognised wash shows its programme under
-"Seneste kørsler", and the card lists the learned programmes. A recognised wash gets the programme's
-typical energy, so a single wash can be off by up to about a quarter while the sum over many is right;
-the 5-minute statistics also smooth a spike shorter than 5 minutes.
+- the washer: a 1–2 kW heating spike for 5–20 minutes, then a very steady 45–90 W for 2–3 hours and
+  a 200–450 W spin at the end (0.13–0.97 kWh);
+- the heat pump dryer: 350–850 W, swinging 350 <-> 550 W every 5–10 minutes, rising over its first
+  half hour, hardly ever under 200 W, for 1–4.5 hours (0.5–2.2 kWh).
 
-**On the card** (0.36.1): the washing machine is one "Vask" row: its learned programmes averaged hour
-by hour, weighted by how often each is used (the washes alone it was learned from plus the washes
-recognised as it under the dryer, each counted once), with its best start, price, price when started
-now and saving; the mix is shown ("20° 60 % · 60° eco 25 % · Sport 15 %"). Without learned
-programmes the median of the washes. The dryer's row uses its own measured runs and
-counts as learned from its first run (its measured energy beats the 2 kWh default), shown with its
-level ("ca. 620 W"). The shared meter's runs are learned once more from scratch in 0.36.0 (with the old
-700 W limit the heat pump dryer was not found and its drying counted as washes).
+The dryer runs where the 15-minute median stays at 200 W or more for at least 30 minutes, with at least
+30 minutes inside 200 W–`appliance_dryer_max_w` (1500); outside, everything is the washer.
+`appliance_dryer_min_w` is no longer used (a value set for the earlier steady-floor model hid the
+dryer). Inside a drying, a washer is there when its heating spike stands 600 W above the dryer's own
+level, or a wash that had not yet spun was running just before; its share is its learned programme's
+curve placed at the spike (the spike itself is what stands above the dryer), or without programmes the
+spike plus 70 W until the wash ends (its tail after the drying) or the drying does. The dryer is the
+rest. On the real meter this finds all 8 washes, all 5 dryings, and splits the one run with both (26
+Nov 15:12, 2.30 kWh) into 1.74 kWh drying and 0.55 kWh wash.
+
+**The washer's programmes:** runs without the dryer are washes on their own and are kept
+(`_wash_only:<meter>` in `/data/appliance_runs.json`, the latest 30, with their 5-minute powers).
+They are grouped by length (within 30 min / 20 %) and the heating at their start (kWh above 150 W in
+the first 30 minutes, within 0.1 kWh / 40 %; steadier than the highest 5-minute mean); a group seen at
+least twice is a programme, its median curve scaled to the washes' median energy. Names: the shortest
+under an hour "Sport", heating of 0.4 kWh or more "60° eco" (measured 0.55 vs 0.07–0.2), others "20°"
+(a single programme without Sport is just "Vask"). Under the dryer the programme whose spike and
+length fit best is used. **On the card** the washing machine is one "Vask" row: its programmes
+averaged hour by hour, weighted by how often each is used; the dryer's row uses its own measured runs,
+learned from its first one, its hourly profile the mean of the runs still running in each hour.
+Runs learned before 0.37.0 for a shared meter are dropped once and learned again.
 
 Runs are found in the meters' 5-minute statistics once an hour (power above 15 W, pauses up to 15 min
 inside a run, at least 0.1 kWh) and kept in `/data/appliance_runs.json` (the latest 20 each). From 3

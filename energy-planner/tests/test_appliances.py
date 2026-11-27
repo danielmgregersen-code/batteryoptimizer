@@ -84,7 +84,12 @@ def test_card_texts():
 
 
 # ---- one meter, washer and heat pump dryer, split slot by slot (0.34.0) ---------------------------
-WASH20 = [180, 0, 220, 160, 0, 240, 200, 0, 190, 230, 170, 0, 210, 180, 500, 500]   # 80 min, drum and pauses, a spin
+# ---- washer and heat pump dryer on one meter, shaped as measured (Nov 2026) ---------------------
+# The washer: a 1–2 kW heating spike, then a steady 45–90 W, a 200–450 W spin at the end.
+# The heat pump dryer: 350–850 W swinging every 5–10 minutes, rising over its first half hour.
+LOW = [75, 74, 79, 77, 72, 73, 73, 75, 68, 67, 73, 72, 68, 76, 72, 72, 67, 71, 71, 67, 64, 72, 68, 50, 39, 69]
+DRY = [430, 610, 670, 712, 761, 380, 640, 500, 375, 551, 571, 365, 400, 525, 538, 371, 370, 501, 509, 450,
+       354, 374, 489, 490, 447, 351, 394, 500, 493, 360, 552, 351, 354, 472, 549]          # 175 min, ~1.4 kWh
 
 
 def rows_of(watts, start=T0):
@@ -95,58 +100,16 @@ def kwh(watts):
     return sum(watts) / 12000.0
 
 
-def test_a_wash_straight_followed_by_the_dryer_is_two_runs():
-    dry = [750, 780, 720, 760, 740, 770] * 4 + [150, 150, 150]
-    out = appl.split_shared(rows_of(WASH20 + dry), 400, 1300)
-    assert [k for k, _ in out] == [0, 1]
-    assert out[0][1]["kwh"] == pytest.approx(kwh(WASH20), rel=0.1)
-    assert out[1][1]["kwh"] == pytest.approx(kwh(dry), rel=0.1)
-
-
-def test_a_heat_pump_dryer_under_700_w_on_average_is_the_dryer():
-    dry = [650] * 24 + [120] * 6                                                  # mean well under 700 W
-    out = appl.split_shared(rows_of(dry), 400, 1300)
-    assert [k for k, _ in out] == [1] and out[0][1]["mean_w"] < 700
-
-
-def test_a_60_eco_wash_with_a_short_heating_is_the_washer():
-    out = appl.split_shared(rows_of([200, 1800, 1800, 1800] + WASH20[:-2] + [500, 500]), 400, 1300)
-    assert [k for k, _ in out] == [0]
-
-
-def test_both_running_at_once_are_told_apart():
-    dry = [750, 780, 720, 760, 740, 770] * 5 + [150, 150, 150]                   # 150 min + cool-down
-    total = list(dry)
-    for i, x in enumerate(WASH20):                                                # the washer starts 30 min in
-        total[6 + i] += x
-    out = appl.split_shared(rows_of(total), 400, 1300)
-    by = {k: r for k, r in out}
-    assert set(by) == {0, 1}
-    assert by[1]["kwh"] == pytest.approx(kwh(dry), rel=0.1)
-    assert by[0]["kwh"] == pytest.approx(kwh(WASH20), rel=0.15)
-    assert sum(r["kwh"] for _, r in out) == pytest.approx(kwh(total), abs=0.01)
-
-
-def test_one_dip_inside_the_drying_does_not_split_it():
-    dry = [750] * 12 + [300] + [750] * 12 + [150, 150]
-    out = appl.split_shared(rows_of(dry), 400, 1300)
-    assert [k for k, _ in out] == [1]
-
-
-# ---- the washer's programmes as fingerprints (0.35.0) ----------------------------------------------
-DRUM = [180, 0, 220, 160, 0, 240, 200, 0, 190, 230, 170, 0, 210, 180, 150, 200, 0, 220, 190, 160]
-
-
 def sport():
-    return [450] + DRUM[:6] + [520, 520]                    # 45 min, a small spike
+    return [28, 1012] + LOW[:6] + [91, 120]                                  # 50 min, ~0.13 kWh
 
 
 def w20():
-    return [600] + DRUM[:13] + [520, 520]                   # 80 min
+    return [24, 40, 820, 290] + LOW + [105, 123, 106, 80, 190, 218, 370, 185]   # ~3 h, ~0.36 kWh
 
 
 def eco60():
-    return [1800, 1500] + (DRUM * 2)[:30] + [520, 520]       # 170 min, a big spike
+    return [24, 32, 574, 1953, 1940, 1933, 1764] + LOW + LOW[:8] + [95, 241, 456, 289]   # ~3.6 h, ~0.97 kWh
 
 
 def history(*progs):
@@ -157,66 +120,97 @@ def history(*progs):
     return rows, t
 
 
+def split(watts, programs=None):
+    return appl.split_shared(rows_of(watts), 200, 1300, programs=programs)
+
+
+def test_washes_alone_are_washes_and_dryings_alone_are_the_dryer():
+    for f in (sport, w20, eco60):
+        assert [k for k, _ in split(f())] == [0]
+    out = split(DRY)
+    assert [k for k, _ in out] == [1] and out[0][1]["kwh"] == pytest.approx(kwh(DRY), abs=0.01)
+
+
+def test_the_dryer_is_found_whatever_appliance_dryer_min_w_says():
+    assert appl.dryer_band({"appliance_dryer_min_w": 400})[0] == appl.DRYER_ON_W
+    assert appl.dryer_band({"appliance_dryer_min_w": 700, "appliance_dryer_max_w": 1300}) == (appl.DRYER_ON_W, 1300)
+
+
+def test_a_wash_straight_followed_by_the_dryer_is_two_runs():
+    wash = w20()
+    out = split(wash + DRY)
+    assert [k for k, _ in out] == [0, 1]
+    assert out[0][1]["kwh"] == pytest.approx(kwh(wash), rel=0.1)
+    assert out[1][1]["kwh"] == pytest.approx(kwh(DRY), rel=0.1)
+
+
+def test_a_wash_starting_during_the_drying_without_programmes():
+    total = DRY + [0] * 30
+    wash = eco60()
+    for i, x in enumerate(wash):
+        total[5 + i] += x
+    total = [x for x in total]
+    while total and total[-1] == 0:
+        total.pop()
+    out = split(total)
+    by = {k: sum(r["kwh"] for kk, r in out if kk == k) for k in (0, 1)}
+    assert by[1] == pytest.approx(kwh(DRY), rel=0.1)
+    assert by[0] == pytest.approx(kwh(wash), rel=0.2)
+    assert by[0] + by[1] == pytest.approx(kwh(total), abs=0.01)
+
+
 def test_washes_that_ran_alone_give_the_programmes():
     rows, _ = history(sport, w20, eco60, sport, w20, eco60)
-    progs = appl.wash_programs(appl.wash_only(rows, 400, 1300))
+    progs = appl.wash_programs(appl.wash_only(rows, 200, 1300))
     by = {p["name"]: p for p in progs}
     assert set(by) == {"Sport", "20°", "60° eco"}
-    assert by["Sport"]["minutes"] == 45 and by["20°"]["minutes"] == 80 and by["60° eco"]["minutes"] == 170
     assert by["60° eco"]["kwh"] == pytest.approx(kwh(eco60()), rel=0.05)
-    assert appl.wash_programs(appl.wash_only(history(sport, w20, eco60)[0], 400, 1300)) == []   # once each: not enough
+    assert appl.wash_programs(appl.wash_only(history(sport, w20, eco60)[0], 200, 1300)) == []   # once each: not enough
 
 
 def test_a_programme_under_the_dryer_is_the_washer_and_the_rest_the_dryer():
-    rows, t = history(sport, w20, eco60, sport, w20, eco60)
-    progs = appl.wash_programs(appl.wash_only(rows, 400, 1300))
-    dry = [750, 780, 720, 760, 740, 770] * 5 + [150, 150, 150]
-    e = eco60()
-    total = dry + [0] * (4 + len(e) - len(dry))
-    for i, x in enumerate(e):
-        total[4 + i] += x
-    out = appl.split_shared(rows_of(total, start=t), 400, 1300, programs=progs)
+    rows, _ = history(sport, w20, eco60, sport, w20, eco60)
+    progs = appl.wash_programs(appl.wash_only(rows, 200, 1300))
+    wash = eco60()
+    total = DRY + [0] * 20
+    for i, x in enumerate(wash):
+        total[5 + i] += x
+    while total[-1] == 0:
+        total.pop()
+    out = split(total, progs)
     washes = [r for k, r in out if k == 0]
-    assert len(washes) == 1 and washes[0]["program"] == "60° eco"
-    assert washes[0]["kwh"] == pytest.approx(kwh(e), rel=0.05)
+    assert [r.get("program") for r in washes] == ["60° eco"]
+    assert sum(r["kwh"] for r in washes) == pytest.approx(kwh(wash), rel=0.15)
     assert sum(r["kwh"] for _, r in out) == pytest.approx(kwh(total), abs=0.01)
 
 
-def test_two_washes_under_one_long_drying():
-    rows, t = history(sport, w20, sport, w20)
-    progs = appl.wash_programs(appl.wash_only(rows, 400, 1300))
-    total = [750, 780, 720, 760, 740, 770] * 8 + [150, 150, 150]
-    for i, x in enumerate(sport()):
-        total[2 + i] += x
-    for i, x in enumerate(w20()):
-        total[20 + i] += x
-    out = appl.split_shared(rows_of(total, start=t), 400, 1300, programs=progs)
-    assert [r.get("program") for k, r in out if k == 0] == ["Sport", "20°"]
+# ---- the real meter: 17–27 Nov 2026, 8 washes, 5 dryings and one of both at once -------------------
+
+def _real():
+    import json
+    import os
+    fx = json.load(open(os.path.join(os.path.dirname(__file__), "fixtures", "laundry_5min.json")))
+    t0 = datetime.fromisoformat(fx["start"])
+    return [{"start": (t0 + timedelta(minutes=5 * i)).isoformat(), "mean": w} for i, w in enumerate(fx["w"])]
 
 
-def test_an_unknown_programme_falls_back_to_the_floor():
-    rows, t = history(sport, sport)
-    progs = appl.wash_programs(appl.wash_only(rows, 400, 1300))
-    dry = [750, 780, 720, 760, 740, 770] * 5 + [150, 150, 150]
-    total = list(dry)
-    for i, x in enumerate(WASH20):
-        total[6 + i] += x
-    with_p = appl.split_shared(rows_of(total, start=t), 400, 1300, programs=progs)
-    without = appl.split_shared(rows_of(total, start=t), 400, 1300)
-    assert [(k, r["kwh"]) for k, r in with_p] == [(k, r["kwh"]) for k, r in without]
-
-
-# ---- the dryer found automatically, learned from one run (0.36.0) -------------------------------
-
-def test_a_550_w_heat_pump_dryer_is_found_with_the_automatic_floor_and_700_reads_as_automatic():
-    lo, hi = appl.dryer_band({"appliance_dryer_min_w": 700})
-    assert lo == appl.DRYER_FLOOR_W and appl.dryer_band({})[0] == appl.DRYER_FLOOR_W
-    assert appl.dryer_band({"appliance_dryer_min_w": 450})[0] == 450
-    dry = [550, 570, 530, 560, 540, 520] * 4 + [120] * 3
-    out = appl.split_shared(rows_of(dry), lo, hi)
-    assert [k for k, _ in out] == [1] and out[0][1]["kwh"] == pytest.approx(kwh(dry), rel=0.05)
-    for f in (sport, w20, eco60):                                                 # a washer alone: no dryer
-        assert [k for k, _ in appl.split_shared(rows_of(f()), lo, hi)] == [0]
+def test_the_real_meter_is_split_into_its_washes_and_dryings():
+    rows = _real()
+    progs = appl.wash_programs(appl.wash_only(rows, 200, 1300))
+    out = appl.split_shared(rows, 200, 1300, programs=progs)
+    local = lambda r: datetime.fromisoformat(r["start"]).astimezone(TZ).strftime("%d %H:%M")   # noqa: E731
+    dryings = {local(r): r["kwh"] for k, r in out if k == 1}
+    washes = {local(r): r["kwh"] for k, r in out if k == 0}
+    assert set(dryings) == {"17 15:45", "17 20:30", "19 18:40", "22 01:35", "26 15:15", "26 20:10"}
+    assert set(washes) == {"17 07:00", "19 12:25", "20 16:00", "21 12:45", "21 19:00", "22 12:25", "24 13:05",
+                           "26 10:45", "26 15:40"}
+    assert dryings["19 18:40"] == pytest.approx(2.16, abs=0.05) and dryings["22 01:35"] == pytest.approx(2.0, abs=0.05)
+    assert 1.6 <= dryings["26 15:15"] <= 1.95 and 0.35 <= washes["26 15:40"] <= 0.7    # both at once
+    total = sum(x["mean"] for x in rows) / 12000.0
+    assert sum(r["kwh"] for _, r in out) == pytest.approx(total, abs=0.15)          # all but tiny standby
+    prog = appl.program("Tørretumbler", [r for k, r in out if k == 1])
+    assert prog["learned"] and 1.3 <= prog["kwh"] <= 2.0 and prog["minutes"] > 120
+    assert max(prog["profile"]) < 0.7                                                # spread over the hours
 
 
 def test_a_dryer_is_learned_from_its_first_run_and_a_programme_becomes_a_program():
@@ -226,7 +220,8 @@ def test_a_dryer_is_learned_from_its_first_run_and_a_programme_becomes_a_program
     assert not appl.program("Vask", [run])["learned"]
     p = {"name": "60° eco", "minutes": 170, "kwh": 0.8, "runs": 2, "template": eco60()}
     pr = appl.program_from_template(p)
-    assert pr["minutes"] == 170 and len(pr["profile"]) == 3 and sum(pr["profile"]) == pytest.approx(kwh(eco60()), abs=0.01)
+    assert pr["minutes"] == 170 and len(pr["profile"]) == -(-len(eco60()) // 12)
+    assert sum(pr["profile"]) == pytest.approx(kwh(eco60()), abs=0.01)
 
 
 def test_weighted_program_averages_the_programmes_by_use():

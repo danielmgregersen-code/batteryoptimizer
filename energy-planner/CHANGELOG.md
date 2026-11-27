@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.37.0
+
+- **Washer and dryer recognised from the real meter:** the meter's history (17–27 Nov) showed a heat
+  pump dryer that swings 350–850 W, not the steady floor assumed since 0.34.0, and a washer that
+  sits at a steady 45–90 W after its heating. With `appliance_dryer_min_w` 400 the dryer was never
+  found. Now the dryer is where the 15-minute median holds 200 W or more for 30 minutes (the option
+  is ignored). The washer's share inside a drying is its programme's curve (or its spike plus 70 W),
+  and the dryer is the rest. On the real data: 8 washes, 5 dryings, and the run with both split into
+  1.74 + 0.55 kWh. The dryer is learned at about 1.6 kWh / 3.3 h instead of the 2 kWh / 2 h default.
+- Programmes are grouped by the heating's energy at the start, and their curves are scaled to the
+  washes' median energy. The dryer's hourly profile is no longer piled into its first hour by short
+  runs.
+- The shared meter's runs are learned again once. "Seneste kørsler" shows local time (it showed
+  UTC).
+
 ## 0.36.1
 
 - **One row for the washing machine** on the Maskiner card, instead of one per programme: the

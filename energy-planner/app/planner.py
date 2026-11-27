@@ -603,6 +603,15 @@ class Planner:
             log.info("appliance runs: 5-minute statistics unavailable: %s", e)
             return
         lo_w, hi_w = appl.dryer_band(opts)
+        if not self._appl_runs.get("_split_v4"):
+            # 0.37.0: the dryer model follows the measured meter (a swinging 350–850 W, not a steady
+            # floor); runs learned before counted much of the drying as washes: learned again.
+            for c in cfg:
+                if len(c["names"]) > 1:
+                    for name in c["names"]:
+                        self._appl_runs.pop(name, None)
+                    self._appl_runs.pop(f"_wash_only:{c['entity']}", None)
+            self._appl_runs["_split_v4"] = self._appl_runs["_split_v3"] = self._appl_runs["_split_v2"] = True
         if not self._appl_runs.get("_split_v3"):
             # 0.36.0: the dryer is found with an automatic floor; runs learned with the old 700 W limit
             # may have counted the drying as washes (also among the washes "alone"): learned again.

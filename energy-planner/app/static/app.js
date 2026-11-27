@@ -796,7 +796,7 @@
         h('summary', { class: 'hint' }, 'Seneste kørsler (sådan er målingen delt op)'),
         h('ul', { class: 'diag' }, items.filter((a) => a.recent && a.recent.length).map((a) => h('li', {},
           h('strong', {}, a.name + ': '),
-          a.recent.map((r) => `${dayName(dayKey(r.start), { weekday: 'short' })} ${hhmm(r.start)} · ${fmt(r.minutes / 60, 1)} t · ${fmt(r.kwh, 2)} kWh · ${r.program || fmt(r.mean_w, 0) + ' W'}`).join('  |  ')))),
+          a.recent.map((r) => `${new Date(r.start).toLocaleDateString('da-DK', { weekday: 'short' })} ${new Date(r.start).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' })} · ${fmt(r.minutes / 60, 1)} t · ${fmt(r.kwh, 2)} kWh · ${r.program || fmt(r.mean_w, 0) + ' W'}`).join('  |  ')))),
         ...items.filter((a) => a.programs).map((a) => h('div', { class: 'hint', style: { marginTop: '6px' } },
           a.programs.length
             ? `Lærte vaskeprogrammer: ` + a.programs.map((p) => `${p.name} ${p.minutes >= 60 ? Math.floor(p.minutes / 60) + ' t ' : ''}${p.minutes % 60 ? (p.minutes % 60) + ' min' : ''} · ${fmt(p.kwh, 2)} kWh (${p.runs})`).join(' · ')
