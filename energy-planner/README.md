@@ -180,8 +180,10 @@ Replaces the HA automation *"Solcelle- & Prisstyret ladning: IONIQ 9"* in two la
   than the 0.50 rule: with one value per kWh, sun selling at 1.05 is cheaper than grid at 1.25.
 - The house battery is not used for the car in the plan (`car_from_house_battery: false`).
 - **100 % now and then** (`car_full_charge`): only when power is at rock bottom (a negative sell
-  price before the deadline, or the night's cheapest hours among the 5 % cheapest of the last 30
-  days), at most every `car_full_min_days` (14) days, never forced.
+  price before the deadline, or the night's cheapest hours both among the 5 % cheapest of the last
+  30 days and at most `car_full_max_price_dkk`, 0.50 kr/kWh), at most every `car_full_min_days` (14)
+  days, never forced however long ago the last full charge was. A night that is only cheap compared
+  with dear weeks (1.71 kr) does not count; order an extra charge in the panel for that.
 - **Trips**: `input_datetime.ioniq9_afgang` (date and time) and optionally
   `input_number.ioniq9_afgang_soc` (default 100 %). Planned once the departure is inside the horizon.
 - **"Hvis bilen sættes til nu"**: while the car is unplugged (and its SoC is known), the plan is also

@@ -108,6 +108,7 @@ DEFAULTS = {
     "car_full_charge": True,
     "car_full_min_days": 14,
     "car_full_cheap_percentile": 5,    # night price among the N % cheapest hours of the last 30 days
+    "car_full_max_price_dkk": 0.50,    # ... and at most this per kWh (absolute rock bottom)
     # A trip: the car at car_departure_soc (or the helper's value) at this date and time
     "car_departure_entity": "input_datetime.ioniq9_afgang",
     "car_departure_soc_entity": "input_number.ioniq9_afgang_soc",

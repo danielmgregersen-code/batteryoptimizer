@@ -221,12 +221,20 @@ def test_full_charge_never_more_often_than_the_minimum_interval():
 
 
 def test_full_charge_only_at_rock_bottom_and_never_forced():
-    assert full(night([1.2] * 12), days=20)["active"]             # 1.20 <= 5th percentile (1.36)
-    assert not full(night([1.9] * 12), days=20)["active"]          # ordinary night: wait
-    assert not full(night([1.9] * 12), days=60)["active"]          # long ago, still not forced
-    assert full(night([1.2] * 12), days=None)["active"]            # never been full: allowed
-    d = full(night([1.9] * 12), days=20)
+    old = {"car_full_max_price_dkk": 2.0}                          # the relative limit alone (before 0.38.3)
+    assert full(night([1.2] * 12), days=20, **old)["active"]       # 1.20 <= 5th percentile (1.36)
+    assert not full(night([1.9] * 12), days=20, **old)["active"]   # ordinary night: wait
+    assert not full(night([1.9] * 12), days=60, **old)["active"]   # long ago, still not forced
+    assert full(night([1.2] * 12), days=None, **old)["active"]     # never been full: allowed
+    d = full(night([1.9] * 12), days=20, **old)
     assert d["status"] == "waiting" and d["threshold"] == pytest.approx(1.359, abs=0.01)
+
+
+def test_full_charge_needs_at_most_50_ore_however_cheap_the_night_is_compared_with_the_month():
+    d = full(night([1.2] * 12), days=60)                           # among the cheapest, but 1.20 kr
+    assert not d["active"] and d["threshold"] == 0.5 and d["max_price"] == 0.5
+    assert full(night([0.4] * 12), days=20)["active"]              # 0.40 kr: rock bottom
+    assert full(night([0.4] * 12), days=20, history=[])["active"]   # too little history: the 0.50 kr alone
 
 
 def test_negative_sell_price_triggers_a_full_charge():
@@ -239,7 +247,8 @@ def test_negative_sell_price_triggers_a_full_charge():
 
 def test_full_charge_plans_100_percent_in_the_cheapest_hours_as_late_as_possible():
     hz = night()
-    f = full(hz, soc=60, days=20, history=[1.2] * 100 + [3.0] * 700)   # 5th percentile = 1.20
+    f = full(hz, soc=60, days=20, history=[1.2] * 100 + [3.0] * 700,   # 5th percentile = 1.20
+             car_full_max_price_dkk=2.0)
     assert f["active"]
     cp, info = carmod.build_car_params(hz, hz.starts[0], TZ, OPTS, "suspended_evse", 60, full=f)
     assert info["max_soc_pct"] == 100.0

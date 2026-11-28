@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.38.3
+
+- **100 % only at an absolute rock bottom:** the night's price must also be at most
+  `car_full_max_price_dkk` (0.50 kr/kWh), not only among the 5 % cheapest of the last 30 days. A
+  1.71 kr night planned a full charge because the weeks before had been dear. A negative sell price
+  (sun) still counts. The 100 % card shows the limit.
+
 ## 0.38.2
 
 - The panel shows the car's minimum as 40 % (the middle of 38 and 42 %), not 42 %. It still charges

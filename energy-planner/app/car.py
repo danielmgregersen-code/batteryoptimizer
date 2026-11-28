@@ -110,8 +110,14 @@ def full_charge_decision(horizon, now_utc: datetime, tz, opts, soc_pct: float, l
     hours = max(1, math.ceil((100.0 - soc_pct) / 100.0 * cap / rate - 1e-9))
     cheapest = sorted(horizon.buy[i] for i in window)[:hours]
     out["night_price"] = round(sum(cheapest) / len(cheapest), 3)
-    out["threshold"] = percentile(price_history, float(opts["car_full_cheap_percentile"])) \
+    rel = percentile(price_history, float(opts["car_full_cheap_percentile"])) \
         if len(price_history or []) >= 24 * 7 else None
+    # Rock bottom also in absolute terms: a night that is cheap only compared with dear weeks (1.71 kr)
+    # is not enough; the night must cost at most car_full_max_price_dkk (0.50 kr/kWh).
+    cap = opts.get("car_full_max_price_dkk")
+    out["max_price"] = float(cap) if cap is not None else None
+    limits = [x for x in (rel, out["max_price"]) if x is not None]
+    out["threshold"] = round(min(limits), 3) if limits else None
     negative_sell = any(horizon.sell[i] < 0 for i in window)
     cheap = out["threshold"] is not None and out["night_price"] <= out["threshold"]
     out["active"] = bool(negative_sell or cheap)
